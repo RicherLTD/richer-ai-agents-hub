@@ -223,23 +223,29 @@ cp .env.example .env.local
 
 - [x] **PR 10** — `feat/agents-real-data`: ✅ בוצע ב-PR 7 (לא נדרש PR נפרד)
 
-### שלב 4: בניית מסכים ⬅ אנחנו פה
+### שלב 4: בניית מסכים
 
-- [ ] **PR 11** — `feat/agents-management`: ניהול סוכנים (תחת /settings)
-- [ ] **PR 12** — `feat/users-management`: ניהול משתמשים (תחת /settings)
-- [ ] **PR 13** — `feat/leads-screen`
-- [ ] **PR 14** — `feat/conversations-list`
-- [ ] **PR 15** — `feat/conversation-view`: שיחה ספציפית + סיכום AI + 5 שאלות
-- [ ] **PR 16** — `feat/dashboard-kpis`: דף הבית עם מטריקות
-- [ ] **PR 17** — `feat/prompts-screen`: ניהול prompts + גרסאות
-- [ ] **PR 18** — `feat/analytics-screen`: A/B testing + התפלגות התנגדויות
+- [x] **PR 11a** — `feat/admin-role-schema`: app_users + role enum + is_admin() + admin-only mutations
+- [x] **PR 11b** — `feat/settings-tabs-and-agents`: Settings tabs + agents management + admin gate
+- [x] **PR 11c** — `feat/users-management`: invite/role/remove + invite-user/delete-user edge functions
+- [x] **PR 13** — `feat/leads-screen`: table + filters + search
+- [x] **PR 14** — `feat/conversations-list`: chat-app style list
+- [x] **PR 15** — `feat/conversation-view`: master/detail + messages + lead_memory + reply box (migration 0005 — messages outbound INSERT policy)
+- [x] **PR 16** — `feat/dashboard-kpis`: KPI cards + funnel/tag breakdown + recent leads
+- [x] **PR 17** — `feat/prompts-screen`: read-only viewer
+- [x] **PR 18** — `feat/analytics-screen`: A/B testing + objections + AI providers
+- [x] **PR 19** — `feat/prompts-sync`: file→DB sync script + first prompt for affiliate_marketing (migration 0006 — UNIQUE on prompts)
 
-### שלב 5: שילוב
+### שלב 5: שילוב ⬅ אנחנו פה
 
 - [ ] n8n workflows (מחוץ לריפו, ב-n8n cloud)
 - [ ] סקריפט גיבוי n8n → git
 - [ ] WhatsApp BSP (360dialog/Wati)
 - [ ] Pilot עם 50 לידים
+
+### עזרי פיתוח
+
+- `bun run seed:test` / `seed:clear` — מאכלס/ננקה ~8 שיחות דמו תחת prefix `+97255500…` כדי שהדשבורד לא יהיה ריק לפני n8n.
 
 ## הקשר עסקי
 
