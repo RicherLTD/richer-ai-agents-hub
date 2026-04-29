@@ -11,10 +11,10 @@
 //   { "conversation_id": string, "content": string }
 //
 // Required secrets (Supabase edge runtime env):
-//   HOOKMYAPP_API_URL          — sandbox: https://sandbox.hookmyapp.com/v22.0
+//   WHATSAPP_API_URL          — sandbox: https://sandbox.hookmyapp.com/v22.0
 //                                production: https://graph.facebook.com/v22.0
-//   HOOKMYAPP_ACCESS_TOKEN     — sandbox activation code or Meta token
-//   HOOKMYAPP_PHONE_NUMBER_ID  — sandbox session phone or Meta phone id
+//   WHATSAPP_ACCESS_TOKEN     — sandbox activation code or Meta token
+//   WHATSAPP_PHONE_NUMBER_ID  — sandbox session phone or Meta phone id
 //
 // Auto-injected by Supabase: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 // SUPABASE_ANON_KEY (used by requireUser).
@@ -47,9 +47,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const apiUrl = Deno.env.get("HOOKMYAPP_API_URL");
-    const accessToken = Deno.env.get("HOOKMYAPP_ACCESS_TOKEN");
-    const phoneId = Deno.env.get("HOOKMYAPP_PHONE_NUMBER_ID");
+    const apiUrl = Deno.env.get("WHATSAPP_API_URL");
+    const accessToken = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
+    const phoneId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
     if (!apiUrl || !accessToken || !phoneId) {
       throw new HttpError(500, "HookMyApp env not configured");
     }

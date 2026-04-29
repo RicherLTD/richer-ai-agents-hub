@@ -16,7 +16,7 @@
 //
 // Required env (set as Supabase secrets, or via --env-file when running
 // `bunx supabase functions serve` locally):
-//   HOOKMYAPP_VERIFY_TOKEN  — sandbox session HMAC (`hookmyapp sandbox env`)
+//   VERIFY_TOKEN  — sandbox session HMAC (`hookmyapp sandbox env`)
 //   HOOKMYAPP_AGENT_NAME    — agents.name slug to attribute inbound to
 //
 // Auto-injected by Supabase: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
@@ -93,7 +93,7 @@ function metaTimestampToIso(ts: string | undefined): string {
 }
 
 Deno.serve(async (req) => {
-  const verifyToken = Deno.env.get("HOOKMYAPP_VERIFY_TOKEN");
+  const verifyToken = Deno.env.get("VERIFY_TOKEN");
   const agentName = Deno.env.get("HOOKMYAPP_AGENT_NAME");
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
