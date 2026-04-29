@@ -15,12 +15,14 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
-    /* Linting */
-    "strict": false,
+    /* Strict type-checking */
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "noFallthroughCasesInSwitch": true,
+    /* Allow unused for WIP branches; CI enforces lint instead */
     "noUnusedLocals": false,
     "noUnusedParameters": false,
-    "noImplicitAny": false,
-    "noFallthroughCasesInSwitch": false,
 
     "paths": {
       "@/*": ["./src/*"]
