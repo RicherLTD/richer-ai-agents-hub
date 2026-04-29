@@ -74,7 +74,7 @@ export function AgentSelector() {
                     <div className="flex min-w-0 items-center gap-2">
                       <span
                         className="h-2 w-2 shrink-0 rounded-full"
-                        style={{ backgroundColor: agent.brand_color }}
+                        style={{ backgroundColor: agent.brand_color ?? undefined }}
                       />
                       <span className="truncate">{agent.display_name}</span>
                     </div>
