@@ -14,7 +14,9 @@
     "db:apply": "bun run scripts/db/apply.ts",
     "db:types": "bunx supabase gen types typescript --linked --schema public > src/types/database.ts",
     "fn:deploy": "bunx supabase functions deploy",
-    "prompts:sync": "bun run scripts/prompts/sync.ts"
+    "prompts:sync": "bun run scripts/prompts/sync.ts",
+    "seed:test": "bun run scripts/seed/test-conversations.ts",
+    "seed:clear": "bun run scripts/seed/test-conversations.ts clear"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
