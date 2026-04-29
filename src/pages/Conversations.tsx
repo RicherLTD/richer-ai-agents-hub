@@ -2,12 +2,14 @@ import { useQuery } from "@tanstack/react-query";
 import { MessageCircle, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { ConversationDetail } from "@/components/conversations/ConversationDetail";
 import { ConversationListItem } from "@/components/conversations/ConversationListItem";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { cn } from "@/lib/utils";
 import { useAgent } from "@/contexts/AgentContext";
 import { getActiveConversations } from "@/lib/conversations";
 import type { Conversation } from "@/types/conversation";
@@ -64,8 +66,10 @@ const Conversations = () => {
     navigate(`/conversations/${c.id}`);
   };
 
+  const showDetailOnMobile = Boolean(activeConversationId);
+
   return (
-    <div className="space-y-4">
+    <div className="flex h-[calc(100vh-7rem)] flex-col gap-3">
       <header className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold">שיחות פעילות</h1>
@@ -79,46 +83,75 @@ const Conversations = () => {
         </label>
       </header>
 
-      <div className="relative">
-        <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="חיפוש לפי שם או טלפון…"
-          className="ps-9"
-        />
-      </div>
-
-      {error && <p className="text-sm text-destructive">שגיאה בטעינת שיחות: {error.message}</p>}
-
-      <ScrollArea className="h-[calc(100vh-260px)] rounded-md border">
-        <div className="space-y-1 p-2">
-          {isLoading ? (
-            <>
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-              <Skeleton className="h-16 w-full" />
-            </>
-          ) : list.length === 0 ? (
-            <p className="py-12 text-center text-sm text-muted-foreground">
-              {debouncedSearch
-                ? "אין שיחות שתואמות לחיפוש."
-                : includeInactive
-                  ? "עדיין אין שיחות לסוכן הזה."
-                  : "אין שיחות פעילות. הפעל את המתג שלמעלה כדי לראות גם שיחות לא פעילות."}
-            </p>
-          ) : (
-            list.map((c) => (
-              <ConversationListItem
-                key={c.id}
-                conversation={c}
-                isActive={activeConversationId === c.id}
-                onClick={handleSelect}
+      <div className="flex flex-1 gap-3 overflow-hidden rounded-lg border">
+        {/* Right side: list */}
+        <div
+          className={cn(
+            "flex w-full flex-col lg:w-[360px] lg:shrink-0",
+            showDetailOnMobile && "hidden lg:flex",
+          )}
+        >
+          <div className="border-b p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="חיפוש לפי שם או טלפון…"
+                className="ps-9"
               />
-            ))
+            </div>
+          </div>
+
+          <ScrollArea className="flex-1">
+            <div className="space-y-1 p-2">
+              {isLoading ? (
+                <>
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                  <Skeleton className="h-16 w-full" />
+                </>
+              ) : error ? (
+                <p className="p-4 text-sm text-destructive">שגיאה: {error.message}</p>
+              ) : list.length === 0 ? (
+                <p className="py-12 text-center text-sm text-muted-foreground">
+                  {debouncedSearch
+                    ? "אין שיחות שתואמות לחיפוש."
+                    : includeInactive
+                      ? "עדיין אין שיחות לסוכן הזה."
+                      : "אין שיחות פעילות. הפעל את המתג שלמעלה כדי לראות גם שיחות לא פעילות."}
+                </p>
+              ) : (
+                list.map((c) => (
+                  <ConversationListItem
+                    key={c.id}
+                    conversation={c}
+                    isActive={activeConversationId === c.id}
+                    onClick={handleSelect}
+                  />
+                ))
+              )}
+            </div>
+          </ScrollArea>
+        </div>
+
+        {/* Left side: detail panel */}
+        <div
+          className={cn(
+            "flex flex-1 flex-col overflow-hidden border-l",
+            !showDetailOnMobile && "hidden lg:flex",
+          )}
+        >
+          {activeConversationId ? (
+            <ConversationDetail conversationId={activeConversationId} />
+          ) : (
+            <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-sm text-muted-foreground">
+              <MessageCircle className="h-8 w-8 text-muted-foreground/60" />
+              <p>בחר שיחה מהרשימה כדי לפתוח אותה.</p>
+            </div>
           )}
         </div>
-      </ScrollArea>
+      </div>
     </div>
   );
 };
