@@ -61,7 +61,8 @@ The link state lives in `supabase/.temp/` (gitignored).
 ## RLS
 
 Every table that holds user/lead/conversation data MUST have RLS enabled and explicit policies.
-See migration `0002_rls_policies.sql` (added in PR 5).
+See migrations `0001_rls_policies.sql` (initial policies, PR 5) and
+`0002_auth_rls_update.sql` (tightened to `authenticated` only, PR 9).
 
 ## DB password rotation
 

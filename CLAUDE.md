@@ -179,16 +179,19 @@ cp .env.example .env.local
 ### מה קיים ועובד
 
 - שלד דשבורד מלא: Layout, Sidebar (RTL ימין), Header, Agent Selector, 6 routes
-- `AgentContext` עם `getAgents()` mock (סוכן יחיד hardcoded)
+- `AgentContext` קורא סוכנים מ-Supabase (לא mock) — `src/lib/agents.ts`
+- Supabase client + types שמיוצרים אוטומטית מהסכמה
+- Auth מלא: login screen + AuthContext + ProtectedRoute + logout מה-sidebar
+- RLS תוחם ל-`authenticated` בלבד (migration `0002_auth_rls_update.sql`)
 - RTL נכון, Heebo, design tokens של ריצ'ר (#451470)
+- CI: typecheck + lint + build על כל PR
 - vitest setup (אבל ללא טסטים אמיתיים — רק `example.test.ts`)
 - Hot Module Reload דרך Vite
 
 ### מה חסר
 
-- חיבור Supabase (אין `@supabase/supabase-js`, אין `client.ts`)
-- Auth (אין login, הדשבורד פתוח לחלוטין)
-- כל המסכים האמיתיים (כרגע EmptyState עבור כל 6 הדפים)
+- כל המסכים האמיתיים (כרגע EmptyState עבור 6 הדפים)
+- ניהול סוכנים ומשתמשים (Settings)
 - Prompts (קיימת טבלה ב-Supabase אבל ריקה)
 - n8n workflows (לא קיימים עדיין)
 - WhatsApp BSP (לא מחובר)
@@ -200,27 +203,27 @@ cp .env.example .env.local
 
 ### שלב 0: תשתית
 
-- [ ] **PR 1** — `chore/foundations`: CLAUDE.md, strict TS, `.env.example` ⬅ אנחנו פה
-- [ ] **PR 2** — `chore/ci`: GitHub Actions workflow
-- [ ] **PR 3** — Branch protection ב-GitHub (לא קוד; אתה מגדיר ב-Settings)
+- [x] **PR 1** — `chore/foundations`: CLAUDE.md, strict TS, `.env.example`
+- [x] **PR 2** — `chore/ci`: GitHub Actions workflow
+- [x] **PR 3** — Branch protection ב-GitHub (לא קוד; הוגדר ב-Settings)
 
 ### שלב 1: Supabase
 
-- [ ] **PR 4** — `chore/supabase-cli`: התקנת Supabase CLI + ייצוא הסכמה הקיימת ל-migration `0001_initial_schema.sql`
-- [ ] **PR 5** — `feat/rls-policies`: migration `0002_rls_policies.sql` (לפי פרק 3.1 במסמך ההעברה)
-- [ ] **PR 6** — `feat/supabase-types`: ייצור TS types אוטומטי
+- [x] **PR 4** — `chore/supabase-cli`: התקנת Supabase CLI + scaffold (הסכמה הראשונית הוקמה ב-Studio לפני המעבר ל-migrations — ראה `supabase/README.md`)
+- [x] **PR 5** — `feat/rls-policies`: migration `0001_rls_policies.sql` (anon + authenticated, mid-step)
+- [x] **PR 6** — `feat/supabase-types`: ייצור TS types אוטומטי
 
 ### שלב 2: Auth
 
-- [ ] **PR 7** — `feat/supabase-client`: `client.ts`, התקנת `@supabase/supabase-js`
-- [ ] **PR 8** — `feat/auth-login`: login screen + AuthContext + redirect logic
-- [ ] **PR 9** — `feat/auth-rls-update`: RLS policies מ-`anon` ל-`authenticated`
+- [x] **PR 7** — `feat/supabase-client`: `client.ts` + `@supabase/supabase-js` + החלפת `getAgents()` mock בקריאה אמיתית
+- [x] **PR 8** — `feat/auth-login`: login screen + AuthContext + ProtectedRoute + logout dropdown ב-sidebar
+- [x] **PR 9** — `feat/auth-rls-update`: migration `0002_auth_rls_update.sql` — RLS policies מ-`anon, authenticated` ל-`authenticated` בלבד
 
 ### שלב 3: חיבור ראשון לנתונים
 
-- [ ] **PR 10** — `feat/agents-real-data`: החלפת `getAgents()` mock בקריאה אמיתית
+- [x] **PR 10** — `feat/agents-real-data`: ✅ בוצע ב-PR 7 (לא נדרש PR נפרד)
 
-### שלב 4: בניית מסכים
+### שלב 4: בניית מסכים ⬅ אנחנו פה
 
 - [ ] **PR 11** — `feat/agents-management`: ניהול סוכנים (תחת /settings)
 - [ ] **PR 12** — `feat/users-management`: ניהול משתמשים (תחת /settings)

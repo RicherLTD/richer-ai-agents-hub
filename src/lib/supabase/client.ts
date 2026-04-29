@@ -2,8 +2,10 @@
  * Supabase client singleton.
  *
  * Reads the URL and publishable/anon key from Vite env. The anon key is safe
- * in client code — its only power is what RLS allows (see
- * supabase/migrations/0001_rls_policies.sql).
+ * in client code — its only power is what RLS allows. After login, the
+ * client uses the user's authenticated session for queries; RLS policies
+ * (see `supabase/migrations/0002_auth_rls_update.sql`) restrict reads to
+ * the `authenticated` role.
  *
  * For server-side scripts (db:apply, prompts sync) we use the access token
  * + Management API directly — never the service_role key in client code.
