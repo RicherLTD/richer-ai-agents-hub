@@ -38,9 +38,11 @@ const NAV_ITEMS = [
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
-  const { user, signOut } = useAuth();
+  const { user, appUser, isAdmin, signOut } = useAuth();
   const email = user?.email ?? "";
-  const initials = email.slice(0, 2).toUpperCase() || "מנ";
+  const displayName = appUser?.full_name?.trim() || email;
+  const initials = (appUser?.full_name?.trim() || email).slice(0, 2).toUpperCase() || "מנ";
+  const roleLabel = isAdmin ? "אדמין" : appUser ? "משתמש" : "—";
 
   return (
     <Sidebar side="right" collapsible="icon">
@@ -102,8 +104,8 @@ export function AppSidebar() {
               </Avatar>
               {!collapsed && (
                 <div className="min-w-0 text-right">
-                  <p className="truncate text-sm font-medium text-foreground">משתמש</p>
-                  <p className="truncate text-[11px] text-muted-foreground">{email || "—"}</p>
+                  <p className="truncate text-sm font-medium text-foreground">{displayName || "—"}</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{roleLabel}</p>
                 </div>
               )}
             </Button>
