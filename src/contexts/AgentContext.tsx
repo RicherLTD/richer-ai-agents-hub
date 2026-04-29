@@ -20,14 +20,22 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    getAgents().then((list) => {
-      if (cancelled) return;
-      setAgents(list);
-      const stored = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
-      const initial = list.find((a) => a.id === stored)?.id ?? list[0]?.id ?? null;
-      setActiveAgentIdState(initial);
-      setIsLoading(false);
-    });
+    getAgents()
+      .then((list) => {
+        if (cancelled) return;
+        setAgents(list);
+        const stored = typeof window !== "undefined" ? window.localStorage.getItem(STORAGE_KEY) : null;
+        const initial = list.find((a) => a.id === stored)?.id ?? list[0]?.id ?? null;
+        setActiveAgentIdState(initial);
+        setIsLoading(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error("Failed to load agents:", err);
+        setAgents([]);
+        setActiveAgentIdState(null);
+        setIsLoading(false);
+      });
     return () => {
       cancelled = true;
     };
