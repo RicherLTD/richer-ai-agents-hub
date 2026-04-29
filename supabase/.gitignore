@@ -1,0 +1,8 @@
+# Supabase CLI link state — machine-specific, contains pooler URL
+.temp/
+
+# Local development DB volumes
+.branches/
+
+# Seeds with secrets
+seed.local.sql
