@@ -1,6 +1,15 @@
-import { BarChart3, FileText, Home, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
+import { BarChart3, FileText, Home, LogOut, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
   Sidebar,
   SidebarContent,
@@ -14,6 +23,7 @@ import {
   SidebarMenuItem,
   useSidebar,
 } from "@/components/ui/sidebar";
+import { useAuth } from "@/contexts/AuthContext";
 import { AgentSelector } from "./AgentSelector";
 
 const NAV_ITEMS = [
@@ -28,6 +38,9 @@ const NAV_ITEMS = [
 export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
+  const { user, signOut } = useAuth();
+  const email = user?.email ?? "";
+  const initials = email.slice(0, 2).toUpperCase() || "מנ";
 
   return (
     <Sidebar side="right" collapsible="icon">
@@ -75,17 +88,42 @@ export function AppSidebar() {
       </SidebarContent>
 
       <SidebarFooter className="border-t border-sidebar-border">
-        <div className="flex items-center gap-2.5 px-2 py-1.5">
-          <Avatar className="h-8 w-8">
-            <AvatarFallback className="bg-primary-soft text-primary text-xs font-semibold">מנ</AvatarFallback>
-          </Avatar>
-          {!collapsed && (
-            <div className="min-w-0">
-              <p className="truncate text-sm font-medium text-foreground">מנהל מערכת</p>
-              <p className="truncate text-[11px] text-muted-foreground">admin@richer.ac.il</p>
-            </div>
-          )}
-        </div>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-sidebar-accent"
+              aria-label="תפריט משתמש"
+            >
+              <Avatar className="h-8 w-8">
+                <AvatarFallback className="bg-primary-soft text-primary text-xs font-semibold">
+                  {initials}
+                </AvatarFallback>
+              </Avatar>
+              {!collapsed && (
+                <div className="min-w-0 text-right">
+                  <p className="truncate text-sm font-medium text-foreground">משתמש</p>
+                  <p className="truncate text-[11px] text-muted-foreground">{email || "—"}</p>
+                </div>
+              )}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-56" dir="rtl">
+            <DropdownMenuLabel className="truncate" dir="ltr">
+              {email}
+            </DropdownMenuLabel>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              onSelect={() => {
+                void signOut();
+              }}
+              className="text-destructive focus:bg-destructive/10 focus:text-destructive"
+            >
+              <LogOut className="ms-2 h-4 w-4" />
+              התנתק
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </SidebarFooter>
     </Sidebar>
   );
