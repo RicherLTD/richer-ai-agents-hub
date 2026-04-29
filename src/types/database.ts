@@ -182,6 +182,33 @@ export type Database = {
         }
         Relationships: []
       }
+      app_users: {
+        Row: {
+          created_at: string
+          created_by: string | null
+          email: string
+          full_name: string | null
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+        }
+        Insert: {
+          created_at?: string
+          created_by?: string | null
+          email: string
+          full_name?: string | null
+          id: string
+          role?: Database["public"]["Enums"]["app_role"]
+        }
+        Update: {
+          created_at?: string
+          created_by?: string | null
+          email?: string
+          full_name?: string | null
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           agent_id: string | null
@@ -532,11 +559,12 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      is_admin: { Args: never; Returns: boolean }
     }
     Enums: {
       agent_status_enum: "active" | "paused" | "archived"
       ai_provider_enum: "claude" | "gpt" | "pending" | "manual"
+      app_role: "admin" | "user"
       conversation_status_enum: "active" | "paused" | "completed" | "opted_out"
       funnel_stage_enum: "cold" | "mid" | "done"
       message_direction_enum: "inbound" | "outbound"
@@ -697,6 +725,7 @@ export const Constants = {
     Enums: {
       agent_status_enum: ["active", "paused", "archived"],
       ai_provider_enum: ["claude", "gpt", "pending", "manual"],
+      app_role: ["admin", "user"],
       conversation_status_enum: ["active", "paused", "completed", "opted_out"],
       funnel_stage_enum: ["cold", "mid", "done"],
       message_direction_enum: ["inbound", "outbound"],
