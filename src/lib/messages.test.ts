@@ -1,11 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { fromMock } = vi.hoisted(() => ({
+const { fromMock, invokeMock } = vi.hoisted(() => ({
   fromMock: vi.fn(),
+  invokeMock: vi.fn(),
 }));
 
 vi.mock("@/lib/supabase/client", () => ({
-  supabase: { from: fromMock },
+  supabase: { from: fromMock, functions: { invoke: invokeMock } },
 }));
 
 import { getMessagesForConversation, sendOutboundMessage } from "./messages";
@@ -37,29 +38,9 @@ function makeReadChain(result: { data: unknown; error: unknown }) {
   return chain;
 }
 
-function makeInsertChain(result: { data: unknown; error: unknown }) {
-  const calls: ChainCall[] = [];
-  const chain = {
-    calls,
-    insert: vi.fn(),
-    select: vi.fn(),
-    single: vi.fn(),
-  };
-  for (const m of ["insert", "select"] as const) {
-    chain[m].mockImplementation((...args: unknown[]) => {
-      calls.push({ method: m, args });
-      return chain;
-    });
-  }
-  chain.single.mockImplementation((...args: unknown[]) => {
-    calls.push({ method: "single", args });
-    return Promise.resolve(result);
-  });
-  return chain;
-}
-
 beforeEach(() => {
   fromMock.mockReset();
+  invokeMock.mockReset();
 });
 
 describe("getMessagesForConversation", () => {
@@ -96,14 +77,14 @@ describe("getMessagesForConversation", () => {
 });
 
 describe("sendOutboundMessage", () => {
-  it("rejects empty content without hitting the DB", async () => {
+  it("rejects empty content without invoking the edge function", async () => {
     await expect(sendOutboundMessage({ conversationId: "conv-1", content: "   " })).rejects.toThrow(
       "Cannot send an empty message",
     );
-    expect(fromMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("inserts an outbound text message and returns the row", async () => {
+  it("invokes whatsapp-send with trimmed content and returns the row", async () => {
     const row = {
       id: "m99",
       conversation_id: "conv-1",
@@ -111,27 +92,21 @@ describe("sendOutboundMessage", () => {
       direction: "outbound",
       message_type: "text",
     };
-    const chain = makeInsertChain({ data: row, error: null });
-    fromMock.mockReturnValue(chain);
+    invokeMock.mockResolvedValue({ data: row, error: null });
 
     const result = await sendOutboundMessage({ conversationId: "conv-1", content: "  hello  " });
 
-    const insertCall = chain.calls.find((c) => c.method === "insert");
-    const payload = insertCall?.args[0] as Record<string, unknown>;
-    expect(payload.conversation_id).toBe("conv-1");
-    expect(payload.direction).toBe("outbound");
-    expect(payload.message_type).toBe("text");
-    expect(payload.content).toBe("hello");
-    expect(typeof payload.timestamp).toBe("string");
+    expect(invokeMock).toHaveBeenCalledWith("whatsapp-send", {
+      body: { conversation_id: "conv-1", content: "hello" },
+    });
     expect(result).toEqual(row);
   });
 
-  it("throws a wrapped error when the insert fails", async () => {
-    const chain = makeInsertChain({ data: null, error: { message: "rls denied" } });
-    fromMock.mockReturnValue(chain);
+  it("throws a wrapped error when the edge function fails", async () => {
+    invokeMock.mockResolvedValue({ data: null, error: { message: "send failed" } });
 
     await expect(
       sendOutboundMessage({ conversationId: "conv-1", content: "hello" }),
-    ).rejects.toThrow("Failed to send message: rls denied");
+    ).rejects.toThrow("Failed to send message: send failed");
   });
 });

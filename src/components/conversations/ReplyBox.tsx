@@ -55,7 +55,7 @@ export function ReplyBox({ disabled, onSend }: Props) {
         </Button>
       </div>
       <p className="mt-2 text-[11px] text-muted-foreground">
-        ההודעה תירשם ב-DB. שליחה לוואטסאפ תופעל אחרי חיבור n8n.
+        ההודעה נשלחת לוואטסאפ דרך HookMyApp. הסנדבוקס מצמיד את הנמען לטלפון הסשן.
       </p>
     </div>
   );

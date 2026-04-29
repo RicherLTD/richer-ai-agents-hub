@@ -9,11 +9,11 @@ export interface AdminContext {
 }
 
 /**
- * Verify the request comes from a signed-in user with role='admin' in
- * `public.app_users`. Throws on any failure — callers should let it
- * propagate so the function returns a 4xx.
+ * Verify the request carries a valid Supabase session JWT and return the
+ * caller id plus a service-role client. No role check — use `requireAdmin`
+ * for admin-scope operations.
  */
-export async function requireAdmin(req: Request): Promise<AdminContext> {
+export async function requireUser(req: Request): Promise<AdminContext> {
   const authHeader = req.headers.get("Authorization");
   if (!authHeader) {
     throw new HttpError(401, "Missing Authorization header");
@@ -26,7 +26,6 @@ export async function requireAdmin(req: Request): Promise<AdminContext> {
     throw new HttpError(500, "Edge function is missing Supabase env vars");
   }
 
-  // Use the caller's JWT to identify them.
   const userClient = createClient(supabaseUrl, anonKey, {
     global: { headers: { Authorization: authHeader } },
     auth: { persistSession: false, autoRefreshToken: false },
@@ -35,16 +34,24 @@ export async function requireAdmin(req: Request): Promise<AdminContext> {
   if (userErr || !userData.user) {
     throw new HttpError(401, "Invalid or expired session");
   }
-  const callerId = userData.user.id;
 
-  // Verify role with the service-role client (bypasses RLS).
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
-  const { data: appUser, error: appErr } = await admin
+  return { callerId: userData.user.id, admin };
+}
+
+/**
+ * Verify the request comes from a signed-in user with role='admin' in
+ * `public.app_users`. Throws on any failure — callers should let it
+ * propagate so the function returns a 4xx.
+ */
+export async function requireAdmin(req: Request): Promise<AdminContext> {
+  const ctx = await requireUser(req);
+  const { data: appUser, error: appErr } = await ctx.admin
     .from("app_users")
     .select("role")
-    .eq("id", callerId)
+    .eq("id", ctx.callerId)
     .maybeSingle();
   if (appErr) {
     throw new HttpError(500, `Failed to check role: ${appErr.message}`);
@@ -52,8 +59,7 @@ export async function requireAdmin(req: Request): Promise<AdminContext> {
   if (!appUser || appUser.role !== "admin") {
     throw new HttpError(403, "Admin role required");
   }
-
-  return { callerId, admin };
+  return ctx;
 }
 
 export class HttpError extends Error {
