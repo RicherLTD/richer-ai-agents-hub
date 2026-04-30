@@ -13,8 +13,8 @@ acting.
 |---|---|
 | `invite-user` | Sends a Supabase invite to a new email; sets role on `app_users` |
 | `delete-user` | Hard-deletes an `auth.users` row (cascades to `app_users`) |
-| `whatsapp-webhook` | Public receiver for HookMyApp inbound webhooks (signed HMAC) |
-| `whatsapp-send` | Authenticated proxy that sends an outbound text via HookMyApp |
+| `whatsapp-webhook` | Public receiver for HookMyApp inbound webhooks (signed HMAC) + autonomous Claude reply loop (background) |
+| `whatsapp-send` | Authenticated proxy that sends an outbound text via HookMyApp (used by the dashboard ReplyBox for human takeover) |
 
 `_shared/auth.ts` exposes `requireUser` (any signed-in user) and
 `requireAdmin` (admin role). `_shared/cors.ts` is the CORS preflight
@@ -49,8 +49,9 @@ Five secrets, all from the active sandbox session. Easiest path:
 ```bash
 # In the webhook-starter-kit clone (or anywhere with the hookmyapp CLI):
 hookmyapp sandbox env --write .env.functions.local
-# Add the agent slug manually — sandbox = single agent.
+# Add the agent slug + Anthropic key manually — sandbox = single agent.
 echo "HOOKMYAPP_AGENT_NAME=affiliate_marketing" >> .env.functions.local
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> .env.functions.local
 ```
 
 Then either run locally or push as deployed secrets:
