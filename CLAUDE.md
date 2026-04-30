@@ -305,7 +305,7 @@ bunx supabase secrets set --env-file .env.functions.local --project-ref juoglkqt
 
 - `bun run seed:test` / `seed:clear` — מאכלס/ננקה ~8 שיחות דמו תחת prefix `+97255500…` כדי שהדשבורד לא יהיה ריק לפני זרם ייצור אמיתי.
 - `bunx supabase functions deploy <name> [--no-verify-jwt] --project-ref juoglkqtmjsziieqgmhf` — deploy של edge function ספציפית.
-- `/tmp/wa-tunnel-proxy.mjs` — proxy מקומי קטן (Bun) שמעביר מ־`localhost:54321` ל־URL הפונקציה הפרוסה. דרוש בסנדבוקס כי `hookmyapp sandbox listen` תמיד מ־tunnel ל־localhost. כשתותקן Docker או נעבור לפרוד — לא נחוץ.
+- `bun run wa:proxy` ([scripts/wa-tunnel-proxy.mjs](./scripts/wa-tunnel-proxy.mjs)) — proxy מקומי קטן (Bun) שמעביר מ־`localhost:54321` ל־URL הפונקציה הפרוסה. דרוש בסנדבוקס כי `hookmyapp sandbox listen` תמיד מ־tunnel ל־localhost. דורש `SUPABASE_URL` ב־env. כשתותקן Docker (אז `bunx supabase functions serve` מספיק) או נעבור לפרוד עם WABA אמיתי — לא נחוץ.
 
 ## הקשר עסקי
 

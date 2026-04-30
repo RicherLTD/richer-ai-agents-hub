@@ -73,6 +73,28 @@ hookmyapp sandbox listen \
   --phone +972525563338
 ```
 
+### No Docker? Use the proxy
+
+`bunx supabase functions serve` requires Docker. If Docker isn't installed,
+the deployed function is reachable but `hookmyapp sandbox listen` only
+forwards to `localhost`. Bridge the gap with [scripts/wa-tunnel-proxy.mjs](../../scripts/wa-tunnel-proxy.mjs):
+
+```bash
+# Terminal 1 — local proxy (forwards localhost:54321 → deployed function)
+SUPABASE_URL=https://juoglkqtmjsziieqgmhf.supabase.co bun run wa:proxy
+
+# Terminal 2 — sandbox tunnel pointed at the proxy
+hookmyapp sandbox listen \
+  --port 54321 \
+  --path /functions/v1/whatsapp-webhook \
+  --phone +972525563338
+```
+
+The proxy preserves the raw body and `X-HookMyApp-Signature-256` header
+so the deployed function's HMAC verification still passes. Production
+WABAs don't need this — register the function URL directly with
+`hookmyapp webhook set <waba-id> --url ... --verify-token ...`.
+
 ## Smoke test (curl)
 
 ```bash
