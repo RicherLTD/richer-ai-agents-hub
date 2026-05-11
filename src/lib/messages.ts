@@ -5,9 +5,11 @@
  *   - SELECT: any authenticated user (migration 0002).
  *   - INSERT: any authenticated user, but only `direction = 'outbound'`
  *     (migration 0005). Inbound messages flow through service_role
- *     (n8n) and are not affected.
+ *     (n8n / whatsapp-webhook edge function) and are not affected.
  *
- * The dashboard never inserts inbound messages.
+ * Outbound flow: the dashboard calls the `whatsapp-send` edge function,
+ * which sends via HookMyApp and only then inserts the row — so no orphan
+ * outbound rows from failed sends.
  */
 import { supabase } from "./supabase/client";
 import type { Message } from "@/types/message";
@@ -35,8 +37,9 @@ export interface SendOutboundParams {
 }
 
 /**
- * Insert an outbound message. The row lands in the DB; actual delivery to
- * WhatsApp is handled by n8n (out of scope for this PR).
+ * Send an outbound WhatsApp message via the `whatsapp-send` edge function.
+ * The function calls HookMyApp (sandbox or production), and on a 2xx
+ * inserts a `direction='outbound'` row into `messages`.
  */
 export async function sendOutboundMessage({
   conversationId,
@@ -46,19 +49,14 @@ export async function sendOutboundMessage({
   if (!trimmed) {
     throw new Error("Cannot send an empty message");
   }
-  const { data, error } = await supabase
-    .from("messages")
-    .insert({
-      conversation_id: conversationId,
-      content: trimmed,
-      direction: "outbound",
-      message_type: "text",
-      timestamp: new Date().toISOString(),
-    })
-    .select("*")
-    .single();
+  const { data, error } = await supabase.functions.invoke<Message>("whatsapp-send", {
+    body: { conversation_id: conversationId, content: trimmed },
+  });
   if (error) {
     throw new Error(`Failed to send message: ${error.message}`);
+  }
+  if (!data) {
+    throw new Error("Send succeeded but no message returned");
   }
   return data;
 }

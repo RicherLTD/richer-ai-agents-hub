@@ -16,16 +16,24 @@
 ## ארכיטקטורה כללית
 
 ```
-┌─────────────────────────────────────────────────┐
-│  WhatsApp BSP (360dialog/Wati)                  │
-│       ↕ webhook                                 │
-│  n8n Cloud — workflows                          │
-│       ↕ DB queries / writes                     │
-│  Supabase (DB + Auth + Storage)                 │
-│       ↑ reads + writes                          │
-│  Dashboard (this repo) — Lovable hosted         │
-└─────────────────────────────────────────────────┘
+WhatsApp user
+     ↕
+Meta Cloud API
+     ↕  webhook (signed HMAC)
+HookMyApp forwarder
+     ↕  sandbox: Cloudflare tunnel → localhost proxy → deployed function
+     ↕  production: direct HTTPS → deployed function
+Supabase Edge Functions (whatsapp-webhook + whatsapp-send)
+     │  whatsapp-webhook = inbound + autonomous Claude reply loop (background)
+     │  whatsapp-send    = human takeover from the dashboard ReplyBox
+     ↕  service_role
+Supabase Postgres
+     │  conversations · messages · lead_memory · prompts · agents · advisors
+     ↑  reads + outbound inserts (RLS-gated)
+Dashboard (this repo) — Lovable hosted
 ```
+
+**WhatsApp pipeline (current sandbox setup):** ה־`whatsapp-webhook` edge function ([supabase/functions/whatsapp-webhook/index.ts](./supabase/functions/whatsapp-webhook/index.ts)) מאמת את חתימת ה־HMAC של HookMyApp, מבצע upsert ל־conversation, רושם הודעת inbound, ואז מפעיל ברקע (`EdgeRuntime.waitUntil`) קריאה ל־Claude Sonnet 4.6 שמייצרת תגובה לפי ה־prompt הפעיל וההיסטוריה — ושולחת אותה חזרה ל־HookMyApp + רושמת ב־DB. ה־`whatsapp-send` ([supabase/functions/whatsapp-send/index.ts](./supabase/functions/whatsapp-send/index.ts)) מאפשר לאדם להשתלט מה־ReplyBox בדשבורד ולשלוח הודעה ידנית.
 
 ## ההחלטות הארכיטקטוניות (10)
 
@@ -36,7 +44,7 @@
 | 3 | זרימת קוד | **Feature branches → PR → merge ל-main.** Preview מקומי עם `bun dev`. |
 | 4 | סכמת Supabase | **Migrations בריפו** (`supabase/migrations/`). אין עריכה ידנית ב-Studio. |
 | 5 | Prompts | **קבצים בריפו → סנכרון אוטומטי** לטבלת `prompts` ב-Supabase. |
-| 6 | n8n workflows | **חיים ב-n8n cloud, גיבוי אוטומטי יומי ל-git** ב-`workflows/`. |
+| 6 | Orchestration / AI loop | **Supabase Edge Functions** (Deno + Anthropic SDK). הלולאה לקריאת Claude, חילוץ זיכרון, ותיוג חיים בקוד שב־`supabase/functions/`, לא ב־n8n. n8n נשאר אופציה ל־visual workflows אם נצטרך. |
 | 7 | Auth | **מוקדם, email/password, ניהול משתמשים מהמסך.** מתחילים במשתמש ראשי אחד. |
 | 8 | TypeScript | **Strict mode.** אסור `any`. |
 | 9 | CI | **typecheck + lint + build על כל PR.** Branch protection ב-main. |
@@ -50,8 +58,9 @@
 - **State**: React Context + `@tanstack/react-query`
 - **Forms**: react-hook-form + zod
 - **DB / Auth**: Supabase (Postgres + Auth + Storage)
-- **AI**: Claude Sonnet 4.5 (primary), GPT-4o (fallback), Whisper (audio)
-- **Orchestration**: n8n Cloud (מחוץ לריפו)
+- **AI**: Claude Sonnet 4.6 (primary, adaptive thinking), GPT-4o (fallback), Whisper (audio)
+- **Orchestration / AI loop**: Supabase Edge Functions (Deno) — `whatsapp-webhook` (autonomous Claude reply loop) + `whatsapp-send` (human takeover)
+- **WhatsApp BSP (sandbox)**: HookMyApp — webhook נכנס דרך Cloudflare tunnel → proxy מקומי → edge function פרוסה. עובר ל־production WABA בעתיד דרך `hookmyapp channels connect`.
 - **Hosting**: Lovable (`*.lovable.app`)
 - **Package Manager**: bun (`~/.bun/bin/bun`)
 - **Testing**: vitest + @testing-library/react
@@ -80,10 +89,16 @@
 │   └── test/               # vitest setup
 ├── supabase/
 │   ├── migrations/         # SQL migrations (source of truth של הסכמה)
-│   └── seed.sql            # seed data לפיתוח
+│   ├── functions/          # Deno edge functions
+│   │   ├── _shared/        # auth.ts (requireUser/requireAdmin) + cors.ts
+│   │   ├── invite-user/    # admin: invite by email
+│   │   ├── delete-user/    # admin: hard-delete auth user
+│   │   ├── whatsapp-webhook/  # public: HookMyApp inbound + autonomous Claude reply loop
+│   │   └── whatsapp-send/  # auth: send outbound via HookMyApp (dashboard ReplyBox)
+│   └── README.md           # supabase project ref + migration workflow
+├── scripts/                # bun-run scripts: db:apply, prompts:sync, seed:test
 ├── prompts/                # Prompts שמסונכרנים לטבלת prompts ב-Supabase
 │   └── affiliate_marketing/
-├── workflows/              # backup של n8n workflows (גיבוי אוטומטי יומי)
 └── CLAUDE.md               # זה הקובץ שאתה קורא
 ```
 
@@ -120,11 +135,13 @@
 - שינוי Prompt = שינוי קובץ → PR → merge → סקריפט סנכרון מעלה ל-DB.
 - **אסור** לערוך Prompts ישירות ב-DB; זה יידרס בסנכרון הבא.
 
-### n8n
+### Edge Functions
 
-- ה-workflows חיים ב-n8n cloud. עורכים שם.
-- גיבוי אוטומטי יומי ל-`workflows/` בריפו.
-- Debugging — מצא את הגרסה האחרונה בגיבוי.
+- כל function ב־`supabase/functions/<name>/index.ts`. דנו, לא Node.
+- Deploy: `bun run fn:deploy <name> --project-ref juoglkqtmjsziieqgmhf`. ה־`whatsapp-webhook` חייב `--no-verify-jwt` כי HookMyApp לא שולח JWT — הוא מאמת חתימת HMAC בעצמו.
+- סודות נדחפים ל־Supabase דרך `bunx supabase secrets set --env-file <path>`. ה־`SUPABASE_*` מוזרקים אוטומטית.
+- ראה [supabase/functions/README.md](./supabase/functions/README.md) לפירוט הפונקציות, ה־secrets, וזרימת ה־HookMyApp sandbox.
+- האגנט הראשי (Claude reply loop) רץ ב־`whatsapp-webhook` כ־background task דרך `EdgeRuntime.waitUntil` — ה־webhook מחזיר 200 מיד ל־HookMyApp ואז מייצר את התגובה ברקע. אין n8n.
 
 ### Testing
 
@@ -167,10 +184,28 @@ cp .env.example .env.local
 
 ## משתני סביבה
 
-ראה `.env.example`. דרוש:
+ראה `.env.example`. שלוש משפחות:
 
+**Client (build-time, public, ב־`.env`):**
 - `VITE_SUPABASE_URL` — URL של פרויקט Supabase
 - `VITE_SUPABASE_ANON_KEY` — anon key (בטוח להיות בקוד client-side)
+
+**Server-side scripts (`.env.local`, gitignored):**
+- `SUPABASE_PROJECT_REF`, `SUPABASE_ACCESS_TOKEN` — נצרכים על ידי `bun run db:apply`, `prompts:sync`, `seed:test`, וגם פקודות ה־`bunx supabase functions deploy` / `secrets set`.
+
+**Edge function secrets (Supabase secrets, גם ב־`.env.functions.local` לפיתוח):**
+- `VERIFY_TOKEN` — HMAC של סשן הסנדבוקס של HookMyApp
+- `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` — endpoint + auth של HookMyApp (sandbox: `https://sandbox.hookmyapp.com/v22.0`; production: `https://graph.facebook.com/v22.0`)
+- `HOOKMYAPP_AGENT_NAME` — slug ב־`agents.name` שאליו ייוחסו לידים נכנסים (סנדבוקס = סוכן יחיד)
+- `ANTHROPIC_API_KEY` — `sk-ant-...`. בלעדיו לולאת התגובה האוטומטית מושבתת בעדינות (הודעות נכנסות עדיין נכנסות ל־DB).
+
+מסלול עדכון אופייני (סנדבוקס):
+```bash
+hookmyapp sandbox env --write .env.functions.local
+echo "HOOKMYAPP_AGENT_NAME=affiliate_marketing" >> .env.functions.local
+echo "ANTHROPIC_API_KEY=sk-ant-..."             >> .env.functions.local
+bunx supabase secrets set --env-file .env.functions.local --project-ref juoglkqtmjsziieqgmhf
+```
 
 **אסור** לשים `service_role` key ב-client-side. הוא רק לסקריפטים שרצים בצד שרת (למשל סקריפט סנכרון Prompts).
 
@@ -178,24 +213,36 @@ cp .env.example .env.local
 
 ### מה קיים ועובד
 
-- שלד דשבורד מלא: Layout, Sidebar (RTL ימין), Header, Agent Selector, 6 routes
-- `AgentContext` קורא סוכנים מ-Supabase (לא mock) — `src/lib/agents.ts`
-- Supabase client + types שמיוצרים אוטומטית מהסכמה
-- Auth מלא: login screen + AuthContext + ProtectedRoute + logout מה-sidebar
-- RLS תוחם ל-`authenticated` בלבד (migration `0002_auth_rls_update.sql`)
-- RTL נכון, Heebo, design tokens של ריצ'ר (#451470)
-- CI: typecheck + lint + build על כל PR
-- vitest setup (אבל ללא טסטים אמיתיים — רק `example.test.ts`)
-- Hot Module Reload דרך Vite
+- **דשבורד**: Layout, Sidebar (RTL ימין), Header, Agent Selector, 6 routes (Index/Leads/Conversations/Analytics/Prompts/Settings) - כולם פעילים עם נתונים אמיתיים מ־Supabase, לא EmptyStates
+- **Auth**: login screen + AuthContext + ProtectedRoute + logout מה־sidebar; ניהול משתמשים מ־Settings (admin בלבד)
+- **Conversations**: רשימה chat-style + master/detail + MessageThread + LeadMemoryPanel + ReplyBox (מחובר ל־`whatsapp-send` edge function)
+- **Leads**: טבלה עם פילטרים וחיפוש
+- **Dashboard KPIs**: כרטיסי KPI + funnel/tag breakdown + lidim אחרונים
+- **Prompts viewer**: read-only עם פילטרים; sync מ־`prompts/<agent>/<type>/<version>.md` ל־`prompts` table
+- **Analytics**: A/B testing, התנגדויות, AI providers
+- **Edge Functions** (פרוסות ב־Supabase):
+  - `invite-user`, `delete-user` — admin user management
+  - `whatsapp-webhook` — קבלת webhook חתום מ־HookMyApp + לולאת תגובה אוטומטית של Claude (ברקע דרך `EdgeRuntime.waitUntil`)
+  - `whatsapp-send` — proxy לשליחה ידנית מה־ReplyBox
+- **HookMyApp sandbox**: tunnel חי (Cloudflare → proxy מקומי `/tmp/wa-tunnel-proxy.mjs` → edge function פרוסה). זרימה דו־כיוונית מאומתת end-to-end.
+- **AI**: Claude Sonnet 4.6 + adaptive thinking, system = ה־prompt הפעיל מ־`prompts` table, history = 30 הודעות אחרונות
+- **RLS**: תוחם ל־`authenticated` בלבד; outbound INSERT מותר רק עם `direction='outbound'`. inbound נכתבים דרך service_role בתוך ה־edge function.
+- **CI**: typecheck + lint + build על כל PR; vitest על queries/contexts/auth/KPIs (61 טסטים)
+- **Migrations**: 0001-0006 ב־`supabase/migrations/`
+- **Migrations + types sync**: `bun run db:apply` (Management API, ללא Docker) + `bun run db:types` (auto-gen)
 
 ### מה חסר
 
-- כל המסכים האמיתיים (כרגע EmptyState עבור 6 הדפים)
-- ניהול סוכנים ומשתמשים (Settings)
-- Prompts (קיימת טבלה ב-Supabase אבל ריקה)
-- n8n workflows (לא קיימים עדיין)
-- WhatsApp BSP (לא מחובר)
-- היסטוריית commits לא מסודרת (Lovable השאיר commits עם הודעה "Changes")
+- **Memory extractor** — קריאת Claude שנייה אחרי כל תור שמחלצת `q1_age`...`q6_investment`, `conversation_summary`, `primary_objection` ומעדכנת `lead_memory`. (תוכנן כ־Piece 2 בשלב 5.)
+- **Funnel/tag classifier אוטומטי** — היום `funnel_stage` ו־`current_tag` מתעדכנים ידנית או דרך seed; הסוכן עדיין לא מזיז אותם בעצמו.
+- **Zoom handoff** — הסוכן עדיין לא מסיים שיחה עם הודעת מסירה ומעבר ל־`status='paused'`.
+- **Calendar/Zoom integration** — Google Calendar API או Calendly. הסכימה כבר תומכת (`advisors.google_calendar_email`, `advisors.calendly_link`).
+- **Fireberry CRM** — webhook על escalation/zoom_scheduled. הסכימה תומכת (`advisors.fireberry_user_id`).
+- **Idempotency על inbound** — אין `meta_message_id UNIQUE` עדיין; אם Meta יעשה retry על אותה הודעה, היא תוכפל ב־DB.
+- **Realtime updates בדשבורד** — נדרש refresh ידני; Supabase Realtime על `messages` יוסיף הופעה מיידית.
+- **Production WABA** — היום בסנדבוקס בלבד (טלפון יחיד מוצמד צד־שרת). מעבר דרך `hookmyapp channels connect`.
+- **Docker / supabase functions serve** — אין Docker מקומית, אז ה־edge functions רצות רק בפרודקשן + proxy מקומי משלים את ה־tunnel. ניתן להחליף אם תותקן Docker.
+- **Multi-agent בפועל** — הסכימה תומכת אבל היום סוכן יחיד פעיל (`affiliate_marketing`). בסנדבוקס יש רק טלפון אחד אז אין דרך לבחון כפילות.
 
 ## תוכנית עבודה (PRs)
 
@@ -236,16 +283,29 @@ cp .env.example .env.local
 - [x] **PR 18** — `feat/analytics-screen`: A/B testing + objections + AI providers
 - [x] **PR 19** — `feat/prompts-sync`: file→DB sync script + first prompt for affiliate_marketing (migration 0006 — UNIQUE on prompts)
 
-### שלב 5: שילוב ⬅ אנחנו פה
+### שלב 5: שילוב WhatsApp + AI loop ⬅ אנחנו פה
 
-- [ ] n8n workflows (מחוץ לריפו, ב-n8n cloud)
-- [ ] סקריפט גיבוי n8n → git
-- [ ] WhatsApp BSP (360dialog/Wati)
-- [ ] Pilot עם 50 לידים
+ה־ארכיטקטורה של n8n הוחלפה ב־Supabase Edge Functions (החלטה #6). כל ה־AI loop גר בקוד.
+
+- [x] **PR 20** — `feat/whatsapp-hookmyapp-sandbox` (לא ממוזג עדיין):
+  - `whatsapp-webhook` edge function: HMAC verify + upsert conversation + insert inbound + autonomous Claude reply loop ברקע (Sonnet 4.6 + adaptive thinking)
+  - `whatsapp-send` edge function: שליחה ידנית מה־ReplyBox דרך HookMyApp (החלפת ה־insert הישיר)
+  - `_shared/auth.ts`: `requireUser` נוסף ל־`requireAdmin`
+  - HookMyApp sandbox מאומת end-to-end (ראה `supabase/functions/README.md`)
+- [ ] **Piece 2** — Memory extractor: קריאת Claude שנייה (JSON mode) שממלאת `lead_memory.q1..q6 + summary + tags + funnel_stage` אחרי כל תור
+- [ ] **Piece 3** — Zoom handoff placeholder: כשכל 5 השאלות נענו והליד מתאים → הודעת מסירה + `current_tag='zoom_scheduled'` + `assigned_advisor_id` + `status='paused'`
+- [ ] **Idempotency**: migration להוספת `meta_message_id UNIQUE` ל־`messages`
+- [ ] **Realtime**: Supabase channel על `messages` בדשבורד ConversationDetail
+- [ ] **Production WABA**: `hookmyapp channels connect`, החלפת ערכי `WHATSAPP_*`, רישום webhook ישיר על URL הפונקציה הפרוסה (בלי Cloudflare tunnel/proxy)
+- [ ] **Google Calendar / Calendly**: יצירת event אוטומטית כשהליד מגיע ל־`zoom_scheduled`
+- [ ] **Fireberry CRM**: webhook על escalation/zoom_scheduled
+- [ ] **Pilot עם 50 לידים** + הרחבה הדרגתית
 
 ### עזרי פיתוח
 
-- `bun run seed:test` / `seed:clear` — מאכלס/ננקה ~8 שיחות דמו תחת prefix `+97255500…` כדי שהדשבורד לא יהיה ריק לפני n8n.
+- `bun run seed:test` / `seed:clear` — מאכלס/ננקה ~8 שיחות דמו תחת prefix `+97255500…` כדי שהדשבורד לא יהיה ריק לפני זרם ייצור אמיתי.
+- `bunx supabase functions deploy <name> [--no-verify-jwt] --project-ref juoglkqtmjsziieqgmhf` — deploy של edge function ספציפית.
+- `bun run wa:proxy` ([scripts/wa-tunnel-proxy.mjs](./scripts/wa-tunnel-proxy.mjs)) — proxy מקומי קטן (Bun) שמעביר מ־`localhost:54321` ל־URL הפונקציה הפרוסה. דרוש בסנדבוקס כי `hookmyapp sandbox listen` תמיד מ־tunnel ל־localhost. דורש `SUPABASE_URL` ב־env. כשתותקן Docker (אז `bunx supabase functions serve` מספיק) או נעבור לפרוד עם WABA אמיתי — לא נחוץ.
 
 ## הקשר עסקי
 
@@ -263,7 +323,7 @@ cp .env.example .env.local
 - **זהות**: נציג קשר אנונימי, לא AI ולא בשם נציג ספציפי.
 - **גבולות קשיחים**: אסור לציין מחירים, אסור להבטיח הכנסות, אסור להמציא פרטים, אסור לשלוח לינקים שלא אושרו.
 
-ראה את ה-Prompt המלא ב-`prompts/affiliate_marketing/v1.md` (כשייווצר).
+ראה את ה־Prompt המלא ב־[prompts/affiliate_marketing/main/v1.md](./prompts/affiliate_marketing/main/v1.md) — מסונכרן ל־`prompts` table דרך `bun run prompts:sync` ונטען על ידי `whatsapp-webhook` בכל תור.
 
 ## נקודות מסוכנות
 
@@ -272,6 +332,10 @@ cp .env.example .env.local
 - **Multi-tenancy**: כל קוד צריך להיות agent-aware (מסונן לפי `activeAgent.id`). אסור להניח סוכן יחיד.
 - **Prompt = רגיש**. שינוי בלא בדיקה יכול לגרום לבוט לדבר באופן שגוי. תמיד PR-review.
 - **RLS**: בלי policies נכונות, anon read מחזיר רשימה ריקה. בדוק policies אחרי כל שינוי סכמה.
+- **Sandbox session rotation**: ה־`VERIFY_TOKEN` של HookMyApp sandbox מתחלף כשסשן מתחדש. אחרי `hookmyapp sandbox start` חדש — `bunx supabase secrets set --env-file .env.functions.local` מחדש, אחרת חתימות יידחו עם 401.
+- **Idempotency חסר**: אם Meta יעשה retry על אותה הודעה לפני שנוסיף `meta_message_id UNIQUE`, היא תוכפל ב־DB ויגרום לתגובה כפולה של הבוט. לא קריטי בנפח סנדבוקס; חובה לפני production.
+- **Service-role באלה־פונקציה**: `whatsapp-webhook` רץ עם service_role (עוקף RLS). שורות inbound נכתבות ישירות. לא לחשוף את ה־service_role בקוד הקליינט בשום צורה.
+- **`--no-verify-jwt` על `whatsapp-webhook`**: הפונקציה ציבורית. ההגנה היחידה היא חתימת HMAC. אם ה־`VERIFY_TOKEN` דולף, כל אחד יכול להזריק הודעות. ל־rotation: `hookmyapp sandbox start` חדש או `hookmyapp webhook set <waba-id> --verify-token <new>` בפרוד.
 
 ## חומרי עזר
 

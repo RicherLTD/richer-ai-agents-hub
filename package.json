@@ -16,7 +16,8 @@
     "fn:deploy": "bunx supabase functions deploy",
     "prompts:sync": "bun run scripts/prompts/sync.ts",
     "seed:test": "bun run scripts/seed/test-conversations.ts",
-    "seed:clear": "bun run scripts/seed/test-conversations.ts clear"
+    "seed:clear": "bun run scripts/seed/test-conversations.ts clear",
+    "wa:proxy": "bun run scripts/wa-tunnel-proxy.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
