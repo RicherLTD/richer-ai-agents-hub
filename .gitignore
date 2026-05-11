@@ -12,6 +12,13 @@ dist
 dist-ssr
 *.local
 
+# Env files
+# .env is committed and holds public Vite vars (VITE_SUPABASE_URL,
+# VITE_SUPABASE_ANON_KEY) — these are designed by Supabase to be public.
+# Local-only secrets (SUPABASE_ACCESS_TOKEN, etc.) live in .env.local.
+.env.local
+.env.*.local
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
@@ -22,3 +29,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Claude Code internals (worktrees, session state, etc.)
+.claude/
