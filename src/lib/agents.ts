@@ -1,24 +1,23 @@
+import { supabase } from "./supabase/client";
 import type { Agent } from "@/types/agent";
 
 /**
- * Static agent list — placeholder until Lovable Cloud / Supabase is wired up.
- * Replace `getAgents` with a Supabase query later; the rest of the app stays the same.
+ * Fetch all active agents from Supabase.
+ *
+ * RLS (see `supabase/migrations/0002_auth_rls_update.sql`) already restricts
+ * this to `status = 'active'` rows for authenticated users, but we keep the
+ * explicit `.eq` here so the intent is local to this query — if RLS ever
+ * loosens, behaviour stays predictable.
  */
-const STATIC_AGENTS: Agent[] = [
-  {
-    id: "affiliate-marketing-siton",
-    name: "affiliate_marketing",
-    display_name: "שיווק שותפים — האחים סיטון",
-    description: "סוכן AI לטיפול בלידים מפאנל שיווק שותפים של האחים סיטון",
-    brand_color: "#451470",
-    status: "active",
-    primary_goal: "סגירת פגישות ייעוץ עם לידים מתעניינים",
-    product_info: null,
-    whatsapp_number: null,
-    source_funnels: [],
-  },
-];
-
 export async function getAgents(): Promise<Agent[]> {
-  return STATIC_AGENTS;
+  const { data, error } = await supabase
+    .from("agents")
+    .select("*")
+    .eq("status", "active")
+    .order("display_name");
+
+  if (error) {
+    throw new Error(`Failed to load agents: ${error.message}`);
+  }
+  return data ?? [];
 }

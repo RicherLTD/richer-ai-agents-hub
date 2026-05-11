@@ -10,7 +10,14 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:apply": "bun run scripts/db/apply.ts",
+    "db:types": "bunx supabase gen types typescript --linked --schema public > src/types/database.ts",
+    "fn:deploy": "bunx supabase functions deploy",
+    "prompts:sync": "bun run scripts/prompts/sync.ts",
+    "seed:test": "bun run scripts/seed/test-conversations.ts",
+    "seed:clear": "bun run scripts/seed/test-conversations.ts clear",
+    "wa:proxy": "bun run scripts/wa-tunnel-proxy.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -41,6 +48,7 @@
     "@radix-ui/react-toggle": "^1.1.9",
     "@radix-ui/react-toggle-group": "^1.1.10",
     "@radix-ui/react-tooltip": "^1.2.7",
+    "@supabase/supabase-js": "^2.105.1",
     "@tanstack/react-query": "^5.83.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -80,6 +88,7 @@
     "jsdom": "^20.0.3",
     "lovable-tagger": "^1.1.13",
     "postcss": "^8.5.6",
+    "supabase": "^2.95.6",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
     "typescript-eslint": "^8.38.0",
