@@ -1,3 +1,4 @@
 {
-  "main": "v1"
+  "main": "v1",
+  "memory_extractor": "v1"
 }

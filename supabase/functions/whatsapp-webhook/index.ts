@@ -548,6 +548,21 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     costUsd,
     latencyMs,
   });
+
+  // Memory extraction runs after the reply has shipped. The lead has
+  // already received their message — this is pure analytics + tag
+  // routing. Build the history "post-reply" so the extractor sees the
+  // full turn including the bot's reply.
+  await runMemoryExtraction({
+    admin: ctx.admin,
+    anthropic: ctx.anthropic,
+    agentId: ctx.agentId,
+    conversationId: ctx.conversationId,
+    claudeMessages: [
+      ...turn.claudeMessages,
+      { role: "assistant", content: validation.text },
+    ],
+  });
 }
 
 interface EdgeRuntimeShape {
