@@ -627,15 +627,33 @@ Deno.serve(async (req) => {
   // HookMyApp sandbox sends `X-HookMyApp-Signature-256`. Both are
   // sha256=HEX with the same body, and we treat VERIFY_TOKEN as the
   // shared HMAC secret in both cases.
+  //
+  // Behaviour on missing/invalid signature: respond 200 but DO NOT
+  // process the payload. The HookMyApp setup flow does a "POST
+  // verification" ping without a signature and requires a 2xx response
+  // for the URL to save. Returning 401 there used to block the
+  // configuration step entirely. Real WhatsApp deliveries always
+  // include a valid signature; anything without one is dropped here
+  // before it can reach the agent loop.
   const signature = req.headers.get("X-Hub-Signature-256")
     || req.headers.get("X-HookMyApp-Signature-256");
-  if (!signature) {
-    return new Response("Missing signature", { status: 401 });
+
+  let signatureValid = false;
+  if (signature && rawBody) {
+    const expected = "sha256=" + (await hmacSha256Hex(verifyToken, rawBody));
+    signatureValid = timingSafeEqual(signature, expected);
   }
-  const expected = "sha256=" + (await hmacSha256Hex(verifyToken, rawBody));
-  if (!timingSafeEqual(signature, expected)) {
-    console.warn("whatsapp-webhook: invalid signature");
-    return new Response("Invalid signature", { status: 401 });
+  if (!signatureValid) {
+    if (rawBody) {
+      console.warn("whatsapp-webhook: POST without valid signature; payload dropped", {
+        bodyLen: rawBody.length,
+        hasSignature: !!signature,
+      });
+    }
+    return new Response(JSON.stringify({ status: "ok" }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   let payload: MetaPayload;
