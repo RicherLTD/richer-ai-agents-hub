@@ -336,6 +336,57 @@ export type Database = {
           },
         ]
       }
+      error_logs: {
+        Row: {
+          agent_id: string | null
+          context: Json
+          conversation_id: string | null
+          created_at: string
+          error_type: string
+          id: string
+          level: string
+          message: string
+          source: string
+        }
+        Insert: {
+          agent_id?: string | null
+          context?: Json
+          conversation_id?: string | null
+          created_at?: string
+          error_type: string
+          id?: string
+          level?: string
+          message: string
+          source: string
+        }
+        Update: {
+          agent_id?: string | null
+          context?: Json
+          conversation_id?: string | null
+          created_at?: string
+          error_type?: string
+          id?: string
+          level?: string
+          message?: string
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "error_logs_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "error_logs_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       experiments: {
         Row: {
           agent_id: string | null
@@ -373,6 +424,69 @@ export type Database = {
             columns: ["agent_id"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      failed_messages: {
+        Row: {
+          agent_id: string | null
+          conversation_id: string | null
+          created_at: string
+          error_detail: string | null
+          error_type: string
+          id: string
+          last_retry_at: string | null
+          payload: Json
+          resolution_note: string | null
+          resolved_at: string | null
+          resolved_by: string | null
+          retry_count: number
+          source: string
+        }
+        Insert: {
+          agent_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          error_detail?: string | null
+          error_type: string
+          id?: string
+          last_retry_at?: string | null
+          payload?: Json
+          resolution_note?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          retry_count?: number
+          source: string
+        }
+        Update: {
+          agent_id?: string | null
+          conversation_id?: string | null
+          created_at?: string
+          error_detail?: string | null
+          error_type?: string
+          id?: string
+          last_retry_at?: string | null
+          payload?: Json
+          resolution_note?: string | null
+          resolved_at?: string | null
+          resolved_by?: string | null
+          retry_count?: number
+          source?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "failed_messages_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "failed_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
             referencedColumns: ["id"]
           },
         ]
@@ -453,6 +567,7 @@ export type Database = {
           direction: Database["public"]["Enums"]["message_direction_enum"]
           id: string
           message_type: Database["public"]["Enums"]["message_type_enum"] | null
+          meta_message_id: string | null
           raw_media_url: string | null
           timestamp: string | null
           tokens_used: number | null
@@ -464,6 +579,7 @@ export type Database = {
           direction: Database["public"]["Enums"]["message_direction_enum"]
           id?: string
           message_type?: Database["public"]["Enums"]["message_type_enum"] | null
+          meta_message_id?: string | null
           raw_media_url?: string | null
           timestamp?: string | null
           tokens_used?: number | null
@@ -475,6 +591,7 @@ export type Database = {
           direction?: Database["public"]["Enums"]["message_direction_enum"]
           id?: string
           message_type?: Database["public"]["Enums"]["message_type_enum"] | null
+          meta_message_id?: string | null
           raw_media_url?: string | null
           timestamp?: string | null
           tokens_used?: number | null
