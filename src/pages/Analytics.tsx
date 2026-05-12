@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart3, FlaskConical } from "lucide-react";
 import { AiProviderBreakdown } from "@/components/analytics/AiProviderBreakdown";
+import { CostLatencyDashboard } from "@/components/analytics/CostLatencyDashboard";
 import { ExperimentCard } from "@/components/analytics/ExperimentCard";
 import { ObjectionBreakdownChart } from "@/components/analytics/ObjectionBreakdown";
 import { SecondaryObjectionsList } from "@/components/analytics/SecondaryObjectionsList";
@@ -9,6 +10,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAgent } from "@/contexts/AgentContext";
 import { getAnalytics } from "@/lib/analytics";
+import { getOperationsMetrics } from "@/lib/operations";
 
 const Analytics = () => {
   const { activeAgent, isLoading: isAgentLoading } = useAgent();
@@ -16,6 +18,12 @@ const Analytics = () => {
   const analyticsQuery = useQuery({
     queryKey: ["analytics", activeAgent?.id] as const,
     queryFn: () => getAnalytics(activeAgent!.id),
+    enabled: Boolean(activeAgent?.id),
+  });
+
+  const operationsQuery = useQuery({
+    queryKey: ["operations", activeAgent?.id] as const,
+    queryFn: () => getOperationsMetrics(activeAgent!.id),
     enabled: Boolean(activeAgent?.id),
   });
 
@@ -37,6 +45,16 @@ const Analytics = () => {
       {analyticsQuery.error && (
         <p className="text-sm text-destructive">שגיאה בטעינה: {analyticsQuery.error.message}</p>
       )}
+      {operationsQuery.error && (
+        <p className="text-sm text-destructive">
+          שגיאה בטעינת מטריקות תפעול: {operationsQuery.error.message}
+        </p>
+      )}
+
+      <CostLatencyDashboard
+        metrics={operationsQuery.data}
+        isLoading={operationsQuery.isLoading}
+      />
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">

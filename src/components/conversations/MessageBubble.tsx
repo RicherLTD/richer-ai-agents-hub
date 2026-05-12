@@ -2,6 +2,7 @@ import { format } from "date-fns";
 import { he } from "date-fns/locale";
 import { cn } from "@/lib/utils";
 import type { Message } from "@/types/message";
+import { hasDebugInfo, MessageDebugPopover } from "./MessageDebugPopover";
 
 function formatTime(value: string | null): string {
   if (!value) return "";
@@ -13,6 +14,7 @@ function formatTime(value: string | null): string {
 export function MessageBubble({ message }: { message: Message }) {
   const isOutbound = message.direction === "outbound";
   const content = message.content?.trim() || "(הודעה ריקה)";
+  const showDebug = isOutbound && hasDebugInfo(message);
 
   return (
     <div className={cn("flex w-full", isOutbound ? "justify-end" : "justify-start")}>
@@ -27,11 +29,17 @@ export function MessageBubble({ message }: { message: Message }) {
         <p className="whitespace-pre-wrap break-words">{content}</p>
         <div
           className={cn(
-            "mt-1 text-[10px] tabular-nums",
+            "mt-1 flex items-center gap-2 text-[10px] tabular-nums",
             isOutbound ? "text-primary-foreground/70" : "text-muted-foreground",
           )}
         >
-          {formatTime(message.timestamp)}
+          <span>{formatTime(message.timestamp)}</span>
+          {showDebug && (
+            <MessageDebugPopover
+              message={message}
+              bubbleTone={isOutbound ? "primary" : "muted"}
+            />
+          )}
         </div>
       </div>
     </div>
