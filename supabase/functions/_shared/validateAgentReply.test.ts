@@ -70,3 +70,51 @@ describe("validateAgentReply", () => {
     expect(result.ok).toBe(true);
   });
 });
+
+describe("validateAgentReply — hallucination guards", () => {
+  it("blocks AI brand leaks (ChatGPT, Claude, OpenAI)", () => {
+    expect(validateAgentReply("היי, אני נציג של ChatGPT").ok).toBe(false);
+    expect(validateAgentReply("בעזרת Claude נוכל לעזור לך").ok).toBe(false);
+    expect(validateAgentReply("אני מ-OpenAI").ok).toBe(false);
+  });
+
+  it("blocks Hebrew AI self-disclosure", () => {
+    expect(validateAgentReply("שלום, אני AI").ok).toBe(false);
+    expect(validateAgentReply("אני בוט שמטפל בפניות").ok).toBe(false);
+    expect(validateAgentReply("אני מודל שפה ולא יכול לענות").ok).toBe(false);
+    expect(validateAgentReply("אני בינה מלאכותית ובאתי לעזור").ok).toBe(false);
+  });
+
+  it("blocks currency mentions (₪, $, ש\"ח, שקלים)", () => {
+    expect(validateAgentReply("העלות היא 5000 ש\"ח לחודש").ok).toBe(false);
+    expect(validateAgentReply("המסלול עולה 1000₪").ok).toBe(false);
+    expect(validateAgentReply("רק ב-$100").ok).toBe(false);
+    expect(validateAgentReply("תקבל 10,000 שקלים בחודש").ok).toBe(false);
+  });
+
+  it("blocks income guarantee language", () => {
+    expect(validateAgentReply("אני מבטיח לך שתרוויח").ok).toBe(false);
+    expect(validateAgentReply("יש לנו ערבות מלאה").ok).toBe(false);
+    expect(validateAgentReply("התוצאה מובטחת").ok).toBe(false);
+  });
+
+  it("does not false-positive on legitimate Hebrew replies", () => {
+    expect(validateAgentReply("שלום! אשמח לשמוע איך אפשר לעזור.").ok).toBe(true);
+    expect(validateAgentReply("ספר לי קצת על עצמך — כמה אתה בן?").ok).toBe(true);
+    expect(
+      validateAgentReply(
+        "התוכנית שלנו עוזרת לאנשים לבנות הכנסה נוספת. בוא נדבר בזום עם יועץ.",
+      ).ok,
+    ).toBe(true);
+  });
+
+  it("returns a specific hallucination reason in the error", () => {
+    const r1 = validateAgentReply("אני AI");
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.reason).toContain("hallucination_hebrew_ai_self_disclosure");
+
+    const r2 = validateAgentReply("5000 ש\"ח");
+    expect(r2.ok).toBe(false);
+    if (!r2.ok) expect(r2.reason).toContain("hallucination_currency_mention");
+  });
+});
