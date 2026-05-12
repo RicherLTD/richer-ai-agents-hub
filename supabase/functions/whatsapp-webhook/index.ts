@@ -482,23 +482,41 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   // exactly what we want to see in Langfuse so the operator can debug.
   let langfuseTraceId: string | null = null;
   if (ctx.langfuse) {
-    langfuseTraceId = await ctx.langfuse.traceAgentTurn({
-      agentId: ctx.agentId,
-      conversationId: ctx.conversationId,
-      leadPhone: ctx.leadPhone,
-      promptVersion: turn.promptVersion,
-      promptVersionId: turn.promptVersionId,
-      model: CLAUDE_MODEL,
-      systemPrompt: turn.promptContent,
-      claudeMessages: turn.claudeMessages,
-      startTime,
-      endTime,
-      output: validation.ok
-        ? validation.text
-        : `(invalid: ${validation.reason})`,
-      usage,
-      failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
-    });
+    langfuseTraceId = await ctx.langfuse.traceAgentTurn(
+      {
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+        leadPhone: ctx.leadPhone,
+        promptVersion: turn.promptVersion,
+        promptVersionId: turn.promptVersionId,
+        model: CLAUDE_MODEL,
+        systemPrompt: turn.promptContent,
+        claudeMessages: turn.claudeMessages,
+        startTime,
+        endTime,
+        output: validation.ok
+          ? validation.text
+          : `(invalid: ${validation.reason})`,
+        usage,
+        failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
+      },
+      async (detail) => {
+        await logError({
+          admin: ctx.admin,
+          source: AGENT_LOOP_SOURCE,
+          errorType: "langfuse_ingestion_failed",
+          level: "warn",
+          message: `Langfuse ingestion failed status=${detail.status}`,
+          context: {
+            status: detail.status,
+            body: detail.body,
+            prompt_version: turn.promptVersion,
+          },
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        });
+      },
+    );
   }
 
   if (!validation.ok) {

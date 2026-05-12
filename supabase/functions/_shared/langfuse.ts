@@ -67,8 +67,16 @@ export class Langfuse {
   /**
    * Record one agent turn as a trace + generation in Langfuse Cloud.
    * Returns the trace id on success, null on any failure.
+   *
+   * Failure details are returned via the optional `onFailure` callback so
+   * the caller can route them to error_logs (Supabase MCP get_logs only
+   * exposes top-level HTTP request logs, not stderr from inside the
+   * fire-and-forget background task).
    */
-  async traceAgentTurn(input: AgentTurnTraceInput): Promise<string | null> {
+  async traceAgentTurn(
+    input: AgentTurnTraceInput,
+    onFailure?: (detail: { status: number; body: string }) => Promise<void> | void,
+  ): Promise<string | null> {
     const traceId = crypto.randomUUID();
     const generationId = crypto.randomUUID();
     const lastUserMessage = input.claudeMessages[input.claudeMessages.length - 1]?.content
@@ -136,18 +144,16 @@ export class Langfuse {
       });
       if (!response.ok) {
         const errBody = await response.text().catch(() => "");
-        console.warn(
-          `[langfuse] ingestion failed status=${response.status}: ${errBody.slice(0, 300)}`,
-        );
+        const detail = { status: response.status, body: errBody.slice(0, 500) };
+        console.warn(`[langfuse] ingestion failed`, detail);
+        if (onFailure) await onFailure(detail);
         return null;
       }
       return traceId;
     } catch (err) {
-      console.warn(
-        `[langfuse] exception during ingestion: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[langfuse] exception during ingestion: ${msg}`);
+      if (onFailure) await onFailure({ status: 0, body: msg });
       return null;
     }
   }
