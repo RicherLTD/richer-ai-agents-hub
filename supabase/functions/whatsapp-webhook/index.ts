@@ -593,8 +593,26 @@ Deno.serve(async (req) => {
     return new Response("Server misconfigured", { status: 500 });
   }
 
-  // GET = HookMyApp verification challenge — echo VERIFY_TOKEN.
+  // GET verification — supports two patterns:
+  // 1. Meta Cloud API style: ?hub.mode=subscribe&hub.verify_token=X&hub.challenge=Y
+  //    → verify token matches, echo the `hub.challenge` back as the body.
+  // 2. HookMyApp sandbox style (or any caller without query params):
+  //    → echo the VERIFY_TOKEN itself, which is what the sandbox expects.
   if (req.method === "GET") {
+    const url = new URL(req.url);
+    const challenge = url.searchParams.get("hub.challenge");
+    const token = url.searchParams.get("hub.verify_token");
+
+    if (challenge !== null) {
+      if (token !== null && token !== verifyToken) {
+        console.warn("whatsapp-webhook: GET challenge with bad verify_token");
+        return new Response("Forbidden", { status: 403 });
+      }
+      return new Response(challenge, {
+        status: 200,
+        headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+      });
+    }
     return new Response(verifyToken, {
       status: 200,
       headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
@@ -605,7 +623,12 @@ Deno.serve(async (req) => {
   }
 
   const rawBody = await req.text();
-  const signature = req.headers.get("X-HookMyApp-Signature-256");
+  // Accept either header — Meta Cloud API sends `X-Hub-Signature-256`,
+  // HookMyApp sandbox sends `X-HookMyApp-Signature-256`. Both are
+  // sha256=HEX with the same body, and we treat VERIFY_TOKEN as the
+  // shared HMAC secret in both cases.
+  const signature = req.headers.get("X-Hub-Signature-256")
+    || req.headers.get("X-HookMyApp-Signature-256");
   if (!signature) {
     return new Response("Missing signature", { status: 401 });
   }
