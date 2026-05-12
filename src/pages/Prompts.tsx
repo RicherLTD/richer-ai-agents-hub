@@ -1,11 +1,21 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { he } from "date-fns/locale";
-import { Eye, FileText } from "lucide-react";
+import { Eye, FileText, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
 import { PromptViewDialog } from "@/components/prompts/PromptViewDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -13,7 +23,8 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAgent } from "@/contexts/AgentContext";
-import { getDistinctPromptTypes, getPrompts } from "@/lib/prompts";
+import { useAuth } from "@/contexts/AuthContext";
+import { getDistinctPromptTypes, getPrompts, setActivePromptVersion } from "@/lib/prompts";
 import type { Prompt } from "@/types/prompt";
 
 function formatDate(value: string | null): string {
@@ -24,9 +35,13 @@ function formatDate(value: string | null): string {
 
 const Prompts = () => {
   const { activeAgent, isLoading: isAgentLoading } = useAgent();
+  const { isAdmin } = useAuth();
+  const queryClient = useQueryClient();
   const [promptType, setPromptType] = useState<string>("all");
   const [activeOnly, setActiveOnly] = useState(false);
   const [viewing, setViewing] = useState<Prompt | null>(null);
+  const [activating, setActivating] = useState<Prompt | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
 
   const promptsQuery = useQuery({
     queryKey: ["prompts", activeAgent?.id, promptType, activeOnly] as const,
@@ -43,6 +58,18 @@ const Prompts = () => {
     queryKey: ["prompt-types", activeAgent?.id] as const,
     queryFn: () => getDistinctPromptTypes(activeAgent!.id),
     enabled: Boolean(activeAgent?.id),
+  });
+
+  const activateMutation = useMutation({
+    mutationFn: (promptId: string) => setActivePromptVersion(promptId),
+    onSuccess: () => {
+      setActivating(null);
+      setMutationError(null);
+      void queryClient.invalidateQueries({ queryKey: ["prompts"] });
+    },
+    onError: (err) => {
+      setMutationError(err instanceof Error ? err.message : String(err));
+    },
   });
 
   if (isAgentLoading) return null;
@@ -135,14 +162,30 @@ const Prompts = () => {
                       {formatDate(p.created_at)}
                     </TableCell>
                     <TableCell>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => setViewing(p)}
-                        aria-label="צפייה"
-                      >
-                        <Eye className="h-4 w-4" />
-                      </Button>
+                      <div className="flex items-center gap-1">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => setViewing(p)}
+                          aria-label="צפייה"
+                        >
+                          <Eye className="h-4 w-4" />
+                        </Button>
+                        {isAdmin && !p.is_active && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => {
+                              setMutationError(null);
+                              setActivating(p);
+                            }}
+                            aria-label="הפעל גרסה זו"
+                            title="הפעל גרסה זו"
+                          >
+                            <RotateCcw className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
                     </TableCell>
                   </TableRow>
                 ))
@@ -153,6 +196,53 @@ const Prompts = () => {
       )}
 
       <PromptViewDialog prompt={viewing} onClose={() => setViewing(null)} />
+
+      <AlertDialog
+        open={activating !== null}
+        onOpenChange={(open) => {
+          if (!open) {
+            setActivating(null);
+            setMutationError(null);
+          }
+        }}
+      >
+        <AlertDialogContent dir="rtl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>להפעיל גרסה זו של ה־prompt?</AlertDialogTitle>
+            <AlertDialogDescription>
+              {activating && (
+                <>
+                  הבוט יעבור לעבוד עם{" "}
+                  <code dir="ltr" className="font-mono text-xs">
+                    {activating.prompt_type} / {activating.version}
+                  </code>{" "}
+                  בתור הבא. הגרסה הפעילה הקודמת תסומן כלא פעילה אך תישאר בהיסטוריה.
+                </>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {mutationError && (
+            <p className="text-sm text-destructive" dir="rtl">
+              {mutationError}
+            </p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={activateMutation.isPending}>ביטול</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={activateMutation.isPending}
+              onClick={(e) => {
+                // Prevent the dialog from closing immediately so we can
+                // show the error if the mutation fails.
+                e.preventDefault();
+                if (!activating) return;
+                activateMutation.mutate(activating.id);
+              }}
+            >
+              {activateMutation.isPending ? "מפעיל…" : "כן, הפעל"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
