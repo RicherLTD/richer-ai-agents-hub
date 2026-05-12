@@ -564,36 +564,51 @@ export type Database = {
           ai_processing_time_ms: number | null
           content: string | null
           conversation_id: string | null
+          cost_usd: number | null
           direction: Database["public"]["Enums"]["message_direction_enum"]
           id: string
+          langfuse_trace_id: string | null
           message_type: Database["public"]["Enums"]["message_type_enum"] | null
           meta_message_id: string | null
+          prompt_version_id: string | null
           raw_media_url: string | null
           timestamp: string | null
+          tokens_input: number | null
+          tokens_output: number | null
           tokens_used: number | null
         }
         Insert: {
           ai_processing_time_ms?: number | null
           content?: string | null
           conversation_id?: string | null
+          cost_usd?: number | null
           direction: Database["public"]["Enums"]["message_direction_enum"]
           id?: string
+          langfuse_trace_id?: string | null
           message_type?: Database["public"]["Enums"]["message_type_enum"] | null
           meta_message_id?: string | null
+          prompt_version_id?: string | null
           raw_media_url?: string | null
           timestamp?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
           tokens_used?: number | null
         }
         Update: {
           ai_processing_time_ms?: number | null
           content?: string | null
           conversation_id?: string | null
+          cost_usd?: number | null
           direction?: Database["public"]["Enums"]["message_direction_enum"]
           id?: string
+          langfuse_trace_id?: string | null
           message_type?: Database["public"]["Enums"]["message_type_enum"] | null
           meta_message_id?: string | null
+          prompt_version_id?: string | null
           raw_media_url?: string | null
           timestamp?: string | null
+          tokens_input?: number | null
+          tokens_output?: number | null
           tokens_used?: number | null
         }
         Relationships: [
@@ -602,6 +617,13 @@ export type Database = {
             columns: ["conversation_id"]
             isOneToOne: false
             referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "messages_prompt_version_id_fkey"
+            columns: ["prompt_version_id"]
+            isOneToOne: false
+            referencedRelation: "prompts"
             referencedColumns: ["id"]
           },
         ]
