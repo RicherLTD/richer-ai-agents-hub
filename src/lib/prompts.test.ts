@@ -136,3 +136,97 @@ describe("getDistinctPromptTypes", () => {
     );
   });
 });
+
+import { setActivePromptVersion } from "./prompts";
+
+describe("setActivePromptVersion", () => {
+  function selectChain(result: { data: unknown; error: unknown }) {
+    const chain = {
+      select: vi.fn(() => chain),
+      eq: vi.fn(() => chain),
+      maybeSingle: vi.fn(() => Promise.resolve(result)),
+    };
+    return chain;
+  }
+  function updateChain(result: { error: unknown }) {
+    const chain = {
+      update: vi.fn(() => chain),
+      eq: vi.fn(() => chain),
+      neq: vi.fn(() => Promise.resolve(result)),
+    };
+    return chain;
+  }
+  function finalUpdateChain(result: { error: unknown }) {
+    const chain = {
+      update: vi.fn(() => chain),
+      eq: vi.fn(() => Promise.resolve(result)),
+    };
+    return chain;
+  }
+
+  it("returns early when the target is already active", async () => {
+    const select = selectChain({
+      data: { agent_id: "a1", prompt_type: "main", is_active: true },
+      error: null,
+    });
+    fromMock.mockReturnValueOnce(select);
+
+    await setActivePromptVersion("prompt-x");
+
+    // Only the SELECT happened — no update chains were requested.
+    expect(fromMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("throws when the target prompt is not found", async () => {
+    fromMock.mockReturnValueOnce(selectChain({ data: null, error: null }));
+    await expect(setActivePromptVersion("missing")).rejects.toThrow("Prompt not found");
+  });
+
+  it("happy path: deactivates siblings then activates the target", async () => {
+    fromMock
+      .mockReturnValueOnce(
+        selectChain({
+          data: { agent_id: "a1", prompt_type: "main", is_active: false },
+          error: null,
+        }),
+      )
+      .mockReturnValueOnce(updateChain({ error: null }))
+      .mockReturnValueOnce(finalUpdateChain({ error: null }));
+
+    await setActivePromptVersion("prompt-x");
+
+    // Three from("prompts") calls: select, deactivate-siblings, activate-target.
+    expect(fromMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("wraps deactivation errors", async () => {
+    fromMock
+      .mockReturnValueOnce(
+        selectChain({
+          data: { agent_id: "a1", prompt_type: "main", is_active: false },
+          error: null,
+        }),
+      )
+      .mockReturnValueOnce(updateChain({ error: { message: "deactivate boom" } }));
+
+    await expect(setActivePromptVersion("prompt-x")).rejects.toThrow(
+      /Failed to deactivate sibling versions: deactivate boom/,
+    );
+  });
+
+  it("wraps activation errors", async () => {
+    fromMock
+      .mockReturnValueOnce(
+        selectChain({
+          data: { agent_id: "a1", prompt_type: "main", is_active: false },
+          error: null,
+        }),
+      )
+      .mockReturnValueOnce(updateChain({ error: null }))
+      .mockReturnValueOnce(finalUpdateChain({ error: { message: "activate boom" } }));
+
+    await expect(setActivePromptVersion("prompt-x")).rejects.toThrow(
+      /Failed to activate target version: activate boom/,
+    );
+  });
+});
