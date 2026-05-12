@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle } from "lucide-react";
+import { useEffect } from "react";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getConversationById } from "@/lib/conversations";
 import { getLeadMemory } from "@/lib/lead-memory";
 import { getMessagesForConversation, sendOutboundMessage } from "@/lib/messages";
+import { supabase } from "@/lib/supabase/client";
 import { ConversationDetailHeader } from "./ConversationDetailHeader";
 import { LeadMemoryPanel } from "./LeadMemoryPanel";
 import { MessageThread } from "./MessageThread";
@@ -16,6 +18,39 @@ interface Props {
 
 export function ConversationDetail({ conversationId }: Props) {
   const queryClient = useQueryClient();
+
+  // Realtime: refetch messages whenever a new row lands for this
+  // conversation. Both inbound (Meta → edge function) and outbound
+  // (agent reply / dashboard ReplyBox) hit `messages` directly, so this
+  // single subscription covers every visible update without polling.
+  useEffect(() => {
+    const channel = supabase
+      .channel(`messages:${conversationId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "messages",
+          filter: `conversation_id=eq.${conversationId}`,
+        },
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: ["conversation", conversationId, "messages"],
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["conversation", conversationId],
+          });
+          void queryClient.invalidateQueries({
+            queryKey: ["conversation", conversationId, "memory"],
+          });
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [conversationId, queryClient]);
 
   const conversationQuery = useQuery({
     queryKey: ["conversation", conversationId] as const,

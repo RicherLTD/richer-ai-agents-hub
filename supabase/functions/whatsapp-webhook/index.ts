@@ -42,6 +42,12 @@ import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
+import {
+  type AnthropicUsage,
+  computeSonnet46Cost,
+  Langfuse,
+  langfuseFromEnv,
+} from "../_shared/langfuse.ts";
 
 const SOURCE = "whatsapp-webhook";
 const AGENT_LOOP_SOURCE = "agent-loop";
@@ -80,8 +86,15 @@ interface AnthropicContentBlock {
 }
 interface AnthropicMessageResponse {
   content: ReadonlyArray<AnthropicContentBlock>;
-  usage?: { input_tokens?: number; output_tokens?: number };
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
+  };
 }
+
+const CLAUDE_MODEL = "claude-sonnet-4-6";
 
 interface HistoryRow {
   direction: "inbound" | "outbound";
@@ -156,11 +169,15 @@ interface AgentLoopCtx {
   leadPhone: string;
   anthropic: Anthropic;
   hookmyapp: HookMyAppCreds;
+  /** Optional — when present, every Claude turn is traced. */
+  langfuse: Langfuse | null;
 }
 
 interface AgentTurnContext {
   promptContent: string;
   promptVersion: string;
+  /** UUID `prompts.id` — saved on the outbound row for replay/diff. */
+  promptVersionId: string;
   claudeMessages: Array<{ role: "user" | "assistant"; content: string }>;
 }
 
@@ -210,7 +227,7 @@ async function loadAgentTurnContext(
 ): Promise<AgentTurnContext | null> {
   const { data: prompt, error: promptErr } = await ctx.admin
     .from("prompts")
-    .select("content, version")
+    .select("id, content, version")
     .eq("agent_id", ctx.agentId)
     .eq("is_active", true)
     .order("created_at", { ascending: false })
@@ -227,13 +244,19 @@ async function loadAgentTurnContext(
     return null;
   }
   if (typeof prompt.content !== "string" || prompt.content.length === 0 ||
-      typeof prompt.version !== "string" || prompt.version.length === 0) {
+      typeof prompt.version !== "string" || prompt.version.length === 0 ||
+      typeof prompt.id !== "string" || prompt.id.length === 0) {
     await logAndDlq(
       ctx,
       "prompt_content_missing",
-      "active prompt row has empty content or version",
+      "active prompt row has empty content / version / id",
       null,
-      { lead_phone: ctx.leadPhone, has_content: typeof prompt.content === "string", has_version: typeof prompt.version === "string" },
+      {
+        lead_phone: ctx.leadPhone,
+        has_content: typeof prompt.content === "string",
+        has_version: typeof prompt.version === "string",
+        has_id: typeof prompt.id === "string",
+      },
     );
     return null;
   }
@@ -278,8 +301,20 @@ async function loadAgentTurnContext(
   return {
     promptContent: prompt.content,
     promptVersion: prompt.version,
+    promptVersionId: prompt.id,
     claudeMessages,
   };
+}
+
+interface OutboundTrace {
+  metaMessageId: string | null;
+  promptVersion: string;
+  promptVersionId: string;
+  langfuseTraceId: string | null;
+  tokensInput: number | null;
+  tokensOutput: number | null;
+  costUsd: number | null;
+  latencyMs: number | null;
 }
 
 /**
@@ -291,8 +326,7 @@ async function loadAgentTurnContext(
 async function recordOutbound(
   ctx: AgentLoopCtx,
   replyText: string,
-  metaMessageId: string | null,
-  promptVersion: string,
+  trace: OutboundTrace,
 ): Promise<void> {
   const ts = new Date().toISOString();
   const { error: insErr } = await ctx.admin.from("messages").insert({
@@ -301,7 +335,16 @@ async function recordOutbound(
     message_type: "text",
     content: replyText,
     timestamp: ts,
-    meta_message_id: metaMessageId,
+    meta_message_id: trace.metaMessageId,
+    langfuse_trace_id: trace.langfuseTraceId,
+    prompt_version_id: trace.promptVersionId,
+    tokens_input: trace.tokensInput,
+    tokens_output: trace.tokensOutput,
+    tokens_used: trace.tokensInput != null && trace.tokensOutput != null
+      ? trace.tokensInput + trace.tokensOutput
+      : null,
+    cost_usd: trace.costUsd,
+    ai_processing_time_ms: trace.latencyMs,
   });
   if (insErr) {
     await logAndDlq(
@@ -311,8 +354,10 @@ async function recordOutbound(
       insErr.message,
       {
         reply_text: replyText,
-        meta_message_id: metaMessageId,
-        prompt_version: promptVersion,
+        meta_message_id: trace.metaMessageId,
+        prompt_version: trace.promptVersion,
+        prompt_version_id: trace.promptVersionId,
+        langfuse_trace_id: trace.langfuseTraceId,
         lead_phone: ctx.leadPhone,
         db_code: insErr.code ?? null,
       },
@@ -320,7 +365,7 @@ async function recordOutbound(
   }
   const { error: updErr } = await ctx.admin
     .from("conversations")
-    .update({ last_interaction_at: ts, prompt_version_used: promptVersion })
+    .update({ last_interaction_at: ts, prompt_version_used: trace.promptVersion })
     .eq("id", ctx.conversationId);
   if (updErr) {
     // Not lead-facing damage — log only, no DLQ entry needed.
@@ -329,7 +374,7 @@ async function recordOutbound(
       source: AGENT_LOOP_SOURCE,
       errorType: "conversation_update_failed",
       message: updErr.message,
-      context: { dbCode: updErr.code ?? null, promptVersion },
+      context: { dbCode: updErr.code ?? null, promptVersion: trace.promptVersion },
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
@@ -339,12 +384,14 @@ async function recordOutbound(
 /**
  * Send the validated reply via HookMyApp (with retry) and record the
  * outbound row on success. On failure: log + DLQ so the operator can
- * recover.
+ * recover. The trace fields are populated from the Claude turn before
+ * we get here, so we still persist them on the outbound row when send
+ * succeeds.
  */
 async function sendAndRecordReply(
   ctx: AgentLoopCtx,
   replyText: string,
-  promptVersion: string,
+  trace: Omit<OutboundTrace, "metaMessageId">,
 ): Promise<void> {
   const sendResult: SendResult = await sendWhatsAppText({
     apiUrl: ctx.hookmyapp.apiUrl,
@@ -364,13 +411,18 @@ async function sendAndRecordReply(
         status: sendResult.status,
         attempts: sendResult.attempts,
         terminal: sendResult.terminal,
-        prompt_version: promptVersion,
+        prompt_version: trace.promptVersion,
+        prompt_version_id: trace.promptVersionId,
+        langfuse_trace_id: trace.langfuseTraceId,
         lead_phone: ctx.leadPhone,
       },
     );
     return;
   }
-  await recordOutbound(ctx, replyText, sendResult.metaMessageId, promptVersion);
+  await recordOutbound(ctx, replyText, {
+    ...trace,
+    metaMessageId: sendResult.metaMessageId,
+  });
 }
 
 /**
@@ -387,9 +439,10 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   if (!turn) return;
 
   let response: AnthropicMessageResponse;
+  const startTime = new Date();
   try {
     const raw = await ctx.anthropic.messages.create({
-      model: "claude-sonnet-4-6",
+      model: CLAUDE_MODEL,
       max_tokens: 1024,
       thinking: { type: "adaptive" },
       system: turn.promptContent,
@@ -403,16 +456,69 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
       err instanceof Error ? err.message : String(err),
       err instanceof Error ? err.message : String(err),
       {
-        model: "claude-sonnet-4-6",
+        model: CLAUDE_MODEL,
         prompt_version: turn.promptVersion,
+        prompt_version_id: turn.promptVersionId,
         lead_phone: ctx.leadPhone,
       },
     );
     return;
   }
+  const endTime = new Date();
+
+  const usage: AnthropicUsage = {
+    inputTokens: response.usage?.input_tokens,
+    outputTokens: response.usage?.output_tokens,
+    cacheReadTokens: response.usage?.cache_read_input_tokens,
+    cacheCreationTokens: response.usage?.cache_creation_input_tokens,
+  };
+  const costUsd = computeSonnet46Cost(usage);
+  const latencyMs = endTime.getTime() - startTime.getTime();
 
   const rawReply = extractFirstTextBlock(response);
   const validation = validateAgentReply(rawReply);
+
+  // Trace the turn regardless of validation outcome — failed turns are
+  // exactly what we want to see in Langfuse so the operator can debug.
+  let langfuseTraceId: string | null = null;
+  if (ctx.langfuse) {
+    langfuseTraceId = await ctx.langfuse.traceAgentTurn(
+      {
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+        leadPhone: ctx.leadPhone,
+        promptVersion: turn.promptVersion,
+        promptVersionId: turn.promptVersionId,
+        model: CLAUDE_MODEL,
+        systemPrompt: turn.promptContent,
+        claudeMessages: turn.claudeMessages,
+        startTime,
+        endTime,
+        output: validation.ok
+          ? validation.text
+          : `(invalid: ${validation.reason})`,
+        usage,
+        failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
+      },
+      async (detail) => {
+        await logError({
+          admin: ctx.admin,
+          source: AGENT_LOOP_SOURCE,
+          errorType: "langfuse_ingestion_failed",
+          level: "warn",
+          message: `Langfuse ingestion failed status=${detail.status}`,
+          context: {
+            status: detail.status,
+            body: detail.body,
+            prompt_version: turn.promptVersion,
+          },
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        });
+      },
+    );
+  }
+
   if (!validation.ok) {
     await logAndDlq(
       ctx,
@@ -424,13 +530,24 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
         reason: validation.reason,
         raw_length: rawReply?.length ?? 0,
         prompt_version: turn.promptVersion,
+        prompt_version_id: turn.promptVersionId,
+        langfuse_trace_id: langfuseTraceId,
+        cost_usd: costUsd,
         lead_phone: ctx.leadPhone,
       },
     );
     return;
   }
 
-  await sendAndRecordReply(ctx, validation.text, turn.promptVersion);
+  await sendAndRecordReply(ctx, validation.text, {
+    promptVersion: turn.promptVersion,
+    promptVersionId: turn.promptVersionId,
+    langfuseTraceId,
+    tokensInput: usage.inputTokens ?? null,
+    tokensOutput: usage.outputTokens ?? null,
+    costUsd,
+    latencyMs,
+  });
 }
 
 interface EdgeRuntimeShape {
@@ -727,6 +844,9 @@ Deno.serve(async (req) => {
       accessToken: whatsappAccessToken,
       phoneNumberId: whatsappPhoneNumberId,
     };
+    // Langfuse is optional — if env vars are missing we fall through to
+    // null and the agent loop runs without tracing.
+    const langfuse = langfuseFromEnv();
     for (const [conversationId, leadPhone] of conversationsNeedingReply) {
       // Each conversation runs independently; one slow Claude call doesn't
       // block another conversation's reply.
@@ -738,6 +858,7 @@ Deno.serve(async (req) => {
           leadPhone,
           anthropic,
           hookmyapp,
+          langfuse,
         }),
       );
     }
