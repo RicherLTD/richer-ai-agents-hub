@@ -235,6 +235,7 @@ async function loadAgentTurnContext(
     .from("prompts")
     .select("id, content, version")
     .eq("agent_id", ctx.agentId)
+    .eq("prompt_type", "main")
     .eq("is_active", true)
     .order("created_at", { ascending: false })
     .limit(1)
