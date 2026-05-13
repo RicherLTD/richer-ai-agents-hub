@@ -169,6 +169,38 @@ export function decideFunnelStage(
   return desired === currentStage ? null : desired;
 }
 
+// Tags that say "this lead is no longer in the auto-reply funnel" — either
+// already handed off, opted out, escalated to human, or under 18.
+const NON_HANDOFF_TAGS: ReadonlySet<string> = new Set([
+  "zoom_scheduled",
+  "opted_out",
+  "ghosted",
+  "underage",
+  "requires_human",
+]);
+
+/**
+ * True iff this turn is the moment to escalate to an advisor: the lead
+ * just answered the 5th core question, has no red flags, and isn't
+ * already in a terminal/blocking tag.
+ *
+ * Caller decides what to do with `true` — assign an advisor, pause the
+ * conversation, set `current_tag = zoom_scheduled`. Kept pure so the
+ * decision is unit-testable without DB stubs.
+ */
+export function shouldTriggerZoomHandoff(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+  currentStage: string | null,
+  nextStage: FunnelStage | null,
+): boolean {
+  if (nextStage !== "done") return false;
+  if (currentStage === "done") return false;
+  if (memory.red_flags.length > 0) return false;
+  if (currentTag && NON_HANDOFF_TAGS.has(currentTag)) return false;
+  return true;
+}
+
 interface AnthropicContentBlock {
   type: string;
   text?: unknown;
@@ -358,6 +390,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   const currentStage = (existing?.funnel_stage as string | null | undefined) ?? null;
   const nextTag = decideConversationTag(memory, currentTag);
   const nextStage = decideFunnelStage(memory, currentTag, currentStage);
+  const handoff = shouldTriggerZoomHandoff(memory, currentTag, currentStage, nextStage);
 
   const conversationUpdate: Record<string, unknown> = {};
   if (memory.primary_objection) {
@@ -368,6 +401,14 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   }
   if (nextStage) {
     conversationUpdate.funnel_stage = nextStage;
+  }
+  if (handoff) {
+    // Lead just qualified — pause the auto-reply loop and tag for the
+    // operator. Advisor assignment stays a separate concern (manual today;
+    // automated when the Calendar/Calendly integration lands).
+    conversationUpdate.current_tag = "zoom_scheduled";
+    conversationUpdate.status = "paused";
+    conversationUpdate.zoom_scheduled_at = new Date().toISOString();
   }
   if (Object.keys(conversationUpdate).length > 0) {
     const { error: updErr } = await input.admin

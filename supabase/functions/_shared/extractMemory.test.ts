@@ -3,6 +3,7 @@ import {
   coerceExtractedMemory,
   decideConversationTag,
   decideFunnelStage,
+  shouldTriggerZoomHandoff,
 } from "./extractMemory.ts";
 
 describe("coerceExtractedMemory", () => {
@@ -220,5 +221,87 @@ describe("decideFunnelStage", () => {
         "cold",
       ),
     ).toBe("mid");
+  });
+});
+
+describe("shouldTriggerZoomHandoff", () => {
+  const baseMemory = {
+    q1_age: null,
+    q2_motivation: null,
+    q3_dream_change: null,
+    q4_blocker: null,
+    q5_urgency: null,
+    q6_investment: null,
+    conversation_summary: null,
+    primary_objection: null,
+    red_flags: [],
+    notes_for_advisor: null,
+  };
+
+  const fullyAnsweredMemory = {
+    ...baseMemory,
+    q1_age: 28,
+    q2_motivation: "הכנסה נוספת",
+    q3_dream_change: "חופש פיננסי",
+    q4_blocker: "אין ניסיון",
+    q5_urgency: "בחודש הקרוב",
+  };
+
+  it("triggers on fresh cold → done transition for a clean lead", () => {
+    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "cold", "done")).toBe(true);
+  });
+
+  it("triggers on fresh mid → done transition for a clean lead", () => {
+    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "mid", "done")).toBe(true);
+  });
+
+  it("does NOT trigger when nextStage is null (no stage change)", () => {
+    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", null)).toBe(false);
+  });
+
+  it("does NOT trigger when nextStage is mid", () => {
+    expect(
+      shouldTriggerZoomHandoff({ ...baseMemory, q1_age: 25 }, null, "cold", "mid"),
+    ).toBe(false);
+  });
+
+  it("does NOT trigger when already done (re-extraction race)", () => {
+    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", "done")).toBe(false);
+  });
+
+  it("does NOT trigger when red_flags are present (escalate to human instead)", () => {
+    expect(
+      shouldTriggerZoomHandoff(
+        { ...fullyAnsweredMemory, red_flags: ["mental distress"] },
+        null,
+        "mid",
+        "done",
+      ),
+    ).toBe(false);
+  });
+
+  it("does NOT trigger when underage red flag is set", () => {
+    expect(
+      shouldTriggerZoomHandoff(
+        { ...fullyAnsweredMemory, q1_age: 16, red_flags: ["underage"] },
+        "underage",
+        "mid",
+        "done",
+      ),
+    ).toBe(false);
+  });
+
+  it("does NOT trigger when conversation is already zoom_scheduled", () => {
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, "zoom_scheduled", "mid", "done"),
+    ).toBe(false);
+  });
+
+  it("does NOT trigger for opted_out / ghosted / requires_human tags", () => {
+    for (const tag of ["opted_out", "ghosted", "requires_human"]) {
+      expect(
+        shouldTriggerZoomHandoff(fullyAnsweredMemory, tag, "mid", "done"),
+      ).toBe(false);
+    }
   });
 });
