@@ -16,6 +16,13 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { logError } from "./logError.ts";
+import { enqueueFailedMessage } from "./dlq.ts";
+import {
+  buildHandoffPayload,
+  fireHandoffWebhook,
+  type HandoffConversation,
+  type HandoffLeadMemory,
+} from "./fireHandoffWebhook.ts";
 
 export const MEMORY_EXTRACTOR_MODEL = "claude-haiku-4-5";
 export const MEMORY_EXTRACTOR_PROMPT_TYPE = "memory_extractor";
@@ -219,9 +226,17 @@ export interface RunMemoryExtractionInput {
   admin: SupabaseClient;
   anthropic: Anthropic;
   agentId: string;
+  /** `agents.name` slug — emitted to the handoff webhook so the consumer
+   *  can route per-agent without doing a DB lookup. */
+  agentName: string;
   conversationId: string;
   /** Same array we passed to the main agent — INCLUDES the assistant reply. */
   claudeMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>;
+  /** Optional outbound webhook URL fired when a lead transitions to
+   *  zoom_scheduled. Missing/empty → handoff event is not announced. */
+  handoffWebhookUrl?: string | null;
+  /** Optional HMAC-SHA256 shared secret for signing the handoff payload. */
+  handoffWebhookSecret?: string | null;
 }
 
 /**
@@ -369,9 +384,13 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   }
 
   // 5. Update conversation: primary_objection + (optionally) tag + stage.
+  // Also pull the fields the handoff webhook needs so we don't do a 2nd
+  // SELECT after the UPDATE on handoff.
   const { data: existing, error: readErr } = await input.admin
     .from("conversations")
-    .select("current_tag, funnel_stage")
+    .select(
+      "current_tag, funnel_stage, lead_phone, lead_name, source_campaign, source_funnel, created_at",
+    )
     .eq("id", input.conversationId)
     .maybeSingle();
   if (readErr) {
@@ -425,6 +444,92 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         agentId: input.agentId,
         conversationId: input.conversationId,
       });
+      return;
+    }
+  }
+
+  // 6. Handoff fan-out webhook. Fires ONCE per lead, on the same turn the
+  //    funnel transitions to done. Downstream consumers (Make.com → Mooz,
+  //    Fireberry, advisor notifications) all subscribe to the same payload.
+  //    Best-effort: a failure here does not roll back the DB update — the
+  //    lead is still tagged zoom_scheduled, the operator just gets a DLQ
+  //    entry to replay manually.
+  if (handoff) {
+    const zoomScheduledAt = conversationUpdate.zoom_scheduled_at as string;
+    if (!input.handoffWebhookUrl) {
+      await logError({
+        admin: input.admin,
+        source: "memory-extractor",
+        errorType: "handoff_webhook_url_missing",
+        level: "warn",
+        message:
+          "lead reached zoom_scheduled but HANDOFF_WEBHOOK_URL is not configured \u2014 downstream automations will not fire",
+        context: { conversationId: input.conversationId },
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+      });
+    } else {
+      const handoffConv: HandoffConversation = {
+        id: input.conversationId,
+        lead_phone: (existing?.lead_phone as string | null | undefined) ?? "",
+        lead_name: (existing?.lead_name as string | null | undefined) ?? null,
+        status: "paused",
+        current_tag: "zoom_scheduled",
+        funnel_stage: "done",
+        zoom_scheduled_at: zoomScheduledAt,
+        source_campaign: (existing?.source_campaign as string | null | undefined) ?? null,
+        source_funnel: (existing?.source_funnel as string | null | undefined) ?? null,
+        created_at: (existing?.created_at as string | null | undefined) ?? null,
+      };
+      const handoffMem: HandoffLeadMemory = {
+        q1_age: memory.q1_age,
+        q2_motivation: memory.q2_motivation,
+        q3_dream_change: memory.q3_dream_change,
+        q4_blocker: memory.q4_blocker,
+        q5_urgency: memory.q5_urgency,
+        q6_investment: memory.q6_investment,
+        conversation_summary: memory.conversation_summary,
+        primary_objection: memory.primary_objection,
+        red_flags: memory.red_flags,
+        notes_for_advisor: memory.notes_for_advisor,
+      };
+      const payload = buildHandoffPayload({
+        agentId: input.agentId,
+        agentName: input.agentName,
+        conversation: handoffConv,
+        leadMemory: handoffMem,
+        now: zoomScheduledAt,
+      });
+      const fireResult = await fireHandoffWebhook({
+        url: input.handoffWebhookUrl,
+        secret: input.handoffWebhookSecret ?? null,
+        payload,
+      });
+      if (!fireResult.ok) {
+        await logError({
+          admin: input.admin,
+          source: "memory-extractor",
+          errorType: "handoff_webhook_failed",
+          message: `handoff webhook failed status=${fireResult.status} attempts=${fireResult.attempts} terminal=${fireResult.terminal}`,
+          context: {
+            status: fireResult.status,
+            body: fireResult.errorBody,
+            attempts: fireResult.attempts,
+            terminal: fireResult.terminal,
+          },
+          agentId: input.agentId,
+          conversationId: input.conversationId,
+        });
+        await enqueueFailedMessage({
+          admin: input.admin,
+          source: "memory-extractor",
+          errorType: "handoff_webhook_failed",
+          errorDetail: fireResult.errorBody,
+          payload: payload as unknown as Record<string, unknown>,
+          agentId: input.agentId,
+          conversationId: input.conversationId,
+        });
+      }
     }
   }
 }
