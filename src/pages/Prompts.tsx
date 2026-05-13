@@ -1,9 +1,10 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { he } from "date-fns/locale";
-import { Eye, FileText, RotateCcw } from "lucide-react";
+import { Eye, FileText, GitCompare, RotateCcw } from "lucide-react";
 import { useState } from "react";
 import { EmptyState } from "@/components/EmptyState";
+import { PromptReplayDialog } from "@/components/prompts/PromptReplayDialog";
 import { PromptViewDialog } from "@/components/prompts/PromptViewDialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import {
@@ -40,6 +41,7 @@ const Prompts = () => {
   const [promptType, setPromptType] = useState<string>("all");
   const [activeOnly, setActiveOnly] = useState(false);
   const [viewing, setViewing] = useState<Prompt | null>(null);
+  const [comparing, setComparing] = useState<Prompt | null>(null);
   const [activating, setActivating] = useState<Prompt | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
 
@@ -171,6 +173,17 @@ const Prompts = () => {
                         >
                           <Eye className="h-4 w-4" />
                         </Button>
+                        {isAdmin && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => setComparing(p)}
+                            aria-label="השווה לשיחת עבר"
+                            title="השווה לשיחת עבר"
+                          >
+                            <GitCompare className="h-4 w-4" />
+                          </Button>
+                        )}
                         {isAdmin && !p.is_active && (
                           <Button
                             variant="ghost"
@@ -196,6 +209,7 @@ const Prompts = () => {
       )}
 
       <PromptViewDialog prompt={viewing} onClose={() => setViewing(null)} />
+      <PromptReplayDialog prompt={comparing} onClose={() => setComparing(null)} />
 
       <AlertDialog
         open={activating !== null}
