@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { coerceExtractedMemory, decideConversationTag } from "./extractMemory.ts";
+import {
+  coerceExtractedMemory,
+  decideConversationTag,
+  decideFunnelStage,
+} from "./extractMemory.ts";
 
 describe("coerceExtractedMemory", () => {
   it("returns null when given a non-object", () => {
@@ -128,5 +132,93 @@ describe("decideConversationTag", () => {
         null,
       ),
     ).toBe("underage");
+  });
+});
+
+describe("decideFunnelStage", () => {
+  const baseMemory = {
+    q1_age: null,
+    q2_motivation: null,
+    q3_dream_change: null,
+    q4_blocker: null,
+    q5_urgency: null,
+    q6_investment: null,
+    conversation_summary: null,
+    primary_objection: null,
+    red_flags: [],
+    notes_for_advisor: null,
+  };
+
+  it("returns 'cold' for an empty memory on a brand-new conversation", () => {
+    expect(decideFunnelStage(baseMemory, null, null)).toBe("cold");
+  });
+
+  it("returns null when nothing has changed (cold stays cold)", () => {
+    expect(decideFunnelStage(baseMemory, null, "cold")).toBeNull();
+  });
+
+  it("promotes cold → mid when one core question is answered", () => {
+    expect(
+      decideFunnelStage({ ...baseMemory, q1_age: 25 }, null, "cold"),
+    ).toBe("mid");
+  });
+
+  it("promotes cold → mid via any single core question (q3 only)", () => {
+    expect(
+      decideFunnelStage({ ...baseMemory, q3_dream_change: "להגיע לעצמאות" }, null, "cold"),
+    ).toBe("mid");
+  });
+
+  it("does NOT count q6_investment alone — that is a bonus signal", () => {
+    expect(
+      decideFunnelStage({ ...baseMemory, q6_investment: "עד 10,000 ש\"ח" }, null, null),
+    ).toBe("cold");
+  });
+
+  it("promotes mid → done when all 5 core questions are answered", () => {
+    expect(
+      decideFunnelStage(
+        {
+          ...baseMemory,
+          q1_age: 28,
+          q2_motivation: "הכנסה נוספת",
+          q3_dream_change: "חופש פיננסי",
+          q4_blocker: "אין ניסיון",
+          q5_urgency: "בחודש הקרוב",
+        },
+        null,
+        "mid",
+      ),
+    ).toBe("done");
+  });
+
+  it("treats terminal tags (zoom_scheduled / opted_out / ghosted) as done regardless of q-state", () => {
+    for (const terminal of ["zoom_scheduled", "opted_out", "ghosted"]) {
+      expect(decideFunnelStage(baseMemory, terminal, "cold")).toBe("done");
+      expect(decideFunnelStage(baseMemory, terminal, "mid")).toBe("done");
+    }
+  });
+
+  it("never downgrades once funnel_stage is 'done'", () => {
+    expect(decideFunnelStage(baseMemory, null, "done")).toBeNull();
+    expect(
+      decideFunnelStage({ ...baseMemory, q1_age: 25 }, null, "done"),
+    ).toBeNull();
+  });
+
+  it("returns null when the desired stage already matches current", () => {
+    expect(
+      decideFunnelStage({ ...baseMemory, q1_age: 25 }, null, "mid"),
+    ).toBeNull();
+  });
+
+  it("advances even when red_flags are present — stage tracks engagement, not safety", () => {
+    expect(
+      decideFunnelStage(
+        { ...baseMemory, q1_age: 16, red_flags: ["underage"] },
+        "underage",
+        "cold",
+      ),
+    ).toBe("mid");
   });
 });

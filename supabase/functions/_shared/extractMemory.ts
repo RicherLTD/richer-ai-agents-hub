@@ -120,6 +120,55 @@ export function decideConversationTag(
   return null;
 }
 
+export type FunnelStage = "cold" | "mid" | "done";
+
+/**
+ * Count of the 5 core qualification questions answered. q6_investment is
+ * a bonus signal — it does NOT count towards the "done" trigger, because
+ * the agent's brief is to advance based on q1-q5.
+ */
+function countCoreAnswered(memory: ExtractedMemory): number {
+  let n = 0;
+  if (memory.q1_age !== null) n++;
+  if (memory.q2_motivation !== null) n++;
+  if (memory.q3_dream_change !== null) n++;
+  if (memory.q4_blocker !== null) n++;
+  if (memory.q5_urgency !== null) n++;
+  return n;
+}
+
+function computeFunnelStage(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+): FunnelStage {
+  if (currentTag && TERMINAL_TAGS.has(currentTag)) return "done";
+  const answered = countCoreAnswered(memory);
+  if (answered >= 5) return "done";
+  if (answered >= 1) return "mid";
+  return "cold";
+}
+
+/**
+ * Map extracted memory + current state → funnel stage. Returns the stage
+ * to write (or null to leave it alone).
+ *
+ * Rules:
+ *   - `done` is terminal — never downgrade once reached.
+ *   - Any terminal tag (zoom_scheduled / opted_out / ghosted) → `done`.
+ *   - All 5 core questions answered (q1-q5) → `done` (handoff-ready).
+ *   - At least 1 of q1-q5 answered → `mid` (lead is engaged).
+ *   - Otherwise → `cold` (initial).
+ */
+export function decideFunnelStage(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+  currentStage: string | null,
+): FunnelStage | null {
+  if (currentStage === "done") return null;
+  const desired = computeFunnelStage(memory, currentTag);
+  return desired === currentStage ? null : desired;
+}
+
 interface AnthropicContentBlock {
   type: string;
   text?: unknown;
@@ -287,10 +336,10 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
 
-  // 5. Update conversation: primary_objection + (optionally) tag.
+  // 5. Update conversation: primary_objection + (optionally) tag + stage.
   const { data: existing, error: readErr } = await input.admin
     .from("conversations")
-    .select("current_tag")
+    .select("current_tag, funnel_stage")
     .eq("id", input.conversationId)
     .maybeSingle();
   if (readErr) {
@@ -306,7 +355,9 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
   const currentTag = (existing?.current_tag as string | null | undefined) ?? null;
+  const currentStage = (existing?.funnel_stage as string | null | undefined) ?? null;
   const nextTag = decideConversationTag(memory, currentTag);
+  const nextStage = decideFunnelStage(memory, currentTag, currentStage);
 
   const conversationUpdate: Record<string, unknown> = {};
   if (memory.primary_objection) {
@@ -314,6 +365,9 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   }
   if (nextTag && nextTag !== currentTag) {
     conversationUpdate.current_tag = nextTag;
+  }
+  if (nextStage) {
+    conversationUpdate.funnel_stage = nextStage;
   }
   if (Object.keys(conversationUpdate).length > 0) {
     const { error: updErr } = await input.admin

@@ -42,6 +42,7 @@ import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
+import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
