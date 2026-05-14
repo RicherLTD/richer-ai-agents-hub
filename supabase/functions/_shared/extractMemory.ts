@@ -16,6 +16,13 @@
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { logError } from "./logError.ts";
+import { enqueueFailedMessage } from "./dlq.ts";
+import {
+  buildHandoffPayload,
+  fireHandoffWebhook,
+  type HandoffConversation,
+  type HandoffLeadMemory,
+} from "./fireHandoffWebhook.ts";
 
 export const MEMORY_EXTRACTOR_MODEL = "claude-haiku-4-5";
 export const MEMORY_EXTRACTOR_PROMPT_TYPE = "memory_extractor";
@@ -120,6 +127,87 @@ export function decideConversationTag(
   return null;
 }
 
+export type FunnelStage = "cold" | "mid" | "done";
+
+/**
+ * Count of the 5 core qualification questions answered. q6_investment is
+ * a bonus signal — it does NOT count towards the "done" trigger, because
+ * the agent's brief is to advance based on q1-q5.
+ */
+function countCoreAnswered(memory: ExtractedMemory): number {
+  let n = 0;
+  if (memory.q1_age !== null) n++;
+  if (memory.q2_motivation !== null) n++;
+  if (memory.q3_dream_change !== null) n++;
+  if (memory.q4_blocker !== null) n++;
+  if (memory.q5_urgency !== null) n++;
+  return n;
+}
+
+function computeFunnelStage(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+): FunnelStage {
+  if (currentTag && TERMINAL_TAGS.has(currentTag)) return "done";
+  const answered = countCoreAnswered(memory);
+  if (answered >= 5) return "done";
+  if (answered >= 1) return "mid";
+  return "cold";
+}
+
+/**
+ * Map extracted memory + current state → funnel stage. Returns the stage
+ * to write (or null to leave it alone).
+ *
+ * Rules:
+ *   - `done` is terminal — never downgrade once reached.
+ *   - Any terminal tag (zoom_scheduled / opted_out / ghosted) → `done`.
+ *   - All 5 core questions answered (q1-q5) → `done` (handoff-ready).
+ *   - At least 1 of q1-q5 answered → `mid` (lead is engaged).
+ *   - Otherwise → `cold` (initial).
+ */
+export function decideFunnelStage(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+  currentStage: string | null,
+): FunnelStage | null {
+  if (currentStage === "done") return null;
+  const desired = computeFunnelStage(memory, currentTag);
+  return desired === currentStage ? null : desired;
+}
+
+// Tags that say "this lead is no longer in the auto-reply funnel" — either
+// already handed off, opted out, escalated to human, or under 18.
+const NON_HANDOFF_TAGS: ReadonlySet<string> = new Set([
+  "zoom_scheduled",
+  "opted_out",
+  "ghosted",
+  "underage",
+  "requires_human",
+]);
+
+/**
+ * True iff this turn is the moment to escalate to an advisor: the lead
+ * just answered the 5th core question, has no red flags, and isn't
+ * already in a terminal/blocking tag.
+ *
+ * Caller decides what to do with `true` — assign an advisor, pause the
+ * conversation, set `current_tag = zoom_scheduled`. Kept pure so the
+ * decision is unit-testable without DB stubs.
+ */
+export function shouldTriggerZoomHandoff(
+  memory: ExtractedMemory,
+  currentTag: string | null,
+  currentStage: string | null,
+  nextStage: FunnelStage | null,
+): boolean {
+  if (nextStage !== "done") return false;
+  if (currentStage === "done") return false;
+  if (memory.red_flags.length > 0) return false;
+  if (currentTag && NON_HANDOFF_TAGS.has(currentTag)) return false;
+  return true;
+}
+
 interface AnthropicContentBlock {
   type: string;
   text?: unknown;
@@ -138,9 +226,17 @@ export interface RunMemoryExtractionInput {
   admin: SupabaseClient;
   anthropic: Anthropic;
   agentId: string;
+  /** `agents.name` slug — emitted to the handoff webhook so the consumer
+   *  can route per-agent without doing a DB lookup. */
+  agentName: string;
   conversationId: string;
   /** Same array we passed to the main agent — INCLUDES the assistant reply. */
   claudeMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>;
+  /** Optional outbound webhook URL fired when a lead transitions to
+   *  zoom_scheduled. Missing/empty → handoff event is not announced. */
+  handoffWebhookUrl?: string | null;
+  /** Optional HMAC-SHA256 shared secret for signing the handoff payload. */
+  handoffWebhookSecret?: string | null;
 }
 
 /**
@@ -287,10 +383,14 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
 
-  // 5. Update conversation: primary_objection + (optionally) tag.
+  // 5. Update conversation: primary_objection + (optionally) tag + stage.
+  // Also pull the fields the handoff webhook needs so we don't do a 2nd
+  // SELECT after the UPDATE on handoff.
   const { data: existing, error: readErr } = await input.admin
     .from("conversations")
-    .select("current_tag")
+    .select(
+      "current_tag, funnel_stage, lead_phone, lead_name, source_campaign, source_funnel, created_at",
+    )
     .eq("id", input.conversationId)
     .maybeSingle();
   if (readErr) {
@@ -306,7 +406,10 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
   const currentTag = (existing?.current_tag as string | null | undefined) ?? null;
+  const currentStage = (existing?.funnel_stage as string | null | undefined) ?? null;
   const nextTag = decideConversationTag(memory, currentTag);
+  const nextStage = decideFunnelStage(memory, currentTag, currentStage);
+  const handoff = shouldTriggerZoomHandoff(memory, currentTag, currentStage, nextStage);
 
   const conversationUpdate: Record<string, unknown> = {};
   if (memory.primary_objection) {
@@ -314,6 +417,17 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   }
   if (nextTag && nextTag !== currentTag) {
     conversationUpdate.current_tag = nextTag;
+  }
+  if (nextStage) {
+    conversationUpdate.funnel_stage = nextStage;
+  }
+  if (handoff) {
+    // Lead just qualified — pause the auto-reply loop and tag for the
+    // operator. Advisor assignment stays a separate concern (manual today;
+    // automated when the Calendar/Calendly integration lands).
+    conversationUpdate.current_tag = "zoom_scheduled";
+    conversationUpdate.status = "paused";
+    conversationUpdate.zoom_scheduled_at = new Date().toISOString();
   }
   if (Object.keys(conversationUpdate).length > 0) {
     const { error: updErr } = await input.admin
@@ -330,6 +444,92 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         agentId: input.agentId,
         conversationId: input.conversationId,
       });
+      return;
+    }
+  }
+
+  // 6. Handoff fan-out webhook. Fires ONCE per lead, on the same turn the
+  //    funnel transitions to done. Downstream consumers (Make.com → Mooz,
+  //    Fireberry, advisor notifications) all subscribe to the same payload.
+  //    Best-effort: a failure here does not roll back the DB update — the
+  //    lead is still tagged zoom_scheduled, the operator just gets a DLQ
+  //    entry to replay manually.
+  if (handoff) {
+    const zoomScheduledAt = conversationUpdate.zoom_scheduled_at as string;
+    if (!input.handoffWebhookUrl) {
+      await logError({
+        admin: input.admin,
+        source: "memory-extractor",
+        errorType: "handoff_webhook_url_missing",
+        level: "warn",
+        message:
+          "lead reached zoom_scheduled but HANDOFF_WEBHOOK_URL is not configured \u2014 downstream automations will not fire",
+        context: { conversationId: input.conversationId },
+        agentId: input.agentId,
+        conversationId: input.conversationId,
+      });
+    } else {
+      const handoffConv: HandoffConversation = {
+        id: input.conversationId,
+        lead_phone: (existing?.lead_phone as string | null | undefined) ?? "",
+        lead_name: (existing?.lead_name as string | null | undefined) ?? null,
+        status: "paused",
+        current_tag: "zoom_scheduled",
+        funnel_stage: "done",
+        zoom_scheduled_at: zoomScheduledAt,
+        source_campaign: (existing?.source_campaign as string | null | undefined) ?? null,
+        source_funnel: (existing?.source_funnel as string | null | undefined) ?? null,
+        created_at: (existing?.created_at as string | null | undefined) ?? null,
+      };
+      const handoffMem: HandoffLeadMemory = {
+        q1_age: memory.q1_age,
+        q2_motivation: memory.q2_motivation,
+        q3_dream_change: memory.q3_dream_change,
+        q4_blocker: memory.q4_blocker,
+        q5_urgency: memory.q5_urgency,
+        q6_investment: memory.q6_investment,
+        conversation_summary: memory.conversation_summary,
+        primary_objection: memory.primary_objection,
+        red_flags: memory.red_flags,
+        notes_for_advisor: memory.notes_for_advisor,
+      };
+      const payload = buildHandoffPayload({
+        agentId: input.agentId,
+        agentName: input.agentName,
+        conversation: handoffConv,
+        leadMemory: handoffMem,
+        now: zoomScheduledAt,
+      });
+      const fireResult = await fireHandoffWebhook({
+        url: input.handoffWebhookUrl,
+        secret: input.handoffWebhookSecret ?? null,
+        payload,
+      });
+      if (!fireResult.ok) {
+        await logError({
+          admin: input.admin,
+          source: "memory-extractor",
+          errorType: "handoff_webhook_failed",
+          message: `handoff webhook failed status=${fireResult.status} attempts=${fireResult.attempts} terminal=${fireResult.terminal}`,
+          context: {
+            status: fireResult.status,
+            body: fireResult.errorBody,
+            attempts: fireResult.attempts,
+            terminal: fireResult.terminal,
+          },
+          agentId: input.agentId,
+          conversationId: input.conversationId,
+        });
+        await enqueueFailedMessage({
+          admin: input.admin,
+          source: "memory-extractor",
+          errorType: "handoff_webhook_failed",
+          errorDetail: fireResult.errorBody,
+          payload: payload as unknown as Record<string, unknown>,
+          agentId: input.agentId,
+          conversationId: input.conversationId,
+        });
+      }
     }
   }
 }
