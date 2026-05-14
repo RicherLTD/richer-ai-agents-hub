@@ -185,7 +185,7 @@ export function UsersTab() {
       <InviteUserDialog
         open={inviting}
         onOpenChange={setInviting}
-        onSubmit={(payload) => inviteMutation.mutateAsync(payload)}
+        onSubmit={async (payload) => { await inviteMutation.mutateAsync(payload); }}
       />
 
       <AlertDialog
