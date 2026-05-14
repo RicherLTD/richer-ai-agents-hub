@@ -300,16 +300,19 @@ bunx supabase secrets set --env-file .env.functions.local --project-ref juoglkqt
 - **Conversations** — chat-style + master/detail + MessageThread + LeadMemoryPanel + ReplyBox + DebugPopover + Realtime.
 - **Prompts viewer** — read-only עם פילטרים + Rollback + Replay (admin).
 - **RLS** — `authenticated` בלבד; outbound INSERT עם `direction='outbound'`; UPDATE על prompts לאדמינים; SELECT/INSERT על error_logs/failed_messages לאדמינים.
-- **CI** — typecheck + lint + build + 127 vitest tests.
+- **CI** — typecheck + lint + build + 155 vitest tests.
 - **Migrations**: 0001-0014 ב־`supabase/migrations/`.
+
+**Phase E — Funnel automation + handoff fan-out (live, whatsapp-webhook v18):**
+- **Hot-fix קריטי**: התיקון של import שחסר ל־`runMemoryExtraction` ב־webhook. עד התיקון, Phase C קרס בשקט בכל תור בייצור (lead_memory היה ריק, current_tag לא הסלים ל־`underage`/`requires_human`). תוקן בקומיט 17fba8b.
+- **Funnel stage classifier** — `decideFunnelStage(memory, currentTag, currentStage)` ב־`_shared/extractMemory.ts`: 0 מ־q1-q5 → `cold`, 1+ → `mid`, כל 5 → `done`, תג טרמינלי (`zoom_scheduled`/`opted_out`/`ghosted`) → `done`. `done` דביק (אף פעם לא יורד). q6_investment בונוס, לא מעורר `done`. נכתב ל־`conversations.funnel_stage` באותו UPDATE של ה־primary_objection/current_tag.
+- **Zoom handoff** — `shouldTriggerZoomHandoff(memory, currentTag, currentStage, nextStage)` ב־`_shared/extractMemory.ts`: כשהשלב עובר ל־`done` והליד נקי מ־red_flags ולא בתג חוסם → בעדכון של אותו תור, `current_tag='zoom_scheduled'` + `status='paused'` + `zoom_scheduled_at=now()`. הקצאת יועץ לא אוטומטית (טבלת `advisors` ריקה היום); אופרטור משייך מהדשבורד.
+- **Fan-out webhook** — `_shared/fireHandoffWebhook.ts` עושה POST ל־`HANDOFF_WEBHOOK_URL` (Supabase secret) עם payload יציב: `{event, timestamp, agent:{id,name}, conversation:{...}, lead_memory:{q1..q6, summary, primary_objection, red_flags, notes_for_advisor}}`. חתימה אופציונלית עם `HANDOFF_WEBHOOK_SECRET` → header `X-Handoff-Signature-256: sha256=HEX`. 3 ניסיונות / 8s timeout / retry על 5xx ו־429 / non-retry על 4xx אחר / כשל סופי → `error_logs` + `failed_messages` DLQ. ה־URL היום מופנה ל־Make.com scenario שמפזר ל־Mooz (קביעת פגישות in-house) + Fireberry CRM + התראות יועצים.
 
 ### מה חסר
 
 - **Phase D-full v2** — auto-scoring של replay (LLM-as-judge על relevance/tone/no-hallucination), golden dataset, CI block אם prompt חדש מוריד ציון מתחת לבייסליין.
-- **Funnel stage classifier** — `funnel_stage` עדיין לא זז אוטומטית; ה־memory extractor ממלא תוכן אבל לא ממיין לשלב.
-- **Zoom handoff** — כשכל 5 השאלות נענו → הודעת מסירה + `current_tag='zoom_scheduled'` + `assigned_advisor_id` + `status='paused'`.
-- **Calendar/Zoom integration** — Google Calendar API או Calendly. הסכימה תומכת (`advisors.google_calendar_email`, `advisors.calendly_link`).
-- **Fireberry CRM** — webhook על escalation/zoom_scheduled. הסכימה תומכת (`advisors.fireberry_user_id`).
+- **טבלת advisors מאוכלסת** — היום ריקה. ברגע שמוסיפים יועצים, האופרטור משייך ידנית; round-robin אוטומטי יכול להוסיף בעתיד.
 - **Multi-agent בפועל** — הסכימה תומכת, אבל היום סוכן יחיד פעיל (`affiliate_marketing`). מספר טלפון יחיד ב־WABA.
 - **Pilot 50 לידים** — תשתית מוכנה. ממתינים לאישור פתיחת קמפיין עם תנועה אמיתית.
 
@@ -375,10 +378,11 @@ bunx supabase secrets set --env-file .env.functions.local --project-ref juoglkqt
 - [x] **PR 27** — `feat(prompts): phase D-full — prompt replay (A/B test)`
   - `prompt-replay` edge function (admin-only) + `PromptReplayDialog` + ⤧ button
 - [x] **Production WABA**: HookMyApp Cloud API connected. webhook ישיר על URL של `whatsapp-webhook`. Cloudflare tunnel/proxy מקומי לא רלוונטיים יותר בפרוד.
-- [ ] **Funnel stage classifier**: ה־memory extractor ממלא, אבל אין עדיין מעבר שלבים אוטומטי.
-- [ ] **Zoom handoff**: כשכל 5 השאלות נענו → הודעת מסירה + `current_tag='zoom_scheduled'` + `assigned_advisor_id` + `status='paused'`
-- [ ] **Google Calendar / Calendly**: יצירת event אוטומטית כשהליד מגיע ל־`zoom_scheduled`
-- [ ] **Fireberry CRM**: webhook על escalation/zoom_scheduled
+- [x] **Phase E — Funnel + Handoff** (`feat/funnel-stage-classifier`, whatsapp-webhook v18):
+  - Hot-fix: `runMemoryExtraction` import שהיה חסר ב־webhook (Phase C היה שבור בייצור משחרור v14)
+  - `decideFunnelStage` — `cold` / `mid` / `done` אוטו, `done` דביק
+  - `shouldTriggerZoomHandoff` — בתום q1-q5 → `zoom_scheduled` + `paused`
+  - `fireHandoffWebhook` — POST ל־`HANDOFF_WEBHOOK_URL` (Make.com → Mooz + Fireberry) עם 3 retries + HMAC אופציונלי, DLQ על כשל
 - [ ] **Phase D-full v2**: auto-scoring של replay (LLM-as-judge) + golden dataset + CI block
 - [ ] **Pilot עם 50 לידים** + הרחבה הדרגתית
 

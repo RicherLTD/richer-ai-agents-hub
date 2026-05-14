@@ -42,6 +42,7 @@ import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
+import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
@@ -166,11 +167,19 @@ interface AgentLoopCtx {
   admin: SupabaseClient;
   conversationId: string;
   agentId: string;
+  /** `agents.name` slug — emitted on the handoff webhook. */
+  agentName: string;
   leadPhone: string;
   anthropic: Anthropic;
   hookmyapp: HookMyAppCreds;
   /** Optional — when present, every Claude turn is traced. */
   langfuse: Langfuse | null;
+  /** Optional fan-out webhook fired on zoom_scheduled transition. */
+  handoffWebhookUrl: string | null;
+  handoffWebhookSecret: string | null;
+  /** Optional base URL of the dashboard — when present, the handoff
+   *  webhook payload includes a deep link to the conversation. */
+  dashboardBaseUrl: string | null;
 }
 
 interface AgentTurnContext {
@@ -229,6 +238,7 @@ async function loadAgentTurnContext(
     .from("prompts")
     .select("id, content, version")
     .eq("agent_id", ctx.agentId)
+    .eq("prompt_type", "main")
     .eq("is_active", true)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -557,11 +567,15 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     admin: ctx.admin,
     anthropic: ctx.anthropic,
     agentId: ctx.agentId,
+    agentName: ctx.agentName,
     conversationId: ctx.conversationId,
     claudeMessages: [
       ...turn.claudeMessages,
       { role: "assistant", content: validation.text },
     ],
+    handoffWebhookUrl: ctx.handoffWebhookUrl,
+    handoffWebhookSecret: ctx.handoffWebhookSecret,
+    dashboardBaseUrl: ctx.dashboardBaseUrl,
   });
 }
 
@@ -862,6 +876,9 @@ Deno.serve(async (req) => {
     // Langfuse is optional — if env vars are missing we fall through to
     // null and the agent loop runs without tracing.
     const langfuse = langfuseFromEnv();
+    const handoffWebhookUrl = Deno.env.get("HANDOFF_WEBHOOK_URL") ?? null;
+    const handoffWebhookSecret = Deno.env.get("HANDOFF_WEBHOOK_SECRET") ?? null;
+    const dashboardBaseUrl = Deno.env.get("DASHBOARD_BASE_URL") ?? null;
     for (const [conversationId, leadPhone] of conversationsNeedingReply) {
       // Each conversation runs independently; one slow Claude call doesn't
       // block another conversation's reply.
@@ -870,10 +887,14 @@ Deno.serve(async (req) => {
           admin,
           conversationId,
           agentId,
+          agentName,
           leadPhone,
           anthropic,
           hookmyapp,
           langfuse,
+          handoffWebhookUrl,
+          handoffWebhookSecret,
+          dashboardBaseUrl,
         }),
       );
     }

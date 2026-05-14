@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { Loader2, Sparkles } from "lucide-react";
+import { Loader2 } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -44,8 +45,8 @@ export default function Login() {
     <div dir="rtl" className="flex min-h-screen items-center justify-center bg-secondary/40 px-4">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-md">
         <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br from-primary-deep to-primary-light text-primary-foreground shadow-sm">
-            <Sparkles className="h-5 w-5" />
+          <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl bg-primary-deep shadow-sm">
+            <BrandLogo className="h-14 w-14" />
           </div>
           <h1 className="text-xl font-semibold text-foreground">מערכת ריצ'ר AI</h1>
           <p className="text-sm text-muted-foreground">התחבר כדי להמשיך</p>

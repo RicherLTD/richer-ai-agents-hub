@@ -14,21 +14,57 @@
 import { supabase } from "./supabase/client";
 import type { Message } from "@/types/message";
 
+export const MESSAGE_PAGE_SIZE = 30;
+
 /**
- * Fetch every message for a conversation, oldest-first (chat reading order).
+ * Fetch the NEWEST page of messages for a conversation, returned in
+ * chat reading order (oldest-first). For pagination, use
+ * `getOlderMessages` to load the page that precedes a given timestamp.
+ *
+ * We fetch newest-first from Postgres, then reverse — this gives us the
+ * latest 30 turns without loading the full history. WhatsApp does the
+ * same: tail-first, scroll up to load older.
  */
-export async function getMessagesForConversation(conversationId: string): Promise<Message[]> {
+export async function getMessagesForConversation(
+  conversationId: string,
+  limit: number = MESSAGE_PAGE_SIZE,
+): Promise<Message[]> {
   const { data, error } = await supabase
     .from("messages")
     .select("*")
     .eq("conversation_id", conversationId)
-    .order("timestamp", { ascending: true, nullsFirst: false })
-    .limit(500);
+    .order("timestamp", { ascending: false, nullsFirst: false })
+    .limit(limit);
 
   if (error) {
     throw new Error(`Failed to load messages: ${error.message}`);
   }
-  return data ?? [];
+  return (data ?? []).slice().reverse();
+}
+
+/**
+ * Load the page of messages immediately before `beforeTimestamp`. Used
+ * by the "load older messages" button at the top of the chat thread.
+ *
+ * Returns up to `limit` messages, oldest-first.
+ */
+export async function getOlderMessages(
+  conversationId: string,
+  beforeTimestamp: string,
+  limit: number = MESSAGE_PAGE_SIZE,
+): Promise<Message[]> {
+  const { data, error } = await supabase
+    .from("messages")
+    .select("*")
+    .eq("conversation_id", conversationId)
+    .lt("timestamp", beforeTimestamp)
+    .order("timestamp", { ascending: false, nullsFirst: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to load older messages: ${error.message}`);
+  }
+  return (data ?? []).slice().reverse();
 }
 
 export interface SendOutboundParams {

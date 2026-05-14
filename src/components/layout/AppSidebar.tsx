@@ -1,4 +1,5 @@
-import { BarChart3, Bot, FileText, Home, LogOut, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
+import { Bot, FileText, Home, LogOut, MessageCircle, Settings, Users } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,6 @@ const NAV_ITEMS: NavItem[] = [
   { title: "דף הבית", url: "/", icon: Home, end: true },
   { title: "לידים", url: "/leads", icon: Users, end: false },
   { title: "שיחות פעילות", url: "/conversations", icon: MessageCircle, end: false },
-  { title: "ניתוחים", url: "/analytics", icon: BarChart3, end: false },
   { title: "ניהול Prompts", url: "/prompts", icon: FileText, end: false },
   { title: "מאמן הבוט", url: "/coach", icon: Bot, end: false, adminOnly: true },
   { title: "הגדרות", url: "/settings", icon: Settings, end: false },
@@ -58,8 +58,8 @@ export function AppSidebar() {
     <Sidebar side="right" collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2.5 px-2 py-2">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary-deep to-primary-light text-primary-foreground shadow-sm">
-            <Sparkles className="h-4 w-4" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary-deep shadow-sm">
+            <BrandLogo className="h-9 w-9" />
           </div>
           {!collapsed && (
             <div className="min-w-0">

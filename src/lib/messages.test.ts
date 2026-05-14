@@ -44,7 +44,7 @@ beforeEach(() => {
 });
 
 describe("getMessagesForConversation", () => {
-  it("queries messages by conversation_id, ordered by timestamp asc", async () => {
+  it("queries newest-first (we reverse before returning so callers still see chat order)", async () => {
     const chain = makeReadChain({ data: [], error: null });
     fromMock.mockReturnValue(chain);
 
@@ -55,17 +55,24 @@ describe("getMessagesForConversation", () => {
     expect(eq?.args).toEqual(["conversation_id", "conv-1"]);
     const order = chain.calls.find((c) => c.method === "order");
     expect(order?.args[0]).toBe("timestamp");
-    expect((order?.args[1] as { ascending: boolean }).ascending).toBe(true);
+    // Newest-first from Postgres — we reverse client-side so the caller
+    // gets oldest-first chat reading order without DB-side pagination.
+    expect((order?.args[1] as { ascending: boolean }).ascending).toBe(false);
   });
 
-  it("returns rows on success", async () => {
-    const rows = [{ id: "m1", content: "hi" }];
+  it("returns rows reversed (oldest-first) on success", async () => {
+    const rows = [
+      { id: "m3", content: "third (newest)" },
+      { id: "m2", content: "second" },
+      { id: "m1", content: "first (oldest)" },
+    ];
     const chain = makeReadChain({ data: rows, error: null });
     fromMock.mockReturnValue(chain);
 
     const result = await getMessagesForConversation("conv-1");
 
-    expect(result).toEqual(rows);
+    // DB returned newest-first; helper reverses so callers see oldest-first.
+    expect(result.map((r) => r.id)).toEqual(["m1", "m2", "m3"]);
   });
 
   it("throws a wrapped error", async () => {

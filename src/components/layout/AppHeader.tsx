@@ -1,17 +1,18 @@
-import { Bell, Search, Sparkles } from "lucide-react";
+import { Bell, Search } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { SidebarTrigger } from "@/components/ui/sidebar";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useAgent } from "@/contexts/AgentContext";
 
 const PAGE_TITLES: Record<string, string> = {
   "/": "דף הבית",
   "/leads": "לידים",
   "/conversations": "שיחות פעילות",
-  "/analytics": "ניתוחים",
   "/prompts": "ניהול Prompts",
+  "/coach": "מאמן הבוט",
   "/settings": "הגדרות",
 };
 
@@ -41,7 +42,7 @@ export function AppHeader() {
             variant="outline"
             className="hidden gap-1.5 rounded-full border-primary/20 bg-primary-soft py-1 ps-3 pe-2.5 text-xs font-medium text-primary sm:inline-flex"
           >
-            <Sparkles className="h-3 w-3" />
+            <BrandLogo className="h-3.5 w-3.5" />
             <span>מטפל בסוכן: {activeAgent.display_name}</span>
           </Badge>
         )}
