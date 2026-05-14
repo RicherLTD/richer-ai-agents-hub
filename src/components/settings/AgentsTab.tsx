@@ -133,7 +133,9 @@ export function AgentsTab() {
             <DialogDescription>הוסף סוכן חדש למערכת. שדות חובה מסומנים ב-*.</DialogDescription>
           </DialogHeader>
           <AgentForm
-            onSubmit={(values) => createMutation.mutateAsync(values as AgentInsert)}
+            onSubmit={async (values) => {
+              await createMutation.mutateAsync(values as AgentInsert);
+            }}
             onCancel={() => setCreating(false)}
             submitLabel="צור סוכן"
           />
@@ -149,9 +151,9 @@ export function AgentsTab() {
           {editing && (
             <AgentForm
               agent={editing}
-              onSubmit={(values) =>
-                updateMutation.mutateAsync({ id: editing.id, patch: values as AgentUpdate })
-              }
+              onSubmit={async (values) => {
+                await updateMutation.mutateAsync({ id: editing.id, patch: values as AgentUpdate });
+              }}
               onCancel={() => setEditing(null)}
             />
           )}
