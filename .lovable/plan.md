@@ -1,125 +1,40 @@
-# שלד מערכת ניהול WhatsApp AI — מכללת ריצ'ר
+## Force-sync Lovable to GitHub `main`
 
-מערכת Multi-Agent בעברית RTL עם Sidebar, בחירת סוכן גלובלית, ו-6 מסכי ניווט. כל המסכים יציגו Empty State בלבד בשלב זה — ללא נתונים מזויפים.
+Lovable's GitHub integration is bidirectional: whatever sits on `main` in GitHub flows into Lovable automatically within seconds. I cannot run `git` commands from inside the sandbox (git state is managed by Lovable), so the sync has to be triggered from the GitHub side.
 
-## עיצוב ומיתוג
+### Steps for you (one-time, ~1 minute)
 
-- **שפה וכיוון:** עברית מלאה, `dir="rtl"` על `<html>`, פונט **Heebo** מ-Google Fonts.
-- **פלטת צבעים** (מוגדרת כ-HSL ב-`index.css` כ-design tokens):
-  - Primary: `#451470` (סגול עמוק ריצ'ר)
-  - Primary Deep: `#2D0E4A`
-  - Primary Light: `#7A4FA8`
-  - רקע ראשי: `#FFFFFF`, רקע משני: `#F9FAFB`
-  - גבולות וטקסט מושתק בגווני אפור עדינים
-- **סגנון:** מינימליסטי בסגנון Notion/Linear — `rounded-lg`, צללים עדינים, מרווחים אווריריים, מעברים חלקים.
-- כל הצבעים יוגדרו כ-CSS variables ב-`index.css` ויחוברו ל-`tailwind.config.ts` — **ללא** צבעים hardcoded בקומפוננטות.
+1. From your local clone of `RicherLTD/richer-ai-agents-hub`:
+   ```bash
+   git fetch origin
+   git checkout main
+   git reset --hard origin/main      # ensure local main matches remote
+   git push --force-with-lease origin main
+   ```
+   If `main` on GitHub is already at the commit you want, just an empty re-push is enough:
+   ```bash
+   git commit --allow-empty -m "chore: trigger lovable resync"
+   git push origin main
+   ```
 
-## Layout ראשי
+2. Wait ~10–30 seconds. Lovable will pick up the new HEAD on `main` and rebuild the preview.
 
-```text
-┌─────────────────────────────────────────────────────┬──────────────┐
-│  Header: כותרת מסך | חיפוש | Agent Badge | 🔔     │   לוגו ריצ'ר │
-│                                                     │   AI מערכת   │
-├─────────────────────────────────────────────────────┤              │
-│                                                     │ ▼ סוכן פעיל  │
-│                                                     │ שיווק שותפים │
-│              אזור התוכן הראשי                       │              │
-│              (Empty States)                         │ 🏠 דף הבית   │
-│                                                     │ 👥 לידים     │
-│                                                     │ 💬 שיחות     │
-│                                                     │ 📊 ניתוחים   │
-│                                                     │ 📄 Prompts   │
-│                                                     │ ⚙ הגדרות     │
-│                                                     ├──────────────┤
-│                                                     │ 👤 משתמש     │
-└─────────────────────────────────────────────────────┴──────────────┘
-                                                            ימין →
-```
+3. Ping me here with "synced" (or just send any message). I'll then:
+   - Verify the working tree matches what you expect (spot-check a couple of files).
+   - Run `bun run build` to confirm the preview builds cleanly.
+   - Publish the new version to `https://ripple-agents.lovable.app`.
 
-### Sidebar (בצד ימין, RTL)
-- **ראש:** לוגו עגול בצבע primary + טקסט "מערכת ריצ'ר AI".
-- **Agent Selector:** רכיב Select בולט (shadcn) שמציג את הסוכן הפעיל, עם אפשרות החלפה. כרגע יציג סוכן אחד "שיווק שותפים — האחים סיטון" + אופציה "+ הוסף סוכן חדש" (מנוטרלת/מציגה toast "בקרוב").
-- **תפריט ניווט** (6 פריטים, מודגש פריט פעיל בצבע primary):
-  1. דף הבית — `Home`
-  2. לידים — `Users`
-  3. שיחות פעילות — `MessageCircle`
-  4. ניתוחים — `BarChart3`
-  5. ניהול Prompts — `FileText`
-  6. הגדרות — `Settings`
-- **תחתית:** Avatar + שם משתמש placeholder ("מנהל מערכת").
-- ניתן לקיפול (collapsible icon mode) עם trigger גלוי תמיד ב-Header.
+### Alternative — History rollback (no terminal needed)
 
-### Header עליון
-- כותרת המסך הנוכחי (h1 גדול).
-- Input חיפוש (placeholder בלבד, ללא לוגיקה).
-- Badge: "מטפל בסוכן: {שם הסוכן הפעיל}" — מתעדכן לפי הסוכן הנבחר.
-- אייקון `Bell` להתראות (ללא לוגיקה).
+If you'd rather not touch the CLI:
+- Open the **History** panel (clock icon, top-right of the editor).
+- Find the entry that matches commit `201736d` (or whichever commit on `main` you want).
+- Click **Restore**. Lovable rolls the project back to that exact state and the GitHub repo follows.
 
-## ניהול מצב — AgentContext
+### Why I can't do it for you
 
-- `AgentContext` גלובלי שיחזיק:
-  - `agents: Agent[]` — רשימת כל הסוכנים הזמינים
-  - `activeAgent: Agent | null` — הסוכן הנבחר
-  - `setActiveAgent(id)` — פונקציית החלפה
-- בשלב זה הרשימה תאוכלס ממקור סטטי יחיד (סוכן "שיווק שותפים") עם המבנה המלא של טבלת `agents` כדי שהמעבר ל-Supabase יהיה החלפה של מקור הנתונים בלבד.
-- הבחירה הפעילה תישמר ב-`localStorage` כדי לשרוד רענון.
-- **כל מסך יקבל את `activeAgent` מה-Context** וישמש אותו לטעינת נתונים בעתיד.
+The sandbox blocks stateful git commands (`reset`, `push`, `checkout`, etc.) — only Lovable's internal sync layer can move the project's git HEAD. So either you push from your machine, or you use the History panel inside Lovable.
 
-## מסכים (6)
+### Confirm before I proceed
 
-כל מסך יהיה דף נפרד עם:
-- כותרת המסך (מועברת ל-Header).
-- Empty State במרכז: אייקון רלוונטי גדול + הכיתוב **"מסך זה ייבנה בשלב הבא של הפיתוח"** + תת-טקסט: "הנתונים יוצגו עבור הסוכן: {activeAgent.display_name}".
-
-נתיבים:
-- `/` → Dashboard
-- `/leads` → לידים
-- `/conversations` → שיחות פעילות
-- `/analytics` → ניתוחים
-- `/prompts` → ניהול Prompts
-- `/settings` → הגדרות
-
-## הכנה ל-Supabase (ללא חיבור עכשיו)
-
-- מבנה הטיפוס `Agent` ב-TypeScript יתאים 1:1 לטבלת `agents` שתיארת (id, name, display_name, description, brand_color, status, primary_goal, product_info, whatsapp_number, source_funnels).
-- שכבת data-source מבודדת (`src/lib/agents.ts`) שמחזירה את הסוכנים — בעתיד תוחלף בקריאת Supabase ללא שינוי בקומפוננטות.
-- **לא** מתבצע חיבור ל-Lovable Cloud / Supabase כעת — רק כשתספק credentials או תאשר הפעלה.
-
-## מבנה קבצים
-
-```text
-src/
-├── contexts/AgentContext.tsx        # Provider + hook useAgent()
-├── lib/agents.ts                    # מקור נתוני סוכנים (sttic → Supabase בעתיד)
-├── types/agent.ts                   # טיפוס Agent
-├── components/
-│   ├── layout/
-│   │   ├── AppLayout.tsx            # Layout עם Sidebar + Header + Outlet
-│   │   ├── AppSidebar.tsx           # Sidebar RTL עם ניווט
-│   │   ├── AgentSelector.tsx        # ה-dropdown של בחירת סוכן
-│   │   └── AppHeader.tsx            # Header עליון עם Badge + חיפוש
-│   └── EmptyState.tsx               # Empty state גנרי לשימוש חוזר
-├── pages/
-│   ├── Dashboard.tsx
-│   ├── Leads.tsx
-│   ├── Conversations.tsx
-│   ├── Analytics.tsx
-│   ├── Prompts.tsx
-│   └── Settings.tsx
-├── App.tsx                          # Routes עטופים ב-AgentProvider + AppLayout
-├── index.css                        # design tokens (HSL) + Heebo + RTL
-└── tailwind.config.ts               # mapping לטוקנים
-```
-
-## פרטים טכניים
-
-- **RTL:** `dir="rtl"` ב-`index.html`, ושימוש בכיווני logical של Tailwind (`ms-`/`me-` במידת הצורך) — Sidebar של shadcn תומך RTL ויוגדר `side="right"`.
-- **Routing:** `react-router-dom` קיים. כל ה-Routes יעטפו ב-`<AppLayout>` שמשתמש ב-`<Outlet />`.
-- **shadcn:** Sidebar, Select, Button, Badge, Input, Avatar — כולם כבר קיימים בפרויקט.
-- **State management:** Context API מספיק לצורך הזה (אין צורך ב-Zustand בשלד הראשוני; קל להחליף בעתיד).
-- **Auth:** אין כעת — לפי בקשתך login פשוט יתווסף בהמשך.
-
-## מה לא בתכולה (לפי דרישתך)
-
-- אין נתונים מזויפים, אין לוגיקה עסקית, אין auth, אין חיבור פעיל ל-Supabase.
-- מסך הוספת סוכן יוצג כ-CTA בלבד (placeholder).
+Tell me which path you prefer (CLI force-push, empty commit, or History restore), or just confirm once GitHub `main` reflects the state you want and I'll handle build + publish.
