@@ -11,8 +11,8 @@ const PAGE_TITLES: Record<string, string> = {
   "/": "דף הבית",
   "/leads": "לידים",
   "/conversations": "שיחות פעילות",
-  "/analytics": "ניתוחים",
   "/prompts": "ניהול Prompts",
+  "/coach": "מאמן הבוט",
   "/settings": "הגדרות",
 };
 

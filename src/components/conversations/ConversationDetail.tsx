@@ -1,12 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { MessageCircle } from "lucide-react";
-import { useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { getConversationById } from "@/lib/conversations";
 import { getLeadMemory } from "@/lib/lead-memory";
-import { getMessagesForConversation, sendOutboundMessage } from "@/lib/messages";
+import {
+  getMessagesForConversation,
+  getOlderMessages,
+  MESSAGE_PAGE_SIZE,
+  sendOutboundMessage,
+} from "@/lib/messages";
 import { supabase } from "@/lib/supabase/client";
+import type { Message } from "@/types/message";
 import { ConversationDetailHeader } from "./ConversationDetailHeader";
 import { LeadMemoryPanel } from "./LeadMemoryPanel";
 import { MessageThread } from "./MessageThread";
@@ -18,11 +24,19 @@ interface Props {
 
 export function ConversationDetail({ conversationId }: Props) {
   const queryClient = useQueryClient();
+  const [olderPages, setOlderPages] = useState<Message[]>([]);
+  const [hasOlder, setHasOlder] = useState(true);
+  const [isLoadingOlder, setIsLoadingOlder] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
-  // Realtime: refetch messages whenever a new row lands for this
-  // conversation. Both inbound (Meta → edge function) and outbound
-  // (agent reply / dashboard ReplyBox) hit `messages` directly, so this
-  // single subscription covers every visible update without polling.
+  // Reset pagination state when switching conversations.
+  useEffect(() => {
+    setOlderPages([]);
+    setHasOlder(true);
+    setIsLoadingOlder(false);
+  }, [conversationId]);
+
+  // Realtime: refetch the freshest page when a new message lands.
   useEffect(() => {
     const channel = supabase
       .channel(`messages:${conversationId}`)
@@ -76,6 +90,22 @@ export function ConversationDetail({ conversationId }: Props) {
     },
   });
 
+  const handleLoadOlder = useCallback(async () => {
+    const freshest = messagesQuery.data?.[0];
+    if (!freshest?.timestamp) return;
+    // Use the oldest message we currently have (across freshest + already-loaded
+    // older pages) as the cursor for the next page.
+    const oldestInLoaded = olderPages[0]?.timestamp ?? freshest.timestamp;
+    setIsLoadingOlder(true);
+    try {
+      const next = await getOlderMessages(conversationId, oldestInLoaded);
+      setOlderPages((prev) => [...next, ...prev]);
+      if (next.length < MESSAGE_PAGE_SIZE) setHasOlder(false);
+    } finally {
+      setIsLoadingOlder(false);
+    }
+  }, [conversationId, messagesQuery.data, olderPages]);
+
   if (conversationQuery.isLoading) {
     return (
       <div className="flex h-full flex-col">
@@ -106,28 +136,43 @@ export function ConversationDetail({ conversationId }: Props) {
     );
   }
 
+  const messagesForThread = [...olderPages, ...(messagesQuery.data ?? [])];
+  const isAtFirstPage =
+    !messagesQuery.data || messagesQuery.data.length < MESSAGE_PAGE_SIZE;
+
   return (
     <div className="flex h-full flex-col bg-background">
-      <ConversationDetailHeader conversation={conversation} />
-      <Tabs defaultValue="thread" dir="rtl" className="flex flex-1 flex-col overflow-hidden">
-        <TabsList className="mx-4 mt-2 self-start">
-          <TabsTrigger value="thread">שיחה</TabsTrigger>
-          <TabsTrigger value="memory">סיכום + שאלות</TabsTrigger>
-        </TabsList>
-        <TabsContent value="thread" className="flex flex-1 flex-col overflow-hidden">
-          <div className="flex-1 overflow-y-auto">
-            <MessageThread
-              messages={messagesQuery.data ?? []}
-              isLoading={messagesQuery.isLoading}
-              error={messagesQuery.error as Error | null}
-            />
+      <ConversationDetailHeader
+        conversation={conversation}
+        onOpenDetails={() => setDetailsOpen(true)}
+      />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        <div className="flex-1 overflow-y-auto">
+          <MessageThread
+            messages={messagesForThread}
+            isLoading={messagesQuery.isLoading}
+            error={messagesQuery.error as Error | null}
+            hasOlder={hasOlder && !isAtFirstPage}
+            onLoadOlder={() => void handleLoadOlder()}
+            isLoadingOlder={isLoadingOlder}
+          />
+        </div>
+        <ReplyBox onSend={(content) => sendMutation.mutateAsync(content).then(() => undefined)} />
+      </div>
+
+      <Sheet open={detailsOpen} onOpenChange={setDetailsOpen}>
+        <SheetContent side="left" className="w-full sm:max-w-md" dir="rtl">
+          <SheetHeader>
+            <SheetTitle>פרטי הליד</SheetTitle>
+            <SheetDescription>
+              סיכום AI + תשובות 5 השאלות. מתעדכן אוטומטית אחרי כל תור של הבוט.
+            </SheetDescription>
+          </SheetHeader>
+          <div className="mt-4 overflow-y-auto pe-1">
+            <LeadMemoryPanel memory={memoryQuery.data} isLoading={memoryQuery.isLoading} />
           </div>
-          <ReplyBox onSend={(content) => sendMutation.mutateAsync(content).then(() => undefined)} />
-        </TabsContent>
-        <TabsContent value="memory" className="flex-1 overflow-y-auto">
-          <LeadMemoryPanel memory={memoryQuery.data} isLoading={memoryQuery.isLoading} />
-        </TabsContent>
-      </Tabs>
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
+import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -9,7 +9,6 @@ import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import Index from "./pages/Index.tsx";
 import Leads from "./pages/Leads.tsx";
 import Conversations from "./pages/Conversations.tsx";
-import Analytics from "./pages/Analytics.tsx";
 import Prompts from "./pages/Prompts.tsx";
 import Coach from "./pages/Coach.tsx";
 import Settings from "./pages/Settings.tsx";
@@ -42,7 +41,9 @@ const App = () => (
               <Route path="/leads" element={<Leads />} />
               <Route path="/conversations" element={<Conversations />} />
               <Route path="/conversations/:id" element={<Conversations />} />
-              <Route path="/analytics" element={<Analytics />} />
+              {/* /analytics merged into the home page as an admin tab. Old
+                  links redirect home rather than 404. */}
+              <Route path="/analytics" element={<Navigate to="/" replace />} />
               <Route path="/prompts" element={<Prompts />} />
               <Route path="/coach" element={<Coach />} />
               <Route path="/settings" element={<Settings />} />
