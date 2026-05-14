@@ -11,6 +11,7 @@ import Leads from "./pages/Leads.tsx";
 import Conversations from "./pages/Conversations.tsx";
 import Analytics from "./pages/Analytics.tsx";
 import Prompts from "./pages/Prompts.tsx";
+import Coach from "./pages/Coach.tsx";
 import Settings from "./pages/Settings.tsx";
 import Login from "./pages/Login.tsx";
 import NotFound from "./pages/NotFound.tsx";
@@ -43,6 +44,7 @@ const App = () => (
               <Route path="/conversations/:id" element={<Conversations />} />
               <Route path="/analytics" element={<Analytics />} />
               <Route path="/prompts" element={<Prompts />} />
+              <Route path="/coach" element={<Coach />} />
               <Route path="/settings" element={<Settings />} />
             </Route>
 
