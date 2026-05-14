@@ -15,8 +15,8 @@ interface Props {
 }
 
 export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
-  const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((s, [, n]) => s + n, 0);
+  const entries = Object.entries(breakdown).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const total = entries.reduce((s, [, n]) => s + (n ?? 0), 0);
 
   return (
     <Card>
@@ -34,7 +34,8 @@ export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
         ) : (
           <ul className="space-y-2">
             {entries.map(([key, count]) => {
-              const pct = total === 0 ? 0 : Math.round((count / total) * 100);
+              const c = count ?? 0;
+              const pct = total === 0 ? 0 : Math.round((c / total) * 100);
               return (
                 <li key={key} className="flex items-center gap-2 text-sm">
                   <div className="min-w-[100px] text-xs">{LABEL[key] ?? key}</div>
@@ -44,7 +45,7 @@ export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
                     </div>
                   </div>
                   <div className="shrink-0 text-xs tabular-nums text-muted-foreground">
-                    {count} ({pct}%)
+                    {c} ({pct}%)
                   </div>
                 </li>
               );
