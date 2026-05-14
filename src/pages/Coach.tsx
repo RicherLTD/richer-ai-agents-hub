@@ -53,6 +53,7 @@ function CoachInner() {
   const queryClient = useQueryClient();
   const agentId = activeAgent?.id ?? null;
 
+  const [activeTab, setActiveTab] = useState<"chat" | "brain">("chat");
   const [draft, setDraft] = useState("");
   const [reviewing, setReviewing] = useState<CoachMessageRow | null>(null);
   const [attachment, setAttachment] = useState<UploadCoachAttachmentResult | null>(null);
@@ -128,10 +129,34 @@ function CoachInner() {
     if (el) el.scrollTop = el.scrollHeight;
   }, [historyQuery.data, sendMutation.isPending]);
 
+  // Called by the Brain panel when the operator clicks "update the bot"
+  // on a brain item. Sends a pre-formatted message that asks the Coach
+  // to propose a prompt edit incorporating the new knowledge, then
+  // switches to the chat tab so the operator can see the proposal land.
+  const handleUpdateBotForBrain = (item: {
+    id: string;
+    title: string;
+    source_kind: string;
+  }) => {
+    const kindLabel = item.source_kind === "note"
+      ? "הערה חדשה"
+      : item.source_kind === "pdf"
+      ? "מסמך PDF חדש"
+      : "תמונה חדשה";
+    const message = `${kindLabel} נוספה למוח: "${item.title}".\n\nתקרא את התוכן שלה ב־<brain_doc id="${item.id}"> במוח, ותציע עדכון ל־prompt של הבוט שיכיר את העובדות הרלוונטיות מתוכה. אל תכניס את כל הטקסט — תזקק רק את מה שהבוט באמת צריך לדעת בשיחה עם ליד.`;
+    setActiveTab("chat");
+    sendMutation.mutate(message);
+  };
+
   const messages = historyQuery.data ?? [];
 
   return (
-    <Tabs defaultValue="chat" className="flex h-full flex-col" dir="rtl">
+    <Tabs
+      value={activeTab}
+      onValueChange={(v) => setActiveTab(v as "chat" | "brain")}
+      className="flex h-full flex-col"
+      dir="rtl"
+    >
       <header className="border-b px-6 py-4">
         <div className="flex items-baseline justify-between gap-4">
           <div>
@@ -311,7 +336,7 @@ function CoachInner() {
         value="brain"
         className="flex-1 overflow-y-auto px-6 py-4 data-[state=inactive]:hidden"
       >
-        <BrainPanel />
+        <BrainPanel onUpdateBot={handleUpdateBotForBrain} />
       </TabsContent>
 
       <ReviewProposalDialog

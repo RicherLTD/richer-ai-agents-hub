@@ -26,6 +26,7 @@ import {
   Trash2,
   Upload,
   X as XIcon,
+  Zap,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -68,7 +69,14 @@ function formatCost(n: number): string {
   return `$${n.toFixed(3)}`;
 }
 
-export function BrainPanel() {
+interface BrainPanelProps {
+  /** Called when the operator clicks "update the bot" on a brain item.
+   *  Parent decides what to do — typically: send a Coach message asking
+   *  for a prompt edit and switch to the chat tab. */
+  onUpdateBot?: (item: { id: string; title: string; source_kind: string }) => void;
+}
+
+export function BrainPanel({ onUpdateBot }: BrainPanelProps) {
   const { activeAgent } = useAgent();
   const queryClient = useQueryClient();
   const agentId = activeAgent?.id ?? null;
@@ -233,6 +241,11 @@ export function BrainPanel() {
                 onEdit={() => setEditing(n)}
                 onToggleActive={() => toggleActive.mutate(n)}
                 onDelete={() => setConfirmDelete(n)}
+                onUpdateBot={
+                  onUpdateBot
+                    ? () => onUpdateBot({ id: n.id, title: n.title, source_kind: n.source_kind })
+                    : undefined
+                }
                 isToggling={toggleActive.isPending && toggleActive.variables?.id === n.id}
               />
             ))}
@@ -262,6 +275,11 @@ export function BrainPanel() {
                 onEdit={() => setEditing(d)}
                 onToggleActive={() => toggleActive.mutate(d)}
                 onDelete={() => setConfirmDelete(d)}
+                onUpdateBot={
+                  onUpdateBot
+                    ? () => onUpdateBot({ id: d.id, title: d.title, source_kind: d.source_kind })
+                    : undefined
+                }
                 isToggling={toggleActive.isPending && toggleActive.variables?.id === d.id}
               />
             ))}
@@ -359,10 +377,18 @@ interface RowActionsProps {
   onEdit: () => void;
   onToggleActive: () => void;
   onDelete: () => void;
+  onUpdateBot?: () => void;
   isToggling: boolean;
 }
 
-function BrainNoteRow({ row, onEdit, onToggleActive, onDelete, isToggling }: RowActionsProps) {
+function BrainNoteRow({
+  row,
+  onEdit,
+  onToggleActive,
+  onDelete,
+  onUpdateBot,
+  isToggling,
+}: RowActionsProps) {
   return (
     <Card className={row.is_active ? "" : "opacity-60"}>
       <CardContent className="flex items-start gap-3 p-3">
@@ -406,6 +432,18 @@ function BrainNoteRow({ row, onEdit, onToggleActive, onDelete, isToggling }: Row
             disabled={isToggling}
             aria-label={row.is_active ? "כבה הערה" : "הפעל הערה"}
           />
+          {onUpdateBot && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              onClick={onUpdateBot}
+              aria-label="עדכן את הבוט"
+              title="עדכן את הבוט עם ההערה הזו"
+            >
+              <Zap className="h-4 w-4 text-amber-500" />
+            </Button>
+          )}
           <Button type="button" variant="ghost" size="icon" onClick={onEdit} aria-label="ערוך">
             <PencilLine className="h-4 w-4" />
           </Button>
@@ -425,7 +463,14 @@ function BrainNoteRow({ row, onEdit, onToggleActive, onDelete, isToggling }: Row
   );
 }
 
-function BrainDocCard({ row, onEdit, onToggleActive, onDelete, isToggling }: RowActionsProps) {
+function BrainDocCard({
+  row,
+  onEdit,
+  onToggleActive,
+  onDelete,
+  onUpdateBot,
+  isToggling,
+}: RowActionsProps) {
   const Icon = row.source_kind === "pdf" ? FileText : ImageIcon;
   return (
     <Card className={row.is_active ? "" : "opacity-60"}>
@@ -468,21 +513,35 @@ function BrainDocCard({ row, onEdit, onToggleActive, onDelete, isToggling }: Row
             </Badge>
           ))}
         </div>
-        <div className="flex items-center justify-end gap-1 pt-1">
-          <Button type="button" variant="ghost" size="sm" onClick={onEdit}>
-            <PencilLine className="me-1 h-3.5 w-3.5" />
-            ערוך
-          </Button>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={onDelete}
-            className="text-destructive"
-          >
-            <Trash2 className="me-1 h-3.5 w-3.5" />
-            מחק
-          </Button>
+        <div className="flex items-center justify-between gap-1 pt-1">
+          {onUpdateBot && (
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={onUpdateBot}
+              title="שלח את התוכן הזה ל־Coach שיעדכן את ה־prompt של הבוט"
+            >
+              <Zap className="me-1 h-3.5 w-3.5 text-amber-500" />
+              עדכן את הבוט
+            </Button>
+          )}
+          <div className="flex items-center gap-1">
+            <Button type="button" variant="ghost" size="sm" onClick={onEdit}>
+              <PencilLine className="me-1 h-3.5 w-3.5" />
+              ערוך
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onDelete}
+              className="text-destructive"
+            >
+              <Trash2 className="me-1 h-3.5 w-3.5" />
+              מחק
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
