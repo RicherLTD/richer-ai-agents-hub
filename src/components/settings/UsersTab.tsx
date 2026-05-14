@@ -147,7 +147,7 @@ export function UsersTab() {
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end" dir="rtl">
+                        <DropdownMenuContent align="end">
                           {u.role === "admin" ? (
                             <DropdownMenuItem
                               disabled={isSelf || roleMutation.isPending}
