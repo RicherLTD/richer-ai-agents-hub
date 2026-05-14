@@ -1,0 +1,559 @@
+// prompt-coach/index.ts
+//
+// Admin-facing AI Coach — a second Claude call that helps the operator
+// improve the BOT's main prompt. The Coach is NOT the bot: it never
+// talks to a lead. It only converses with admins (Kfir, Yitzhak), reads
+// the current prompt and recent conversations, and proposes a full
+// replacement of the prompt when the admin asks for a change.
+//
+// Flow per chat turn:
+//   1. Admin POSTs { agent_id, user_message, referenced_conversation_id? }
+//   2. We store the admin's message in coach_messages.
+//   3. We load: current main prompt, last 20 coach turns (history),
+//      and — if referenced — the lead conversation + lead_memory.
+//   4. We call Claude Sonnet 4.6 with a Coach system prompt + tool
+//      `propose_prompt_edit`. Tool use is the SIGNAL to the UI that
+//      "I want to change the prompt — here is the new full text".
+//   5. We store the assistant's reply (text + optional proposal) in
+//      coach_messages and return it to the caller.
+//
+// The Coach NEVER mutates the prompts table directly. The admin must
+// click "apply" in the UI, which calls `prompt-coach-apply` — that's
+// the only path that touches prod prompts.
+//
+// Requires `ANTHROPIC_API_KEY` Supabase secret. Admin-only (requireAdmin).
+
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
+
+import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
+import { corsHeaders } from "../_shared/cors.ts";
+import { logError } from "../_shared/logError.ts";
+
+const SOURCE = "prompt-coach";
+const COACH_MODEL = "claude-sonnet-4-6";
+const MAX_HISTORY_TURNS = 20;
+const MAX_CONVERSATION_MESSAGES = 30;
+const MAIN_PROMPT_TYPE = "main";
+
+// ---------- request body ----------
+
+interface CoachRequest {
+  agentId: string;
+  userMessage: string;
+  /** Optional — when the admin is asking about a specific lead chat. */
+  referencedConversationId?: string;
+}
+
+function parseRequestBody(raw: unknown): CoachRequest {
+  if (!raw || typeof raw !== "object") {
+    throw new HttpError(400, "Body must be a JSON object");
+  }
+  const o = raw as Record<string, unknown>;
+  if (typeof o.agentId !== "string" || !o.agentId) {
+    throw new HttpError(400, "agentId is required");
+  }
+  if (typeof o.userMessage !== "string" || !o.userMessage.trim()) {
+    throw new HttpError(400, "userMessage is required");
+  }
+  if (o.userMessage.length > 4000) {
+    throw new HttpError(400, "userMessage too long (max 4000 chars)");
+  }
+  let referencedConversationId: string | undefined;
+  if (o.referencedConversationId !== undefined && o.referencedConversationId !== null) {
+    if (typeof o.referencedConversationId !== "string") {
+      throw new HttpError(400, "referencedConversationId must be a string or null");
+    }
+    referencedConversationId = o.referencedConversationId;
+  }
+  return {
+    agentId: o.agentId,
+    userMessage: o.userMessage.trim(),
+    referencedConversationId,
+  };
+}
+
+// ---------- coach context: prompt, history, optional conversation ----------
+
+interface CoachContext {
+  agentName: string;
+  /** Active main prompt content + id + version. Null if missing. */
+  currentPrompt: { id: string; version: string; content: string } | null;
+  /** Recent coach turns (oldest → newest) for chat continuity. */
+  history: Array<{ role: "user" | "assistant"; content: string }>;
+  /** The referenced lead conversation, if requested. */
+  referencedConversation: ReferencedConversation | null;
+}
+
+interface ReferencedConversation {
+  id: string;
+  leadName: string | null;
+  leadPhone: string;
+  currentTag: string | null;
+  funnelStage: string | null;
+  messages: Array<{ role: "user" | "assistant"; content: string }>;
+  leadMemory: Record<string, unknown> | null;
+}
+
+async function loadCoachContext(
+  admin: SupabaseClient,
+  agentId: string,
+  referencedConversationId: string | undefined,
+): Promise<CoachContext> {
+  // Agent name (for the system prompt).
+  const { data: agent, error: agentErr } = await admin
+    .from("agents")
+    .select("name")
+    .eq("id", agentId)
+    .maybeSingle();
+  if (agentErr || !agent) {
+    throw new HttpError(404, `Agent not found: ${agentErr?.message ?? "no row"}`);
+  }
+  const agentName = agent.name as string;
+
+  // Current active main prompt.
+  const { data: prompt, error: promptErr } = await admin
+    .from("prompts")
+    .select("id, version, content")
+    .eq("agent_id", agentId)
+    .eq("prompt_type", MAIN_PROMPT_TYPE)
+    .eq("is_active", true)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (promptErr) {
+    throw new HttpError(500, `Failed to load prompt: ${promptErr.message}`);
+  }
+  const currentPrompt = prompt
+    ? {
+      id: prompt.id as string,
+      version: prompt.version as string,
+      content: prompt.content as string,
+    }
+    : null;
+
+  // Recent coach history for chat continuity (oldest first for Claude).
+  const { data: historyRows, error: histErr } = await admin
+    .from("coach_messages")
+    .select("role, content, created_at")
+    .eq("agent_id", agentId)
+    .order("created_at", { ascending: false })
+    .limit(MAX_HISTORY_TURNS);
+  if (histErr) {
+    throw new HttpError(500, `Failed to load coach history: ${histErr.message}`);
+  }
+  const history = (historyRows ?? [])
+    .slice()
+    .reverse()
+    .map((row) => ({
+      role: row.role as "user" | "assistant",
+      content: row.content as string,
+    }));
+
+  // Optionally load a referenced lead conversation + memory.
+  let referencedConversation: ReferencedConversation | null = null;
+  if (referencedConversationId) {
+    referencedConversation = await loadReferencedConversation(
+      admin,
+      agentId,
+      referencedConversationId,
+    );
+  }
+
+  return { agentName, currentPrompt, history, referencedConversation };
+}
+
+async function loadReferencedConversation(
+  admin: SupabaseClient,
+  agentId: string,
+  conversationId: string,
+): Promise<ReferencedConversation | null> {
+  const { data: conv, error: convErr } = await admin
+    .from("conversations")
+    .select("id, lead_name, lead_phone, current_tag, funnel_stage")
+    .eq("id", conversationId)
+    .eq("agent_id", agentId)
+    .maybeSingle();
+  if (convErr || !conv) {
+    // Don't blow up — just skip the reference if it can't be loaded.
+    return null;
+  }
+
+  const { data: msgs } = await admin
+    .from("messages")
+    .select("direction, content")
+    .eq("conversation_id", conversationId)
+    .order("timestamp", { ascending: true })
+    .limit(MAX_CONVERSATION_MESSAGES);
+  const messages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const m of msgs ?? []) {
+    const text = (m.content as string | null)?.trim();
+    if (!text) continue;
+    messages.push({
+      role: (m.direction as string) === "inbound" ? "user" : "assistant",
+      content: text,
+    });
+  }
+
+  const { data: mem } = await admin
+    .from("lead_memory")
+    .select(
+      "q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency, q6_investment, conversation_summary, primary_objection, red_flags, notes_for_advisor",
+    )
+    .eq("conversation_id", conversationId)
+    .maybeSingle();
+
+  return {
+    id: conv.id as string,
+    leadName: (conv.lead_name as string | null) ?? null,
+    leadPhone: conv.lead_phone as string,
+    currentTag: (conv.current_tag as string | null) ?? null,
+    funnelStage: (conv.funnel_stage as string | null) ?? null,
+    messages,
+    leadMemory: (mem as Record<string, unknown> | null) ?? null,
+  };
+}
+
+// ---------- system prompt builder ----------
+
+function buildCoachSystemPrompt(ctx: CoachContext): string {
+  const parts: string[] = [];
+  parts.push(
+    `אתה "מאמן הפרומפט" של מערכת AI שמטפלת בלידים בוואטסאפ למכללת ריצ'ר.`,
+    ``,
+    `**תפקידך**: לעזור לאופרטור (אדמין אנושי) לשפר את ה־prompt של הבוט שמדבר עם הלידים.`,
+    `**אתה לא מדבר עם לידים** — אתה מדבר רק עם האופרטור בעברית, ברור ועוזר.`,
+    ``,
+    `## עקרונות`,
+    `1. תמיד תקרא את ה־prompt הנוכחי לפני שאתה מציע שינוי.`,
+    `2. אם האופרטור מתאר בעיה — תזהה את החלק ב־prompt שאחראי לזה.`,
+    `3. תציע שינוי **ממוקד**: שנה רק את החלק הרלוונטי, השאר את השאר.`,
+    `4. תסביר בעברית למה השינוי יפתור את הבעיה.`,
+    `5. כשאתה מציע שינוי — תקרא לכלי \`propose_prompt_edit\` עם ה־prompt המלא החדש (לא diff, ה־UI ידאג לדיף).`,
+    `6. אם הבקשה לא ברורה — תשאל שאלת הבהרה אחת לפני שאתה מציע שינוי.`,
+    ``,
+    `## גבולות קשיחים (אסור לחצות)`,
+    `- אסור להציע prompt שמסיר את הגבולות הקיימים: אסור לציין מחירים, אסור להבטיח הכנסה, אסור שהבוט יחשוף את עצמו כ־AI.`,
+    `- אסור להציע שינוי שמסכן לידים מתחת לגיל 18 (red flag underage חייב להישאר).`,
+    `- אסור להוסיף הוראות שיגרמו לבוט להמציא עובדות (שמות יועצים, זמני זום, וכו').`,
+    `- אם האופרטור מבקש שינוי שעובר על אחד הגבולות — סרב בנימוס והסבר.`,
+    ``,
+  );
+
+  parts.push(`## הסוכן הפעיל`, `שם הסוכן: \`${ctx.agentName}\``, ``);
+
+  if (ctx.currentPrompt) {
+    parts.push(
+      `## ה־prompt הנוכחי (גרסה ${ctx.currentPrompt.version})`,
+      "```markdown",
+      ctx.currentPrompt.content,
+      "```",
+      ``,
+    );
+  } else {
+    parts.push(
+      `## ה־prompt הנוכחי`,
+      `**אין prompt פעיל לסוכן הזה.** אם האופרטור מבקש שינוי, תציע prompt התחלתי.`,
+      ``,
+    );
+  }
+
+  if (ctx.referencedConversation) {
+    const r = ctx.referencedConversation;
+    parts.push(
+      `## השיחה שהאופרטור מתייחס אליה`,
+      `- ליד: ${r.leadName ?? "(ללא שם)"} (${r.leadPhone})`,
+      `- תג נוכחי: ${r.currentTag ?? "—"} | שלב משפך: ${r.funnelStage ?? "—"}`,
+      ``,
+      `**ההיסטוריה המלאה של השיחה:**`,
+    );
+    if (r.messages.length === 0) {
+      parts.push(`(אין הודעות)`);
+    } else {
+      for (const m of r.messages) {
+        const speaker = m.role === "user" ? "ליד" : "בוט";
+        parts.push(`**${speaker}**: ${m.content}`);
+      }
+    }
+    parts.push(``);
+    if (r.leadMemory) {
+      parts.push(
+        `**הזיכרון של הליד (q1-q6):**`,
+        "```json",
+        JSON.stringify(r.leadMemory, null, 2),
+        "```",
+        ``,
+      );
+    }
+  }
+
+  parts.push(
+    `## פורמט תשובה`,
+    `- תענה בעברית, קצר וענייני (1-4 פסקאות).`,
+    `- כשאתה רוצה להציע שינוי ב־prompt — תקרא ל־tool \`propose_prompt_edit\` עם ה־prompt המלא החדש ועם הסבר קצר (\`reason\`).`,
+    `- אם אתה רק עונה / מבהיר — תכתוב טקסט חופשי, בלי קריאה ל־tool.`,
+  );
+
+  return parts.join("\n");
+}
+
+// ---------- tool definition ----------
+
+interface ToolDef {
+  name: string;
+  description: string;
+  input_schema: Record<string, unknown>;
+}
+
+const PROPOSE_EDIT_TOOL: ToolDef = {
+  name: "propose_prompt_edit",
+  description:
+    "Propose a complete replacement of the bot's main system prompt. Use this whenever the admin's feedback should trigger a change. Do NOT use this for chit-chat or clarifying questions.",
+  input_schema: {
+    type: "object",
+    properties: {
+      new_prompt_content: {
+        type: "string",
+        description:
+          "The FULL new prompt body in markdown — not a diff. Include everything the bot needs.",
+      },
+      reason: {
+        type: "string",
+        description:
+          "One short sentence in Hebrew explaining what changed and why it addresses the admin's feedback.",
+      },
+    },
+    required: ["new_prompt_content", "reason"],
+  },
+};
+
+// ---------- Anthropic call + response parsing ----------
+
+interface AnthropicTextBlock {
+  type: "text";
+  text: string;
+}
+interface AnthropicToolUseBlock {
+  type: "tool_use";
+  id: string;
+  name: string;
+  input: Record<string, unknown>;
+}
+type AnthropicContentBlock = AnthropicTextBlock | AnthropicToolUseBlock | { type: string };
+
+interface AnthropicResponse {
+  content: ReadonlyArray<AnthropicContentBlock>;
+  stop_reason?: string;
+}
+
+interface CoachReply {
+  /** The free-text reply (always present; the UI shows this as the assistant bubble). */
+  text: string;
+  /** When the model invoked propose_prompt_edit, this holds the proposal. */
+  proposal: { newPromptContent: string; reason: string } | null;
+}
+
+function parseCoachReply(response: AnthropicResponse): CoachReply {
+  let text = "";
+  let proposal: CoachReply["proposal"] = null;
+  for (const block of response.content) {
+    if (block.type === "text") {
+      text += (block as AnthropicTextBlock).text;
+    } else if (block.type === "tool_use") {
+      const tool = block as AnthropicToolUseBlock;
+      if (tool.name !== PROPOSE_EDIT_TOOL.name) continue;
+      const input = tool.input;
+      const newPromptContent = input.new_prompt_content;
+      const reason = input.reason;
+      if (typeof newPromptContent !== "string" || newPromptContent.trim().length === 0) continue;
+      if (typeof reason !== "string" || reason.trim().length === 0) continue;
+      proposal = { newPromptContent: newPromptContent.trim(), reason: reason.trim() };
+    }
+  }
+  // If the model used the tool but gave no narration, synthesise one
+  // so the UI always has SOMETHING to render in the assistant bubble.
+  if (proposal && text.trim().length === 0) {
+    text = `הצעתי שינוי ל־prompt — ${proposal.reason}`;
+  }
+  if (text.trim().length === 0) {
+    text = "(תגובה ריקה — נסה לנסח מחדש)";
+  }
+  return { text, proposal };
+}
+
+async function callCoach(
+  anthropic: Anthropic,
+  systemPrompt: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  userMessage: string,
+): Promise<CoachReply> {
+  const messages = [
+    ...history,
+    { role: "user" as const, content: userMessage },
+  ];
+  // deno-lint-ignore no-explicit-any
+  const raw = await anthropic.messages.create({
+    model: COACH_MODEL,
+    max_tokens: 4096,
+    thinking: { type: "adaptive" } as any,
+    system: systemPrompt,
+    tools: [PROPOSE_EDIT_TOOL] as any,
+    messages,
+  } as any);
+  return parseCoachReply(raw as unknown as AnthropicResponse);
+}
+
+// ---------- entrypoint ----------
+
+Deno.serve(async (req) => {
+  if (req.method === "OPTIONS") {
+    return new Response(null, { headers: corsHeaders });
+  }
+  if (req.method !== "POST") {
+    return jsonResponse({ error: "Method not allowed" }, {
+      status: 405,
+      headers: corsHeaders,
+    });
+  }
+
+  let ctx;
+  try {
+    ctx = await requireAdmin(req);
+  } catch (err) {
+    const status = err instanceof HttpError ? err.status : 500;
+    const message = err instanceof Error ? err.message : "Auth failed";
+    return jsonResponse({ error: message }, { status, headers: corsHeaders });
+  }
+
+  let body: CoachRequest;
+  try {
+    const raw = await req.json().catch(() => null);
+    body = parseRequestBody(raw);
+  } catch (err) {
+    const status = err instanceof HttpError ? err.status : 400;
+    const message = err instanceof Error ? err.message : "Bad request";
+    return jsonResponse({ error: message }, { status, headers: corsHeaders });
+  }
+
+  const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY");
+  if (!anthropicApiKey) {
+    return jsonResponse(
+      { error: "Coach is unavailable (missing ANTHROPIC_API_KEY)" },
+      { status: 503, headers: corsHeaders },
+    );
+  }
+
+  // 1. Persist the admin's message FIRST so the conversation survives
+  //    even if Claude blows up.
+  const { data: userRow, error: insErr } = await ctx.admin
+    .from("coach_messages")
+    .insert({
+      agent_id: body.agentId,
+      role: "user",
+      user_id: ctx.callerId,
+      content: body.userMessage,
+      referenced_conversation_id: body.referencedConversationId ?? null,
+    })
+    .select("id, created_at")
+    .single();
+  if (insErr || !userRow) {
+    await logError({
+      admin: ctx.admin,
+      source: SOURCE,
+      errorType: "user_message_insert_failed",
+      message: insErr?.message ?? "no row returned",
+      context: { agentId: body.agentId },
+      agentId: body.agentId,
+    });
+    return jsonResponse({ error: "Failed to record your message" }, {
+      status: 500,
+      headers: corsHeaders,
+    });
+  }
+
+  // 2. Build context.
+  let coachCtx: CoachContext;
+  try {
+    coachCtx = await loadCoachContext(ctx.admin, body.agentId, body.referencedConversationId);
+  } catch (err) {
+    const status = err instanceof HttpError ? err.status : 500;
+    const message = err instanceof Error ? err.message : "Context load failed";
+    await logError({
+      admin: ctx.admin,
+      source: SOURCE,
+      errorType: "context_load_failed",
+      message,
+      context: { agentId: body.agentId },
+      agentId: body.agentId,
+    });
+    return jsonResponse({ error: message }, { status, headers: corsHeaders });
+  }
+
+  // Drop the LATEST user row from history (it's `body.userMessage` we'll
+  // pass separately) so Claude doesn't see the same message twice.
+  const historyForClaude = coachCtx.history.slice(0, -1);
+
+  const systemPrompt = buildCoachSystemPrompt(coachCtx);
+  const anthropic = new Anthropic({ apiKey: anthropicApiKey });
+
+  // 3. Call Claude.
+  let reply: CoachReply;
+  try {
+    reply = await callCoach(anthropic, systemPrompt, historyForClaude, body.userMessage);
+  } catch (err) {
+    await logError({
+      admin: ctx.admin,
+      source: SOURCE,
+      errorType: "claude_api_error",
+      message: err instanceof Error ? err.message : String(err),
+      context: { model: COACH_MODEL, agentId: body.agentId },
+      agentId: body.agentId,
+    });
+    return jsonResponse({ error: "Claude error — try again in a moment" }, {
+      status: 502,
+      headers: corsHeaders,
+    });
+  }
+
+  // 4. Persist the assistant message.
+  const { data: assistantRow, error: assistantErr } = await ctx.admin
+    .from("coach_messages")
+    .insert({
+      agent_id: body.agentId,
+      role: "assistant",
+      user_id: ctx.callerId,
+      content: reply.text,
+      proposed_prompt_content: reply.proposal?.newPromptContent ?? null,
+      referenced_conversation_id: body.referencedConversationId ?? null,
+    })
+    .select("id, created_at, content, proposed_prompt_content")
+    .single();
+  if (assistantErr || !assistantRow) {
+    await logError({
+      admin: ctx.admin,
+      source: SOURCE,
+      errorType: "assistant_message_insert_failed",
+      message: assistantErr?.message ?? "no row returned",
+      context: { agentId: body.agentId },
+      agentId: body.agentId,
+    });
+    return jsonResponse({ error: "Failed to record Coach reply" }, {
+      status: 500,
+      headers: corsHeaders,
+    });
+  }
+
+  return jsonResponse(
+    {
+      userMessageId: userRow.id,
+      assistantMessage: {
+        id: assistantRow.id,
+        content: assistantRow.content,
+        proposedPromptContent: assistantRow.proposed_prompt_content,
+        proposalReason: reply.proposal?.reason ?? null,
+        createdAt: assistantRow.created_at,
+      },
+    },
+    { status: 200, headers: corsHeaders },
+  );
+});

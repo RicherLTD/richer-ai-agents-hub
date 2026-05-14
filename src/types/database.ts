@@ -209,6 +209,48 @@ export type Database = {
         }
         Relationships: []
       }
+      coach_messages: {
+        Row: {
+          agent_id: string
+          applied_at: string | null
+          applied_by: string | null
+          applied_prompt_id: string | null
+          content: string
+          created_at: string
+          id: string
+          proposed_prompt_content: string | null
+          referenced_conversation_id: string | null
+          role: string
+          user_id: string
+        }
+        Insert: {
+          agent_id: string
+          applied_at?: string | null
+          applied_by?: string | null
+          applied_prompt_id?: string | null
+          content: string
+          created_at?: string
+          id?: string
+          proposed_prompt_content?: string | null
+          referenced_conversation_id?: string | null
+          role: string
+          user_id: string
+        }
+        Update: {
+          agent_id?: string
+          applied_at?: string | null
+          applied_by?: string | null
+          applied_prompt_id?: string | null
+          content?: string
+          created_at?: string
+          id?: string
+          proposed_prompt_content?: string | null
+          referenced_conversation_id?: string | null
+          role?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       conversations: {
         Row: {
           agent_id: string | null

@@ -1,4 +1,4 @@
-import { BarChart3, FileText, Home, LogOut, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
+import { BarChart3, Bot, FileText, Home, LogOut, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -26,12 +26,21 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import { AgentSelector } from "./AgentSelector";
 
-const NAV_ITEMS = [
+interface NavItem {
+  title: string;
+  url: string;
+  icon: typeof Home;
+  end: boolean;
+  adminOnly?: boolean;
+}
+
+const NAV_ITEMS: NavItem[] = [
   { title: "דף הבית", url: "/", icon: Home, end: true },
   { title: "לידים", url: "/leads", icon: Users, end: false },
   { title: "שיחות פעילות", url: "/conversations", icon: MessageCircle, end: false },
   { title: "ניתוחים", url: "/analytics", icon: BarChart3, end: false },
   { title: "ניהול Prompts", url: "/prompts", icon: FileText, end: false },
+  { title: "מאמן הבוט", url: "/coach", icon: Bot, end: false, adminOnly: true },
   { title: "הגדרות", url: "/settings", icon: Settings, end: false },
 ];
 
@@ -39,6 +48,7 @@ export function AppSidebar() {
   const { state } = useSidebar();
   const collapsed = state === "collapsed";
   const { user, appUser, isAdmin, signOut } = useAuth();
+  const visibleNav = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
   const email = user?.email ?? "";
   const displayName = appUser?.full_name?.trim() || email;
   const initials = (appUser?.full_name?.trim() || email).slice(0, 2).toUpperCase() || "מנ";
@@ -69,7 +79,7 @@ export function AppSidebar() {
           {!collapsed && <SidebarGroupLabel>ניווט</SidebarGroupLabel>}
           <SidebarGroupContent>
             <SidebarMenu>
-              {NAV_ITEMS.map((item) => (
+              {visibleNav.map((item) => (
                 <SidebarMenuItem key={item.url}>
                   <SidebarMenuButton asChild tooltip={item.title}>
                     <NavLink
