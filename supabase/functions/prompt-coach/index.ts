@@ -27,6 +27,11 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
+import {
+  type BrainRow,
+  buildBrainSection,
+  loadBrainRows,
+} from "../_shared/brainContext.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
 
@@ -107,6 +112,8 @@ interface CoachContext {
   history: Array<{ role: "user" | "assistant"; content: string }>;
   /** The referenced lead conversation, if requested. */
   referencedConversation: ReferencedConversation | null;
+  /** Active brain rows for this agent (own + shared). May be empty. */
+  brain: BrainRow[];
 }
 
 interface ReferencedConversation {
@@ -184,7 +191,16 @@ async function loadCoachContext(
     );
   }
 
-  return { agentName, currentPrompt, history, referencedConversation };
+  // Active brain rows for this agent — own + globally shared. A brain
+  // load failure shouldn't block Coach replies, so we degrade gracefully.
+  let brain: BrainRow[] = [];
+  try {
+    brain = await loadBrainRows(admin, agentId);
+  } catch (err) {
+    console.warn(`[prompt-coach] brain load failed: ${err instanceof Error ? err.message : err}`);
+  }
+
+  return { agentName, currentPrompt, history, referencedConversation, brain };
 }
 
 async function loadReferencedConversation(
@@ -240,7 +256,19 @@ async function loadReferencedConversation(
 
 // ---------- system prompt builder ----------
 
-function buildCoachSystemPrompt(ctx: CoachContext): string {
+interface SystemBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
+interface SystemBuild {
+  blocks: SystemBlock[];
+  /** brain document ids included in the prompt — written to brain_usage_log. */
+  brainUsedIds: string[];
+}
+
+function buildCoachSystemPrompt(ctx: CoachContext): SystemBuild {
   const parts: string[] = [];
   parts.push(
     `אתה "מאמן הפרומפט" של מערכת AI שמטפלת בלידים בוואטסאפ למכללת ריצ'ר.`,
@@ -318,7 +346,23 @@ function buildCoachSystemPrompt(ctx: CoachContext): string {
     `- אם אתה רק עונה / מבהיר — תכתוב טקסט חופשי, בלי קריאה ל־tool.`,
   );
 
-  return parts.join("\n");
+  const mainText = parts.join("\n");
+
+  // Brain goes in its own block with a cache breakpoint so subsequent
+  // Coach turns within 5 minutes pay the cache-read rate ($0.30/M)
+  // instead of $3/M. Anthropic requires the cache-breakpoint block to
+  // be at the END of the cached prefix — so brain is the last system
+  // block. Anything stable that should also be cached must precede it.
+  const brainSection = buildBrainSection(ctx.brain);
+  const blocks: SystemBlock[] = [{ type: "text", text: mainText }];
+  if (brainSection.text.length > 0) {
+    blocks.push({
+      type: "text",
+      text: brainSection.text,
+      cache_control: { type: "ephemeral" },
+    });
+  }
+  return { blocks, brainUsedIds: brainSection.usedIds };
 }
 
 // ---------- tool definition ----------
@@ -440,7 +484,7 @@ function buildUserContent(input: UserTurnInput): ClaudeUserContent {
 
 async function callCoach(
   anthropic: Anthropic,
-  systemPrompt: string,
+  systemBlocks: SystemBlock[],
   history: Array<{ role: "user" | "assistant"; content: string }>,
   userTurn: UserTurnInput,
 ): Promise<CoachReply> {
@@ -453,7 +497,7 @@ async function callCoach(
     model: COACH_MODEL,
     max_tokens: 4096,
     thinking: { type: "adaptive" } as any,
-    system: systemPrompt,
+    system: systemBlocks as any,
     tools: [PROPOSE_EDIT_TOOL] as any,
     messages: messages as any,
   } as any);
@@ -551,13 +595,13 @@ Deno.serve(async (req) => {
   // pass separately) so Claude doesn't see the same message twice.
   const historyForClaude = coachCtx.history.slice(0, -1);
 
-  const systemPrompt = buildCoachSystemPrompt(coachCtx);
+  const { blocks: systemBlocks, brainUsedIds } = buildCoachSystemPrompt(coachCtx);
   const anthropic = new Anthropic({ apiKey: anthropicApiKey });
 
   // 3. Call Claude.
   let reply: CoachReply;
   try {
-    reply = await callCoach(anthropic, systemPrompt, historyForClaude, {
+    reply = await callCoach(anthropic, systemBlocks, historyForClaude, {
       text: body.userMessage,
       attachmentBase64: body.attachmentBase64,
       attachmentMediaType: body.attachmentMediaType,
@@ -605,6 +649,23 @@ Deno.serve(async (req) => {
     });
   }
 
+  // 5. Log which brain rows were in context for transparency. Best-effort:
+  //    a logging failure here must NOT degrade the operator experience.
+  if (brainUsedIds.length > 0) {
+    const { error: logErr } = await ctx.admin.from("brain_usage_log").insert({
+      coach_message_id: assistantRow.id,
+      brain_document_ids: brainUsedIds,
+    });
+    if (logErr) {
+      console.warn(`[prompt-coach] brain_usage_log insert failed: ${logErr.message}`);
+    }
+  }
+
+  // Lightweight titles for the "I saw: ..." transparency line in the UI.
+  const brainDocsUsed = coachCtx.brain
+    .filter((b) => brainUsedIds.includes(b.id))
+    .map((b) => ({ id: b.id, title: b.title, source_kind: b.source_kind }));
+
   return jsonResponse(
     {
       userMessageId: userRow.id,
@@ -615,6 +676,7 @@ Deno.serve(async (req) => {
         proposalReason: reply.proposal?.reason ?? null,
         createdAt: assistantRow.created_at,
       },
+      brainDocsUsed,
     },
     { status: 200, headers: corsHeaders },
   );
