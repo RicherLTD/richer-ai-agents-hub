@@ -32,3 +32,4 @@ dist-ssr
 
 # Claude Code internals (worktrees, session state, etc.)
 .claude/
+.vercel

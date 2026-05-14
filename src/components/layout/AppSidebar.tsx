@@ -1,4 +1,5 @@
-import { BarChart3, Bot, FileText, Home, LogOut, MessageCircle, Settings, Sparkles, Users } from "lucide-react";
+import { BarChart3, Bot, FileText, Home, LogOut, MessageCircle, Settings, Users } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -58,8 +59,8 @@ export function AppSidebar() {
     <Sidebar side="right" collapsible="icon">
       <SidebarHeader className="border-b border-sidebar-border">
         <div className="flex items-center gap-2.5 px-2 py-2">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-primary-deep to-primary-light text-primary-foreground shadow-sm">
-            <Sparkles className="h-4 w-4" />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary-deep shadow-sm">
+            <BrandLogo className="h-9 w-9" />
           </div>
           {!collapsed && (
             <div className="min-w-0">
