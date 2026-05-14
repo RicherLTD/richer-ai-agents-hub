@@ -215,6 +215,7 @@ export type Database = {
           applied_at: string | null
           applied_by: string | null
           applied_prompt_id: string | null
+          attachment_url: string | null
           content: string
           created_at: string
           id: string
@@ -228,6 +229,7 @@ export type Database = {
           applied_at?: string | null
           applied_by?: string | null
           applied_prompt_id?: string | null
+          attachment_url?: string | null
           content: string
           created_at?: string
           id?: string
@@ -241,6 +243,7 @@ export type Database = {
           applied_at?: string | null
           applied_by?: string | null
           applied_prompt_id?: string | null
+          attachment_url?: string | null
           content?: string
           created_at?: string
           id?: string
