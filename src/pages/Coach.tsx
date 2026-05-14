@@ -1,7 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ArrowUp, Bot, CheckCircle2, Eye, Loader2, RefreshCw, ShieldCheck, User as UserIcon } from "lucide-react";
+import {
+  ArrowUp,
+  Bot,
+  CheckCircle2,
+  Eye,
+  ImagePlus,
+  Loader2,
+  RefreshCw,
+  ShieldCheck,
+  User as UserIcon,
+  X as XIcon,
+} from "lucide-react";
 
 import { AdminOnly } from "@/components/auth/AdminOnly";
 import { Button } from "@/components/ui/button";
@@ -20,8 +31,11 @@ import { useAgent } from "@/contexts/AgentContext";
 import {
   applyCoachEdit,
   getCoachHistory,
+  resignCoachAttachment,
   sendCoachMessage,
+  uploadCoachAttachment,
   type CoachMessageRow,
+  type UploadCoachAttachmentResult,
 } from "@/lib/coach";
 
 export default function CoachPage() {
@@ -39,7 +53,10 @@ function CoachInner() {
 
   const [draft, setDraft] = useState("");
   const [reviewing, setReviewing] = useState<CoachMessageRow | null>(null);
+  const [attachment, setAttachment] = useState<UploadCoachAttachmentResult | null>(null);
+  const [attachmentUploading, setAttachmentUploading] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const historyQuery = useQuery({
     queryKey: ["coach", "history", agentId],
@@ -50,10 +67,17 @@ function CoachInner() {
   const sendMutation = useMutation({
     mutationFn: async (text: string) => {
       if (!agentId) throw new Error("בחר סוכן לפני שליחה");
-      return sendCoachMessage({ agentId, userMessage: text });
+      return sendCoachMessage({
+        agentId,
+        userMessage: text,
+        attachmentUrl: attachment?.storagePath,
+        attachmentBase64: attachment?.base64DataUrl,
+        attachmentMediaType: attachment?.mediaType,
+      });
     },
     onSuccess: () => {
       setDraft("");
+      setAttachment(null);
       void queryClient.invalidateQueries({ queryKey: ["coach", "history", agentId] });
     },
     onError: (err: unknown) => {
@@ -61,6 +85,24 @@ function CoachInner() {
       toast.error("המאמן לא הגיב", { description: msg });
     },
   });
+
+  const handleFileSelect = async (file: File) => {
+    if (!agentId) {
+      toast.error("בחר סוכן לפני העלאת תמונה");
+      return;
+    }
+    setAttachmentUploading(true);
+    try {
+      const result = await uploadCoachAttachment(agentId, file);
+      setAttachment(result);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "ההעלאה נכשלה";
+      toast.error("בעיה בהעלאת התמונה", { description: msg });
+    } finally {
+      setAttachmentUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
 
   const applyMutation = useMutation({
     mutationFn: (msgId: string) => applyCoachEdit(msgId),
@@ -161,6 +203,28 @@ function CoachInner() {
 
       <footer className="border-t px-6 py-4">
         <div className="mx-auto max-w-3xl">
+          {attachment && (
+            <div className="mb-2 flex items-center gap-3 rounded-md border bg-muted/40 p-2">
+              <img
+                src={attachment.base64DataUrl}
+                alt="תמונה מצורפת"
+                className="h-14 w-14 rounded object-cover"
+              />
+              <span className="flex-1 text-xs text-muted-foreground">
+                התמונה תישלח עם ההודעה הבאה
+              </span>
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                onClick={() => setAttachment(null)}
+                disabled={sendMutation.isPending}
+                aria-label="הסר תמונה"
+              >
+                <XIcon className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -170,6 +234,31 @@ function CoachInner() {
             }}
             className="flex items-end gap-2"
           >
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/gif"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                if (file) void handleFileSelect(file);
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!agentId || attachmentUploading || sendMutation.isPending || !!attachment}
+              aria-label="צרף תמונה"
+              title="צרף תמונה"
+            >
+              {attachmentUploading ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <ImagePlus className="h-4 w-4" />
+              )}
+            </Button>
             <Textarea
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
@@ -202,7 +291,7 @@ function CoachInner() {
             </Button>
           </form>
           <p className="mt-2 text-[11px] text-muted-foreground">
-            רמז: Cmd/Ctrl+Enter לשליחה מהירה
+            רמז: Cmd/Ctrl+Enter לשליחה מהירה. ניתן לצרף תמונה (עד 5MB).
           </p>
         </div>
       </footer>
@@ -227,6 +316,22 @@ function MessageBubble({
   const isUser = message.role === "user";
   const hasProposal = !!message.proposed_prompt_content;
   const isApplied = !!message.applied_prompt_id;
+  const [attachmentSrc, setAttachmentSrc] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!message.attachment_url) {
+      setAttachmentSrc(null);
+      return;
+    }
+    let cancelled = false;
+    void resignCoachAttachment(message.attachment_url).then((url) => {
+      if (!cancelled) setAttachmentSrc(url);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [message.attachment_url]);
+
   return (
     <div className={`flex gap-3 ${isUser ? "flex-row-reverse" : ""}`}>
       <div
@@ -237,6 +342,20 @@ function MessageBubble({
         {isUser ? <UserIcon className="h-4 w-4" /> : <Bot className="h-4 w-4" />}
       </div>
       <div className={`flex max-w-[80%] flex-col gap-1 ${isUser ? "items-end" : "items-start"}`}>
+        {attachmentSrc && (
+          <a
+            href={attachmentSrc}
+            target="_blank"
+            rel="noreferrer"
+            className="block max-w-full overflow-hidden rounded-lg border"
+          >
+            <img
+              src={attachmentSrc}
+              alt="תמונה מצורפת"
+              className="max-h-64 max-w-full object-contain"
+            />
+          </a>
+        )}
         <div
           className={`rounded-lg px-3 py-2 text-sm ${
             isUser ? "bg-primary text-primary-foreground" : "bg-muted"
@@ -285,7 +404,7 @@ function ReviewProposalDialog({
 }) {
   return (
     <Dialog open={!!message} onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="max-w-3xl" dir="rtl">
+      <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col" dir="rtl">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5" />
@@ -297,17 +416,17 @@ function ReviewProposalDialog({
           </DialogDescription>
         </DialogHeader>
         {message && (
-          <div className="mt-2 space-y-3">
+          <div className="flex flex-1 flex-col gap-3 overflow-y-auto pe-1">
             <div>
               <p className="mb-1 text-xs font-semibold text-muted-foreground">סיכום המאמן</p>
               <div className="rounded border bg-muted px-3 py-2 text-sm whitespace-pre-wrap">
                 {message.content}
               </div>
             </div>
-            <div>
+            <div className="flex flex-1 flex-col">
               <p className="mb-1 text-xs font-semibold text-muted-foreground">ה־prompt המוצע (החלפה מלאה)</p>
               <pre
-                className="max-h-[420px] overflow-auto rounded border bg-background p-3 text-xs leading-relaxed"
+                className="flex-1 min-h-[200px] overflow-auto rounded border bg-background p-3 text-xs leading-relaxed"
                 dir="ltr"
               >
                 {message.proposed_prompt_content ?? ""}

@@ -8,7 +8,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import type { Prompt } from "@/types/prompt";
 
 function formatDate(value: string | null): string {
@@ -48,11 +47,11 @@ export function PromptViewDialog({ prompt, onClose }: Props) {
           </section>
         )}
 
-        <ScrollArea className="flex-1 rounded-md border">
-          <pre className="whitespace-pre-wrap break-words p-4 text-xs leading-relaxed">
+        <div className="flex-1 min-h-0 overflow-y-auto rounded-md border">
+          <pre className="whitespace-pre-wrap break-words p-4 text-xs leading-relaxed" dir="ltr">
             {prompt?.content}
           </pre>
-        </ScrollArea>
+        </div>
       </DialogContent>
     </Dialog>
   );

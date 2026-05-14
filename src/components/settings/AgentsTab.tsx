@@ -127,7 +127,7 @@ export function AgentsTab() {
       </div>
 
       <Dialog open={creating} onOpenChange={(open) => !open && setCreating(false)}>
-        <DialogContent className="max-w-2xl" dir="rtl">
+        <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-y-auto" dir="rtl">
           <DialogHeader>
             <DialogTitle>סוכן חדש</DialogTitle>
             <DialogDescription>הוסף סוכן חדש למערכת. שדות חובה מסומנים ב-*.</DialogDescription>
@@ -141,7 +141,7 @@ export function AgentsTab() {
       </Dialog>
 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent className="max-w-2xl" dir="rtl">
+        <DialogContent className="flex max-h-[90vh] max-w-2xl flex-col overflow-y-auto" dir="rtl">
           <DialogHeader>
             <DialogTitle>עריכת סוכן</DialogTitle>
             <DialogDescription>{editing?.display_name}</DialogDescription>

@@ -23,7 +23,83 @@ export interface CoachMessageRow {
   applied_at: string | null;
   applied_by: string | null;
   referenced_conversation_id: string | null;
+  attachment_url: string | null;
   created_at: string;
+}
+
+const COACH_BUCKET = "coach-uploads";
+const ALLOWED_IMAGE_TYPES: ReadonlySet<string> = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+export interface UploadCoachAttachmentResult {
+  storagePath: string;
+  signedUrl: string;
+  base64DataUrl: string;
+  mediaType: string;
+}
+
+export async function uploadCoachAttachment(
+  agentId: string,
+  file: File,
+): Promise<UploadCoachAttachmentResult> {
+  if (!ALLOWED_IMAGE_TYPES.has(file.type)) {
+    throw new Error("\u05e0\u05d9\u05ea\u05df \u05dc\u05d4\u05e2\u05dc\u05d5\u05ea \u05e8\u05e7 \u05ea\u05de\u05d5\u05e0\u05d5\u05ea (PNG / JPG / WebP / GIF)");
+  }
+  if (file.size > MAX_ATTACHMENT_BYTES) {
+    throw new Error("\u05d4\u05ea\u05de\u05d5\u05e0\u05d4 \u05d2\u05d3\u05d5\u05dc\u05d4 \u05de\u05d3\u05d9 (\u05de\u05e7\u05e1\u05d9\u05de\u05d5\u05dd 5MB)");
+  }
+
+  const extension = file.name.includes(".")
+    ? file.name.split(".").pop()!.toLowerCase()
+    : "png";
+  const safeAgentId = agentId.replace(/[^a-z0-9-]/gi, "");
+  const uid = crypto.randomUUID();
+  const storagePath = `${safeAgentId}/${uid}.${extension}`;
+
+  const { error: uploadErr } = await supabase.storage
+    .from(COACH_BUCKET)
+    .upload(storagePath, file, { contentType: file.type, upsert: false });
+  if (uploadErr) {
+    throw new Error(`\u05d4\u05d4\u05e2\u05dc\u05d0\u05d4 \u05e0\u05db\u05e9\u05dc\u05d4: ${uploadErr.message}`);
+  }
+
+  const { data: signed, error: signErr } = await supabase.storage
+    .from(COACH_BUCKET)
+    .createSignedUrl(storagePath, 60 * 60 * 24 * 30);
+  if (signErr || !signed) {
+    throw new Error(`\u05dc\u05d0 \u05e0\u05d9\u05ea\u05df \u05dc\u05d9\u05e6\u05d5\u05e8 URL \u05de\u05d7\u05d5\u05ea\u05dd: ${signErr?.message ?? "unknown"}`);
+  }
+
+  const base64DataUrl = await fileToDataUrl(file);
+  return {
+    storagePath,
+    signedUrl: signed.signedUrl,
+    base64DataUrl,
+    mediaType: file.type,
+  };
+}
+
+function fileToDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("read failed"));
+    reader.readAsDataURL(file);
+  });
+}
+
+export async function resignCoachAttachment(storagePath: string): Promise<string | null> {
+  if (!storagePath) return null;
+  const { data, error } = await supabase.storage
+    .from(COACH_BUCKET)
+    .createSignedUrl(storagePath, 60 * 60);
+  if (error || !data) return null;
+  return data.signedUrl;
 }
 
 export async function getCoachHistory(
@@ -44,6 +120,9 @@ export interface SendCoachMessageInput {
   agentId: string;
   userMessage: string;
   referencedConversationId?: string;
+  attachmentUrl?: string;
+  attachmentBase64?: string;
+  attachmentMediaType?: string;
 }
 
 export interface CoachReplyAssistant {

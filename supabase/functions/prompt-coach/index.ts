@@ -43,6 +43,12 @@ interface CoachRequest {
   userMessage: string;
   /** Optional — when the admin is asking about a specific lead chat. */
   referencedConversationId?: string;
+  /** Optional image attachment: storage path (kept on the row for replay). */
+  attachmentUrl?: string;
+  /** Optional image content (data URL or raw base64) sent inline to Claude. */
+  attachmentBase64?: string;
+  /** Optional media type if attachmentBase64 is raw base64 (no data: prefix). */
+  attachmentMediaType?: string;
 }
 
 function parseRequestBody(raw: unknown): CoachRequest {
@@ -66,10 +72,28 @@ function parseRequestBody(raw: unknown): CoachRequest {
     }
     referencedConversationId = o.referencedConversationId;
   }
+  let attachmentUrl: string | undefined;
+  if (typeof o.attachmentUrl === "string" && o.attachmentUrl.trim().length > 0) {
+    attachmentUrl = o.attachmentUrl.trim();
+  }
+  let attachmentBase64: string | undefined;
+  let attachmentMediaType: string | undefined;
+  if (typeof o.attachmentBase64 === "string" && o.attachmentBase64.length > 0) {
+    if (o.attachmentBase64.length > 8_000_000) {
+      throw new HttpError(400, "attachment is too large (max ~6 MB)");
+    }
+    attachmentBase64 = o.attachmentBase64;
+    if (typeof o.attachmentMediaType === "string" && o.attachmentMediaType.length > 0) {
+      attachmentMediaType = o.attachmentMediaType;
+    }
+  }
   return {
     agentId: o.agentId,
     userMessage: o.userMessage.trim(),
     referencedConversationId,
+    attachmentUrl,
+    attachmentBase64,
+    attachmentMediaType,
   };
 }
 
@@ -381,15 +405,48 @@ function parseCoachReply(response: AnthropicResponse): CoachReply {
   return { text, proposal };
 }
 
+interface ClaudeImageBlock {
+  type: "image";
+  source: { type: "base64"; media_type: string; data: string };
+}
+interface ClaudeTextBlock {
+  type: "text";
+  text: string;
+}
+type ClaudeUserContent = string | Array<ClaudeImageBlock | ClaudeTextBlock>;
+
+interface UserTurnInput {
+  text: string;
+  attachmentBase64?: string;
+  attachmentMediaType?: string;
+}
+
+function buildUserContent(input: UserTurnInput): ClaudeUserContent {
+  if (!input.attachmentBase64) return input.text;
+  // Accept data URL form ("data:image/png;base64,XXX") or raw base64.
+  let mediaType = input.attachmentMediaType ?? "image/png";
+  let data = input.attachmentBase64;
+  const dataUrlMatch = data.match(/^data:([\w./+-]+);base64,(.+)$/);
+  if (dataUrlMatch) {
+    mediaType = dataUrlMatch[1];
+    data = dataUrlMatch[2];
+  }
+  const blocks: Array<ClaudeImageBlock | ClaudeTextBlock> = [
+    { type: "image", source: { type: "base64", media_type: mediaType, data } },
+  ];
+  if (input.text) blocks.push({ type: "text", text: input.text });
+  return blocks;
+}
+
 async function callCoach(
   anthropic: Anthropic,
   systemPrompt: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
-  userMessage: string,
+  userTurn: UserTurnInput,
 ): Promise<CoachReply> {
   const messages = [
-    ...history,
-    { role: "user" as const, content: userMessage },
+    ...history.map((m) => ({ role: m.role, content: m.content })),
+    { role: "user" as const, content: buildUserContent(userTurn) },
   ];
   // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
@@ -398,7 +455,7 @@ async function callCoach(
     thinking: { type: "adaptive" } as any,
     system: systemPrompt,
     tools: [PROPOSE_EDIT_TOOL] as any,
-    messages,
+    messages: messages as any,
   } as any);
   return parseCoachReply(raw as unknown as AnthropicResponse);
 }
@@ -453,6 +510,7 @@ Deno.serve(async (req) => {
       user_id: ctx.callerId,
       content: body.userMessage,
       referenced_conversation_id: body.referencedConversationId ?? null,
+      attachment_url: body.attachmentUrl ?? null,
     })
     .select("id, created_at")
     .single();
@@ -499,7 +557,11 @@ Deno.serve(async (req) => {
   // 3. Call Claude.
   let reply: CoachReply;
   try {
-    reply = await callCoach(anthropic, systemPrompt, historyForClaude, body.userMessage);
+    reply = await callCoach(anthropic, systemPrompt, historyForClaude, {
+      text: body.userMessage,
+      attachmentBase64: body.attachmentBase64,
+      attachmentMediaType: body.attachmentMediaType,
+    });
   } catch (err) {
     await logError({
       admin: ctx.admin,
