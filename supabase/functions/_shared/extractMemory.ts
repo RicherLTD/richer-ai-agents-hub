@@ -237,6 +237,10 @@ export interface RunMemoryExtractionInput {
   handoffWebhookUrl?: string | null;
   /** Optional HMAC-SHA256 shared secret for signing the handoff payload. */
   handoffWebhookSecret?: string | null;
+  /** Optional base URL of the dashboard (e.g. https://richer-ai-agents-hub.vercel.app).
+   *  When present, the handoff payload's `conversation.dashboard_url` will be set to
+   *  `<base>/conversations/<id>` so advisors can click straight into the chat. */
+  dashboardBaseUrl?: string | null;
 }
 
 /**
@@ -469,6 +473,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         conversationId: input.conversationId,
       });
     } else {
+      const dashboardBase = input.dashboardBaseUrl?.replace(/\/$/, "") ?? null;
       const handoffConv: HandoffConversation = {
         id: input.conversationId,
         lead_phone: (existing?.lead_phone as string | null | undefined) ?? "",
@@ -480,6 +485,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         source_campaign: (existing?.source_campaign as string | null | undefined) ?? null,
         source_funnel: (existing?.source_funnel as string | null | undefined) ?? null,
         created_at: (existing?.created_at as string | null | undefined) ?? null,
+        dashboard_url: dashboardBase ? `${dashboardBase}/conversations/${input.conversationId}` : null,
       };
       const handoffMem: HandoffLeadMemory = {
         q1_age: memory.q1_age,

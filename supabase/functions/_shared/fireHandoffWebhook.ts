@@ -59,6 +59,7 @@ export interface HandoffConversation {
   source_campaign: string | null;
   source_funnel: string | null;
   created_at: string | null;
+  dashboard_url: string | null;
 }
 
 export interface HandoffPayload {

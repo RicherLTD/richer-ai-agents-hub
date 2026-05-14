@@ -17,6 +17,7 @@ const baseConversation: HandoffConversation = {
   source_campaign: "fb-may-13",
   source_funnel: "whatsapp_sandbox",
   created_at: "2026-05-13T10:25:00.000Z",
+  dashboard_url: "https://richer-ai-agents-hub.vercel.app/conversations/conv-1",
 };
 
 const baseMemory: HandoffLeadMemory = {

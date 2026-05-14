@@ -177,6 +177,9 @@ interface AgentLoopCtx {
   /** Optional fan-out webhook fired on zoom_scheduled transition. */
   handoffWebhookUrl: string | null;
   handoffWebhookSecret: string | null;
+  /** Optional base URL of the dashboard — when present, the handoff
+   *  webhook payload includes a deep link to the conversation. */
+  dashboardBaseUrl: string | null;
 }
 
 interface AgentTurnContext {
@@ -572,6 +575,7 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     ],
     handoffWebhookUrl: ctx.handoffWebhookUrl,
     handoffWebhookSecret: ctx.handoffWebhookSecret,
+    dashboardBaseUrl: ctx.dashboardBaseUrl,
   });
 }
 
@@ -874,6 +878,7 @@ Deno.serve(async (req) => {
     const langfuse = langfuseFromEnv();
     const handoffWebhookUrl = Deno.env.get("HANDOFF_WEBHOOK_URL") ?? null;
     const handoffWebhookSecret = Deno.env.get("HANDOFF_WEBHOOK_SECRET") ?? null;
+    const dashboardBaseUrl = Deno.env.get("DASHBOARD_BASE_URL") ?? null;
     for (const [conversationId, leadPhone] of conversationsNeedingReply) {
       // Each conversation runs independently; one slow Claude call doesn't
       // block another conversation's reply.
@@ -889,6 +894,7 @@ Deno.serve(async (req) => {
           langfuse,
           handoffWebhookUrl,
           handoffWebhookSecret,
+          dashboardBaseUrl,
         }),
       );
     }

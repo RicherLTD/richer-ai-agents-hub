@@ -3,6 +3,7 @@ import { formatDistanceToNow } from "date-fns";
 import { he } from "date-fns/locale";
 import { Search, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { EmptyState } from "@/components/EmptyState";
 import { ConversationStatusBadge } from "@/components/leads/ConversationStatusBadge";
 import { ConversationTagBadge } from "@/components/leads/ConversationTagBadge";
@@ -40,6 +41,7 @@ function useDebounced<T>(value: T, delayMs: number): T {
 }
 
 const Leads = () => {
+  const navigate = useNavigate();
   const { activeAgent, isLoading: isAgentLoading } = useAgent();
   const [search, setSearch] = useState("");
   const [funnel, setFunnel] = useState<FunnelFilter>("all");
@@ -156,7 +158,19 @@ const Leads = () => {
                 </TableRow>
               ) : (
                 list.map((lead) => (
-                  <TableRow key={lead.id}>
+                  <TableRow
+                    key={lead.id}
+                    className="cursor-pointer transition-colors hover:bg-muted/50"
+                    onClick={() => navigate(`/conversations/${lead.id}`)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        navigate(`/conversations/${lead.id}`);
+                      }
+                    }}
+                  >
                     <TableCell className="font-medium">{lead.lead_name?.trim() || "—"}</TableCell>
                     <TableCell dir="ltr" className="font-mono text-xs">
                       {maskPhone(lead.lead_phone)}
