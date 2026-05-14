@@ -1,4 +1,4 @@
-import { Sparkles } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { LeadMemory } from "@/types/message";
 
@@ -34,7 +34,7 @@ export function LeadMemoryPanel({ memory, isLoading }: Props) {
   if (!memory) {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">
-        <Sparkles className="h-6 w-6 text-muted-foreground/60" />
+        <BrandLogo className="h-8 w-8 opacity-60" />
         <p>אין עדיין סיכום AI לשיחה הזו.</p>
         <p className="text-xs">הסיכום נכתב על ידי n8n אחרי שמספיק הודעות הצטברו.</p>
       </div>

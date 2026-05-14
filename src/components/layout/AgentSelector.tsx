@@ -1,6 +1,7 @@
 import { useAgent } from "@/contexts/AgentContext";
-import { Check, ChevronsUpDown, Plus, Sparkles } from "lucide-react";
+import { Check, ChevronsUpDown, Plus } from "lucide-react";
 import { useState } from "react";
+import { BrandLogo } from "@/components/BrandLogo";
 import { useToast } from "@/hooks/use-toast";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -26,8 +27,8 @@ export function AgentSelector() {
   if (collapsed) {
     return (
       <div className="flex justify-center py-2" aria-label={activeAgent?.display_name ?? "סוכן"}>
-        <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Sparkles className="h-4 w-4" />
+        <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg bg-primary-deep">
+          <BrandLogo className="h-9 w-9" />
         </div>
       </div>
     );
@@ -45,8 +46,8 @@ export function AgentSelector() {
             className="h-auto w-full justify-between gap-2 rounded-lg border-border bg-card px-3 py-2.5 text-right hover:bg-primary-soft hover:border-primary/30"
           >
             <div className="flex min-w-0 items-center gap-2">
-              <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
-                <Sparkles className="h-3.5 w-3.5" />
+              <span className="flex h-7 w-7 shrink-0 items-center justify-center overflow-hidden rounded-md bg-primary-deep">
+                <BrandLogo className="h-7 w-7" />
               </span>
               <span className="truncate text-sm font-medium text-foreground">
                 {activeAgent?.display_name ?? "בחר סוכן"}
