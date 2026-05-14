@@ -15,8 +15,8 @@ interface Props {
 }
 
 export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
-  const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((s, [, n]) => s + n, 0);
+  const entries = Object.entries(breakdown).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const total = entries.reduce((s, [, n]) => s + (n ?? 0), 0);
 
   return (
     <Card>
