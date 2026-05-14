@@ -15,8 +15,8 @@ interface Props {
 }
 
 export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
-  const entries = Object.entries(breakdown).sort((a, b) => b[1] - a[1]);
-  const total = entries.reduce((s, [, n]) => s + n, 0);
+  const entries = Object.entries(breakdown).sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0));
+  const total = entries.reduce((s, [, n]) => s + (n ?? 0), 0);
 
   return (
     <Card>
@@ -33,7 +33,8 @@ export function AiProviderBreakdown({ breakdown, isLoading }: Props) {
           <p className="py-12 text-center text-sm text-muted-foreground">אין עדיין נתונים.</p>
         ) : (
           <ul className="space-y-2">
-            {entries.map(([key, count]) => {
+            {entries.map(([key, rawCount]) => {
+              const count = rawCount ?? 0;
               const pct = total === 0 ? 0 : Math.round((count / total) * 100);
               return (
                 <li key={key} className="flex items-center gap-2 text-sm">
