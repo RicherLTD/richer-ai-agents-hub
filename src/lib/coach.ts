@@ -133,9 +133,17 @@ export interface CoachReplyAssistant {
   createdAt: string;
 }
 
+export interface BrainDocUsed {
+  id: string;
+  title: string;
+  source_kind: string;
+}
+
 export interface SendCoachMessageResult {
   userMessageId: string;
   assistantMessage: CoachReplyAssistant;
+  /** Brain rows that were injected as system context for this turn. */
+  brainDocsUsed?: BrainDocUsed[];
 }
 
 export async function sendCoachMessage(

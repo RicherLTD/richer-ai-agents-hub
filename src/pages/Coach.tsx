@@ -15,10 +15,12 @@ import {
 } from "lucide-react";
 
 import { AdminOnly } from "@/components/auth/AdminOnly";
+import { BrainPanel } from "@/components/coach/BrainPanel";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
   DialogContent,
@@ -129,7 +131,7 @@ function CoachInner() {
   const messages = historyQuery.data ?? [];
 
   return (
-    <div className="flex h-full flex-col" dir="rtl">
+    <Tabs defaultValue="chat" className="flex h-full flex-col" dir="rtl">
       <header className="border-b px-6 py-4">
         <div className="flex items-baseline justify-between gap-4">
           <div>
@@ -138,19 +140,26 @@ function CoachInner() {
               כתבו פה משוב על הבוט. המאמן יציע שינוי ל־prompt, ואתם מאשרים בלחיצה.
             </p>
           </div>
-          <Button
-            type="button"
-            variant="ghost"
-            size="sm"
-            onClick={() => historyQuery.refetch()}
-            disabled={historyQuery.isRefetching}
-          >
-            <RefreshCw className={`me-2 h-4 w-4 ${historyQuery.isRefetching ? "animate-spin" : ""}`} />
-            רענון
-          </Button>
+          <div className="flex items-center gap-2">
+            <TabsList>
+              <TabsTrigger value="chat">שיחה</TabsTrigger>
+              <TabsTrigger value="brain">המוח</TabsTrigger>
+            </TabsList>
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => historyQuery.refetch()}
+              disabled={historyQuery.isRefetching}
+            >
+              <RefreshCw className={`me-2 h-4 w-4 ${historyQuery.isRefetching ? "animate-spin" : ""}`} />
+              רענון
+            </Button>
+          </div>
         </div>
       </header>
 
+      <TabsContent value="chat" className="flex flex-1 flex-col overflow-hidden data-[state=inactive]:hidden">
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-6 py-4">
         <div className="mx-auto max-w-3xl space-y-3">
           {!agentId && (
@@ -296,13 +305,22 @@ function CoachInner() {
         </div>
       </footer>
 
+      </TabsContent>
+
+      <TabsContent
+        value="brain"
+        className="flex-1 overflow-y-auto px-6 py-4 data-[state=inactive]:hidden"
+      >
+        <BrainPanel />
+      </TabsContent>
+
       <ReviewProposalDialog
         message={reviewing}
         onClose={() => setReviewing(null)}
         onApply={(id) => applyMutation.mutate(id)}
         isApplying={applyMutation.isPending}
       />
-    </div>
+    </Tabs>
   );
 }
 
