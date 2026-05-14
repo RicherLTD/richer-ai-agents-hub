@@ -133,7 +133,7 @@ export function AgentsTab() {
             <DialogDescription>הוסף סוכן חדש למערכת. שדות חובה מסומנים ב-*.</DialogDescription>
           </DialogHeader>
           <AgentForm
-            onSubmit={(values) => createMutation.mutateAsync(values as AgentInsert)}
+            onSubmit={async (values) => { await createMutation.mutateAsync(values as AgentInsert); }}
             onCancel={() => setCreating(false)}
             submitLabel="צור סוכן"
           />
