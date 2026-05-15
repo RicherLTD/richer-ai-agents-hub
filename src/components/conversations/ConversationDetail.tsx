@@ -155,6 +155,7 @@ export function ConversationDetail({ conversationId }: Props) {
             hasOlder={hasOlder && !isAtFirstPage}
             onLoadOlder={() => void handleLoadOlder()}
             isLoadingOlder={isLoadingOlder}
+            leadLabel={conversation.lead_name?.trim() || conversation.lead_phone}
           />
         </div>
         <ReplyBox onSend={(content) => sendMutation.mutateAsync(content).then(() => undefined)} />

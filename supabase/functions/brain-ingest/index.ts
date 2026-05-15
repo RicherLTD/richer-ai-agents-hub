@@ -27,6 +27,7 @@ import "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
+import { detectPromptInjection } from "../_shared/injectionScan.ts";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_OUTPUT_TOKENS = 16000;
@@ -251,6 +252,23 @@ Deno.serve(async (req) => {
       throw new HttpError(502, `Claude extraction failed: ${detail}`);
     }
     const text = (extracted ?? "").slice(0, MAX_EXTRACTED_CHARS);
+
+    // Prompt-injection defense: scan the extracted text for the most
+    // common jailbreak phrasings before we commit it to the brain. The
+    // system-prompt wrapper (<untrusted_evidence>) is the real defense;
+    // this scanner rejects obvious garbage at the door so the operator
+    // gets immediate, specific feedback instead of a silently-poisoned
+    // brain row. Cleanup: delete the storage object so we don't leave
+    // an orphan file when we reject the ingest.
+    const injection = detectPromptInjection(text);
+    if (injection) {
+      await ctx.admin.storage.from(PDF_BUCKET).remove([input.storagePath]);
+      throw new HttpError(
+        422,
+        `Document rejected: contains a prompt-injection pattern (${injection.reason}). Excerpt: ${injection.excerpt}`,
+      );
+    }
+
     const tokens = Math.ceil(text.length / 4);
     // Rough page count for PDFs from the extracted text (double-newline
     // separator as per the extraction prompt). Falls back to null if
