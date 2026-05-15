@@ -15,6 +15,9 @@ interface Props {
   hasOlder: boolean;
   onLoadOlder: () => void;
   isLoadingOlder: boolean;
+  /** Lead name or phone — threaded into MessageBubble so the brain-note
+   *  feedback dialog can pre-fill a sensible title. */
+  leadLabel?: string | null;
 }
 
 function dayLabel(value: string | null): string {
@@ -33,6 +36,7 @@ export function MessageThread({
   hasOlder,
   onLoadOlder,
   isLoadingOlder,
+  leadLabel,
 }: Props) {
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const lastIdRef = useRef<string | null>(null);
@@ -83,7 +87,7 @@ export function MessageThread({
       );
       lastDay = dayKey;
     }
-    rendered.push(<MessageBubble key={m.id} message={m} />);
+    rendered.push(<MessageBubble key={m.id} message={m} leadLabel={leadLabel ?? null} />);
   }
 
   return (
