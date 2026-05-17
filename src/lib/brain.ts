@@ -16,6 +16,7 @@
  *   Notes (free text) → inserted client-side, no extraction needed.
  */
 import { supabase } from "@/lib/supabase/client";
+import { assertUuid } from "@/lib/validation";
 import type { BrainDocument, BrainSourceKind } from "@/types/brain";
 
 export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
@@ -32,14 +33,46 @@ export const SUPPORTED_IMAGE_MIMES = [
  * Server-side RLS already restricts to admins; we add the agent visibility
  * filter on top so a normal Coach page shows the right subset.
  */
+// Columns we render in the brain list. We intentionally omit
+// `extracted_text` here — it can be up to 200 KB per row and is only
+// shown when the operator opens the "show extracted text" panel inside
+// the editor. Fetching it on the list view wasted ~10 MB of bandwidth
+// at 50 docs.
+const BRAIN_LIST_COLUMNS =
+  "id, agent_id, source_kind, title, description, ai_title, ai_description, storage_path, tags, page_count, file_size_bytes, token_count, is_active, shared_across_agents, uploaded_by, uploaded_at, updated_at";
+
 export async function getBrainForAgent(agentId: string): Promise<BrainDocument[]> {
+  // PostgREST .or() filter is built by string interpolation; a non-UUID
+  // agentId could contain commas/parens that escape the or-group and
+  // return rows from other agents. Validate at the boundary.
+  assertUuid(agentId, "agentId");
   const { data, error } = await supabase
     .from("brain_documents")
-    .select("*")
+    .select(BRAIN_LIST_COLUMNS)
     .or(`agent_id.eq.${agentId},shared_across_agents.eq.true`)
     .order("uploaded_at", { ascending: false });
   if (error) throw new Error(`Failed to load brain: ${error.message}`);
-  return (data ?? []) as BrainDocument[];
+  // `extracted_text` is missing from the list rows; null it out explicitly
+  // so consumers see a known shape rather than `undefined`.
+  return (data ?? []).map((r) => ({
+    ...(r as Omit<BrainDocument, "extracted_text">),
+    extracted_text: null,
+  })) as BrainDocument[];
+}
+
+/**
+ * Lazily fetch the full extracted text for a single brain document.
+ * Used by the editor's "show extracted text" panel — kept out of the
+ * list query so the page load stays small.
+ */
+export async function getBrainDocumentText(id: string): Promise<string | null> {
+  const { data, error } = await supabase
+    .from("brain_documents")
+    .select("extracted_text")
+    .eq("id", id)
+    .maybeSingle();
+  if (error) throw new Error(`Failed to load extracted text: ${error.message}`);
+  return (data?.extracted_text as string | null) ?? null;
 }
 
 export interface BrainStats {

@@ -445,6 +445,15 @@ function ReviewProposalDialog({
   onApply: (id: string) => void;
   isApplying: boolean;
 }) {
+  // Acknowledgment gate: a tired operator at 11pm should not be able to
+  // flip the bot\'s system prompt by accident. They must explicitly check
+  // "I read the diff" before the Apply button activates. Resets when
+  // the dialog opens for a new proposal.
+  const [acknowledged, setAcknowledged] = useState(false);
+  useEffect(() => {
+    setAcknowledged(false);
+  }, [message?.id]);
+
   return (
     <Dialog open={!!message} onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="flex max-h-[90vh] max-w-3xl flex-col" dir="rtl">
@@ -477,11 +486,24 @@ function ReviewProposalDialog({
             </div>
           </div>
         )}
+        <label className="flex items-start gap-2 rounded-md border bg-muted/40 p-3 mt-2 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={acknowledged}
+            onChange={(e) => setAcknowledged(e.target.checked)}
+            className="mt-1 h-4 w-4"
+            disabled={isApplying}
+          />
+          <span className="text-xs leading-relaxed">
+            <strong>קראתי את ה־prompt המוצע במלואו</strong> ואני מאשר שהוא לא מסיר גבולות
+            בטיחות (אסור לציין מחירים, אסור להבטיח הכנסות, אסור שהבוט יחשוף שהוא AI).
+          </span>
+        </label>
         <DialogFooter className="flex-row-reverse gap-2 sm:flex-row-reverse">
           <Button
             type="button"
             onClick={() => message && onApply(message.id)}
-            disabled={!message || isApplying}
+            disabled={!message || isApplying || !acknowledged}
           >
             {isApplying && <Loader2 className="me-2 h-4 w-4 animate-spin" />}
             אשר ופרסם

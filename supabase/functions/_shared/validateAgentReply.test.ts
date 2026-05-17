@@ -117,4 +117,30 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(r2.ok).toBe(false);
     if (!r2.ok) expect(r2.reason).toContain("hallucination_currency_mention");
   });
+
+  // Hardening — devil-advocate review pre-pilot.
+  it("blocks numeric prices without a currency symbol", () => {
+    expect(validateAgentReply("התוכנית עולה 5000").ok).toBe(false);
+    expect(validateAgentReply("ההשקעה היא 5 אלף").ok).toBe(false);
+    expect(validateAgentReply("המחיר בערך 10K").ok).toBe(false);
+    expect(validateAgentReply("חבילה של 3 אלפים").ok).toBe(false);
+  });
+
+  it("blocks 'תרוויח X בחודש' style income promises", () => {
+    expect(validateAgentReply("תרוויח 5000 בחודש").ok).toBe(false);
+    expect(validateAgentReply("תכניס סכומים גדולים בחודש").ok).toBe(false);
+    expect(validateAgentReply("תעשה הרבה כסף בשנה").ok).toBe(false);
+    expect(validateAgentReply("תרוויחי טוב בחודש").ok).toBe(false);
+  });
+
+  it("blocks broader AI self-disclosure phrasings", () => {
+    expect(validateAgentReply("זה לא בנאדם, זאת מערכת").ok).toBe(false);
+    expect(validateAgentReply("מערכת אוטומטית עונה לך").ok).toBe(false);
+    expect(validateAgentReply("אני לא בן אדם").ok).toBe(false);
+  });
+
+  it("still passes innocent uses of similar-looking phrases", () => {
+    expect(validateAgentReply("תוכל לעלות לי שאלה?").ok).toBe(true);
+    expect(validateAgentReply("היועץ ידבר איתך בזום").ok).toBe(true);
+  });
 });

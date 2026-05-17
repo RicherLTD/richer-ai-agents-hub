@@ -36,7 +36,10 @@ export function ConversationDetail({ conversationId }: Props) {
     setIsLoadingOlder(false);
   }, [conversationId]);
 
-  // Realtime: refetch the freshest page when a new message lands.
+  // Realtime: refetch the freshest page when a new message lands. One
+  // predicate-based invalidation refreshes all three keys (messages,
+  // conversation, memory) in a single pass instead of three parallel
+  // network calls per inbound message.
   useEffect(() => {
     const channel = supabase
       .channel(`messages:${conversationId}`)
@@ -50,13 +53,10 @@ export function ConversationDetail({ conversationId }: Props) {
         },
         () => {
           void queryClient.invalidateQueries({
-            queryKey: ["conversation", conversationId, "messages"],
-          });
-          void queryClient.invalidateQueries({
-            queryKey: ["conversation", conversationId],
-          });
-          void queryClient.invalidateQueries({
-            queryKey: ["conversation", conversationId, "memory"],
+            predicate: (q) =>
+              Array.isArray(q.queryKey) &&
+              q.queryKey[0] === "conversation" &&
+              q.queryKey[1] === conversationId,
           });
         },
       )

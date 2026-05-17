@@ -28,10 +28,10 @@
 //   WHATSAPP_PHONE_NUMBER_ID  — sandbox session phone or Meta phone id
 //
 // Auto-injected by Supabase: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
-// SUPABASE_ANON_KEY (used by requireUser).
+// SUPABASE_ANON_KEY (used by requireAdmin via requireUser internally).
 
 import { corsHeaders } from "../_shared/cors.ts";
-import { HttpError, jsonResponse, requireUser } from "../_shared/auth.ts";
+import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText } from "../_shared/whatsappSend.ts";
@@ -70,7 +70,10 @@ Deno.serve(async (req) => {
       throw new HttpError(500, "HookMyApp env not configured");
     }
 
-    const { admin } = await requireUser(req);
+    // Admin gate: only operators with role='admin' can manually send a
+    // message to a lead. Previously this was requireUser, which let any
+    // authenticated user DM any lead phone — a privilege-escalation hole.
+    const { admin } = await requireAdmin(req);
 
     const body = await req.json().catch(() => null);
     if (!isSendPayload(body)) {
