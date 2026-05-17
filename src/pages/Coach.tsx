@@ -172,18 +172,19 @@ function CoachInner() {
       className="flex h-full flex-col"
       dir="rtl"
     >
-      <header className="border-b px-6 py-4">
-        <div className="flex items-baseline justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-semibold tracking-tight">מאמן הבוט</h1>
+      <header className="border-b border-border px-6 py-5">
+        <div className="flex items-end justify-between gap-4">
+          <div className="space-y-2">
+            <p className="label-mono" dir="ltr">Coach · Prompt Editor</p>
+            <h1 className="font-display text-2xl font-medium tracking-tight">מאמן הבוט</h1>
             <p className="text-sm text-muted-foreground">
-              כתבו פה משוב על הבוט. המאמן יציע שינוי ל־prompt, ואתם מאשרים בלחיצה.
+              משוב חופשי לבוט. Coach יקרא את ההיסטוריה והמוח ויציע שינוי ל־prompt — אתה מאשר.
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <TabsList>
-              <TabsTrigger value="chat">שיחה</TabsTrigger>
-              <TabsTrigger value="brain">המוח</TabsTrigger>
+            <TabsList className="inline-flex h-9 rounded-md border border-border bg-card/60 p-0.5 backdrop-blur">
+              <TabsTrigger value="chat" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">שיחה</TabsTrigger>
+              <TabsTrigger value="brain" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">המוח</TabsTrigger>
             </TabsList>
             <Button
               type="button"

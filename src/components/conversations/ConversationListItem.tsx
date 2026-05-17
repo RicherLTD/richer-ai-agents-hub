@@ -63,30 +63,45 @@ interface Props {
 export function ConversationListItem({ conversation, isActive, onClick }: Props) {
   const name = conversation.lead_name?.trim() || "ליד ללא שם";
   const avatarSeed = conversation.lead_phone || conversation.id;
+  const isLive = conversation.status === "active";
   return (
     <button
       type="button"
       onClick={() => onClick(conversation)}
       className={cn(
-        "flex w-full items-center gap-3 border-b border-border/40 px-3 py-3 text-right transition",
-        "hover:bg-accent/40",
-        isActive && "bg-accent/60",
+        "group/row relative flex w-full items-center gap-3 border-b border-border-subtle px-3 py-3 text-right transition-colors",
+        "hover:bg-surface-hover",
+        isActive && "bg-surface-hover",
       )}
     >
-      <Avatar className="h-12 w-12 shrink-0">
-        <AvatarFallback className={cn("text-sm font-semibold", colourFor(avatarSeed))}>
-          {initials(conversation.lead_name, conversation.lead_phone)}
-        </AvatarFallback>
-      </Avatar>
+      {/* Vertical brand bar — visible when active. Linear/Arc signature. */}
+      <span
+        aria-hidden
+        className={cn(
+          "absolute right-0 top-1/2 h-8 w-0.5 -translate-y-1/2 rounded-full bg-primary transition-opacity",
+          isActive ? "opacity-100" : "opacity-0",
+        )}
+      />
+      <div className="relative shrink-0">
+        <Avatar className="h-11 w-11 ring-1 ring-border">
+          <AvatarFallback className={cn("text-sm font-semibold", colourFor(avatarSeed))}>
+            {initials(conversation.lead_name, conversation.lead_phone)}
+          </AvatarFallback>
+        </Avatar>
+        {/* Pulsing presence dot for active conversations */}
+        {isLive && (
+          <span className="presence-dot absolute -bottom-0.5 -left-0.5" aria-hidden />
+        )}
+      </div>
       <div className="min-w-0 flex-1">
         <div className="flex items-baseline justify-between gap-2">
           <p className="truncate text-sm font-semibold text-foreground">{name}</p>
-          <span className="shrink-0 text-[11px] text-muted-foreground">
+          <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">
             {formatSidebarTime(conversation.last_interaction_at)}
           </span>
         </div>
         <div className="mt-1 flex items-center gap-2">
-          <p dir="ltr" className="flex-1 truncate text-right font-mono text-[11px] text-muted-foreground">
+          <p dir="ltr" className="flex-1 truncate text-right font-mono text-[11px] text-muted-foreground tabular-nums">
             {conversation.lead_phone}
           </p>
           {conversation.status && conversation.status !== "active" && (
