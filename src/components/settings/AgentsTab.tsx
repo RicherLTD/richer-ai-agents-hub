@@ -1,9 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Pencil, Plus } from "lucide-react";
+import { Pause, Pencil, Play, Plus } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAgent } from "@/contexts/AgentContext";
@@ -52,6 +52,25 @@ export function AgentsTab() {
     onError: (err: Error) => toast.error(err.message),
   });
 
+  // Kill switch: toggle agent.is_paused. Confirmation dialog before pausing
+  // so the operator can't tap the button by accident and silently take
+  // the bot offline for live leads.
+  const [confirmPause, setConfirmPause] = useState<Agent | null>(null);
+  const pauseToggle = useMutation({
+    mutationFn: ({ id, paused }: { id: string; paused: boolean }) =>
+      updateAgent(id, { is_paused: paused }),
+    onSuccess: (_data, vars) => {
+      toast.success(vars.paused ? "הסוכן הושהה" : "הסוכן הופעל מחדש", {
+        description: vars.paused
+          ? "הבוט לא יענה ללידים עד שתפעיל מחדש."
+          : "הבוט חזר לפעולה.",
+      });
+      setConfirmPause(null);
+      invalidate();
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
   if (isLoading) {
     return (
       <div className="space-y-2">
@@ -91,13 +110,14 @@ export function AgentsTab() {
               <TableHead>מזהה</TableHead>
               <TableHead>WhatsApp</TableHead>
               <TableHead>סטטוס</TableHead>
+              <TableHead className="w-32">בוט</TableHead>
               {isAdmin && <TableHead className="w-16"></TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {list.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={isAdmin ? 5 : 4} className="text-center text-sm text-muted-foreground">
+                <TableCell colSpan={isAdmin ? 6 : 5} className="text-center text-sm text-muted-foreground">
                   אין סוכנים. {isAdmin && 'לחץ על "סוכן חדש" כדי להוסיף.'}
                 </TableCell>
               </TableRow>
@@ -111,6 +131,37 @@ export function AgentsTab() {
                   <TableCell dir="ltr">{agent.whatsapp_number ?? "—"}</TableCell>
                   <TableCell>
                     <AgentStatusBadge status={agent.status} />
+                  </TableCell>
+                  <TableCell>
+                    {isAdmin ? (
+                      agent.is_paused ? (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => pauseToggle.mutate({ id: agent.id, paused: false })}
+                          disabled={pauseToggle.isPending}
+                          className="gap-1.5 text-amber-700"
+                        >
+                          <Play className="h-3.5 w-3.5" />
+                          הפעל מחדש
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setConfirmPause(agent)}
+                          disabled={pauseToggle.isPending}
+                          className="gap-1.5"
+                        >
+                          <Pause className="h-3.5 w-3.5" />
+                          השהה
+                        </Button>
+                      )
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {agent.is_paused ? "מושהה" : "פעיל"}
+                      </span>
+                    )}
                   </TableCell>
                   {isAdmin && (
                     <TableCell>
@@ -137,6 +188,45 @@ export function AgentsTab() {
             onCancel={() => setCreating(false)}
             submitLabel="צור סוכן"
           />
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(confirmPause)} onOpenChange={(open) => !open && setConfirmPause(null)}>
+        <DialogContent className="max-w-md" dir="rtl">
+          <DialogHeader>
+            <DialogTitle>להשהות את הסוכן?</DialogTitle>
+            <DialogDescription>
+              הבוט יפסיק לענות ללידים חדשים מיד. הודעות נכנסות עדיין יישמרו ויופיעו בדף שיחות,
+              אבל לא ייענו אוטומטית עד שתפעיל מחדש.
+            </DialogDescription>
+          </DialogHeader>
+          {confirmPause && (
+            <p className="rounded border bg-muted/40 p-2 text-sm font-medium">
+              {confirmPause.display_name}
+            </p>
+          )}
+          <DialogFooter className="flex-row-reverse gap-2 sm:flex-row-reverse">
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() =>
+                confirmPause && pauseToggle.mutate({ id: confirmPause.id, paused: true })
+              }
+              disabled={pauseToggle.isPending}
+              className="gap-1.5"
+            >
+              <Pause className="h-4 w-4" />
+              השהה את הבוט
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmPause(null)}
+              disabled={pauseToggle.isPending}
+            >
+              ביטול
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
 

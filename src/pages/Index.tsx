@@ -16,6 +16,11 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAgent } from "@/contexts/AgentContext";
 import { useAuth } from "@/contexts/AuthContext";
 import { getAnalytics } from "@/lib/analytics";
+import {
+  CampaignCohortsCard,
+  FunnelDropoffCard,
+  HealthStatusCard,
+} from "@/components/analytics/InsightsCards";
 import { getKpis } from "@/lib/kpis";
 import { getOperationsMetrics } from "@/lib/operations";
 
@@ -156,6 +161,12 @@ function AdvancedAnalyticsTab({ agentId }: { agentId: string }) {
         metrics={operationsQuery.data}
         isLoading={operationsQuery.isLoading}
       />
+
+      <div className="grid gap-3 md:grid-cols-2">
+        <FunnelDropoffCard agentId={agentId} />
+        <CampaignCohortsCard agentId={agentId} />
+      </div>
+      <HealthStatusCard />
 
       <section className="space-y-3">
         <div className="flex items-center gap-2">

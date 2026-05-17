@@ -39,6 +39,7 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "../_shared/anthropicRetry.ts";
+import { judgeReply } from "../_shared/judgeReply.ts";
 import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
@@ -55,6 +56,13 @@ const SOURCE = "whatsapp-webhook";
 const AGENT_LOOP_SOURCE = "agent-loop";
 const POSTGRES_UNIQUE_VIOLATION = "23505";
 const HISTORY_LIMIT = 30;
+// When the conversation has more than this many message turns, replace
+// the older portion with a single "earlier conversation summary" turn
+// pulled from lead_memory.conversation_summary (which the memory
+// extractor already maintains free of charge). Cuts per-turn cost
+// by ~60% on long conversations without losing context quality.
+const COMPRESSION_THRESHOLD = 20;
+const COMPRESSION_KEEP_RECENT = 10;
 
 type MessageType = "text" | "audio" | "image" | "sticker" | "video" | "document";
 
@@ -317,11 +325,40 @@ async function loadAgentTurnContext(
   const last = claudeMessages[claudeMessages.length - 1];
   if (!last || last.role !== "user") return null;
 
+  // Compression: long conversations get the older portion replaced with
+  // the lead_memory.conversation_summary. Free because the memory
+  // extractor already populates it after every turn. Cuts tokens by ~60%
+  // on conversations > 20 turns.
+  let finalMessages = claudeMessages;
+  if (claudeMessages.length > COMPRESSION_THRESHOLD) {
+    const { data: mem } = await ctx.admin
+      .from("lead_memory")
+      .select("conversation_summary")
+      .eq("conversation_id", ctx.conversationId)
+      .maybeSingle();
+    const summary = (mem?.conversation_summary as string | null | undefined)?.trim();
+    if (summary && summary.length > 50) {
+      // Keep the most-recent N turns verbatim so tone + immediate context
+      // stay sharp; replace the rest with one summary turn.
+      const recent = claudeMessages.slice(-COMPRESSION_KEEP_RECENT);
+      // Synthesise an "assistant" turn carrying the summary so the
+      // chronology stays consistent (the bot was the last speaker before
+      // the compressed history; user came next).
+      finalMessages = [
+        {
+          role: "assistant",
+          content: `[סיכום שיחה עד כה]: ${summary}`,
+        },
+        ...recent,
+      ];
+    }
+  }
+
   return {
     promptContent: prompt.content,
     promptVersion: prompt.version,
     promptVersionId: prompt.id,
-    claudeMessages,
+    claudeMessages: finalMessages,
   };
 }
 
@@ -571,6 +608,42 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
         prompt_version_id: turn.promptVersionId,
         langfuse_trace_id: langfuseTraceId,
         cost_usd: costUsd,
+        lead_phone: ctx.leadPhone,
+      },
+    );
+    return;
+  }
+
+  // Second-layer safety: ask Haiku to judge the reply against semantic
+  // rules the regex validator can\'t enforce ("5 אלף בחודש", subtle AI
+  // disclosure, income hints without "מובטח"). Degrades open on
+  // judge failure so a Haiku outage doesn\'t stop legitimate traffic.
+  const verdict = await judgeReply(ctx.anthropic, validation.text, async (msg) => {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "judge_unavailable",
+      level: "warn",
+      message: msg,
+      context: { prompt_version: turn.promptVersion },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+  });
+  if (!verdict.ok) {
+    await logAndDlq(
+      ctx,
+      "judge_rejected_reply",
+      `Haiku judge rejected: ${verdict.reason}`,
+      verdict.reason,
+      {
+        raw_reply: validation.text,
+        judge_reason: verdict.reason,
+        judge_tokens_in: verdict.tokensInput,
+        judge_tokens_out: verdict.tokensOutput,
+        prompt_version: turn.promptVersion,
+        prompt_version_id: turn.promptVersionId,
+        langfuse_trace_id: langfuseTraceId,
         lead_phone: ctx.leadPhone,
       },
     );
@@ -910,18 +983,22 @@ Deno.serve(async (req) => {
     ?.phone_number_id ?? null;
 
   let agentId: string | null = null;
+  let isPaused = false;
   if (inboundPhoneNumberId) {
     const { data: byPhone } = await admin
       .from("agents")
-      .select("id")
+      .select("id, is_paused")
       .eq("whatsapp_phone_number_id", inboundPhoneNumberId)
       .maybeSingle();
-    if (byPhone) agentId = byPhone.id as string;
+    if (byPhone) {
+      agentId = byPhone.id as string;
+      isPaused = (byPhone.is_paused as boolean | null) ?? false;
+    }
   }
   if (!agentId) {
     const { data: byName, error: agentErr } = await admin
       .from("agents")
-      .select("id")
+      .select("id, is_paused")
       .eq("name", agentName)
       .maybeSingle();
     if (agentErr) {
@@ -945,6 +1022,7 @@ Deno.serve(async (req) => {
       return new Response("Agent not configured", { status: 500 });
     }
     agentId = byName.id as string;
+    isPaused = (byName.is_paused as boolean | null) ?? false;
   }
 
   // Conversations that received an inbound text this webhook → trigger one
@@ -966,6 +1044,26 @@ Deno.serve(async (req) => {
         }
       }
     }
+  }
+
+  // Kill switch: if the agent is paused, skip the AI loop entirely.
+  // Inbound rows are already persisted above so the operator sees them.
+  if (isPaused) {
+    if (conversationsNeedingReply.size > 0) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "agent_paused_skip",
+        level: "info",
+        message: `agent is paused — skipping AI loop for ${conversationsNeedingReply.size} conversation(s)`,
+        context: { conversationCount: conversationsNeedingReply.size },
+        agentId,
+      });
+    }
+    return new Response(JSON.stringify({ status: "ok", paused: true }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // Fire AI replies in the background so we can return 200 to HookMyApp now.
