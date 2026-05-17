@@ -55,7 +55,27 @@ export interface HandoffConversation {
   status: "paused";
   current_tag: "zoom_scheduled";
   funnel_stage: "done";
+
+  /** ISO-8601 UTC — the exact moment we tagged the lead as ready
+   *  for a zoom. This is when Make.com should kick off Mooz / Fireberry.
+   *  The ACTUAL meeting time is returned by Mooz inside Make.com — it
+   *  isn't decided by the bot. */
   zoom_scheduled_at: string;
+
+  /** ----- Make.com-friendly derived fields ----- */
+
+  /** Same instant as `zoom_scheduled_at`, formatted as YYYY-MM-DD in
+   *  Asia/Jerusalem. Easy to map into Fireberry "Date" fields. */
+  qualified_at_il_date: string;
+
+  /** Same instant, formatted as HH:mm in Asia/Jerusalem. Easy to map
+   *  into Fireberry "Time" fields. */
+  qualified_at_il_time: string;
+
+  /** Hebrew-style combined display: "DD/MM/YYYY HH:mm" in Asia/Jerusalem.
+   *  Drop straight into a single CRM text/note column. */
+  qualified_at_il_datetime: string;
+
   source_campaign: string | null;
   source_funnel: string | null;
   created_at: string | null;
