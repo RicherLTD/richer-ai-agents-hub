@@ -121,76 +121,76 @@
     --duration-slow:    280ms;
   }
 
-  /* ----- LIGHT (opt-in via .light on <html>) ----- */
+  /* ----- LIGHT (now the default) ----- */
   .light {
     --background:        0 0% 100%;
-    --foreground:        240 10% 8%;
+    --foreground:        0 0% 4%;        /* near-black for max contrast */
 
     --card:              0 0% 100%;
-    --card-foreground:   240 10% 8%;
+    --card-foreground:   0 0% 4%;
 
     --popover:           0 0% 100%;
-    --popover-foreground:240 10% 8%;
+    --popover-foreground:0 0% 4%;
 
     --surface-elevated:  0 0% 100%;
-    --surface-subtle:    240 5% 97%;
-    --surface-hover:     240 5% 95%;
-    --surface-active:    240 5% 90%;
+    --surface-subtle:    240 5% 96%;
+    --surface-hover:     240 5% 93%;
+    --surface-active:    240 5% 88%;
 
-    --primary:           262 83% 58%;
+    --primary:           262 83% 50%;     /* slightly deeper for contrast on white */
     --primary-foreground:0 0% 100%;
-    --primary-deep:      263 70% 45%;
-    --primary-light:     265 90% 72%;
-    --primary-soft:      262 83% 58%;
-    --primary-soft-rgb:  124, 58, 237;
+    --primary-deep:      263 70% 38%;
+    --primary-light:     265 90% 68%;
+    --primary-soft:      262 83% 50%;
+    --primary-soft-rgb:  102, 38, 217;
 
-    --accent-warm:        32 95% 44%;
-    --accent-warm-rgb:    234, 88, 12;
+    --accent-warm:        32 95% 42%;
+    --accent-warm-rgb:    219, 78, 0;
 
-    --secondary:         240 5% 96%;
-    --secondary-foreground: 240 10% 8%;
+    --secondary:         240 5% 94%;
+    --secondary-foreground: 0 0% 4%;
 
-    --muted:             240 5% 96%;
-    --muted-foreground:  240 5% 40%;
-    --fg-subtle:         240 5% 55%;
+    --muted:             240 5% 94%;
+    --muted-foreground:  0 0% 28%;        /* MUCH darker than before — labels are readable */
+    --fg-subtle:         0 0% 40%;
 
     --accent:            262 90% 96%;
     --accent-foreground: 262 83% 38%;
 
-    --destructive:       0 84% 50%;
+    --destructive:       0 84% 45%;
     --destructive-foreground: 0 0% 100%;
-    --destructive-soft:  0 92% 96%;
+    --destructive-soft:  0 92% 94%;
 
-    --success:           158 64% 35%;
+    --success:           158 70% 28%;
     --success-foreground: 0 0% 100%;
-    --success-soft:      158 80% 95%;
+    --success-soft:      158 70% 92%;
 
-    --warning:           32 95% 44%;
+    --warning:           32 95% 38%;
     --warning-foreground: 0 0% 100%;
-    --warning-soft:      32 100% 95%;
+    --warning-soft:      32 100% 92%;
 
-    --info:              199 89% 38%;
+    --info:              199 89% 36%;
 
-    --border:            240 6% 90%;
-    --border-strong:     240 5% 82%;
-    --border-subtle:     240 5% 95%;
-    --border-glow:       262 83% 58%;
+    --border:            240 6% 86%;
+    --border-strong:     240 5% 70%;
+    --border-subtle:     240 5% 93%;
+    --border-glow:       262 83% 50%;
 
-    --input:             240 6% 90%;
-    --ring:              262 83% 58%;
+    --input:             240 6% 86%;
+    --ring:              262 83% 50%;
 
     --aurora-violet-rgb: 124, 58, 237;
     --aurora-amber-rgb:  234, 88, 12;
     --aurora-blue-rgb:   79, 70, 229;
 
     --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 240 8% 30%;
-    --sidebar-primary:    262 83% 58%;
+    --sidebar-foreground: 0 0% 18%;        /* dark, readable */
+    --sidebar-primary:    262 83% 50%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent:     262 90% 96%;
-    --sidebar-accent-foreground: 262 83% 38%;
-    --sidebar-border:     240 6% 90%;
-    --sidebar-ring:       262 83% 58%;
+    --sidebar-accent:     262 90% 94%;
+    --sidebar-accent-foreground: 262 83% 32%;
+    --sidebar-border:     240 6% 86%;
+    --sidebar-ring:       262 83% 50%;
 
     --shadow-sm:      0 1px 2px 0 hsl(240 10% 10% / 0.04);
     --shadow-md:      0 4px 12px -2px hsl(240 10% 10% / 0.06);
@@ -215,7 +215,10 @@
 
   body {
     @apply bg-background text-foreground;
-    font-weight: 400;
+    /* 500 instead of 400 — operator-reported "thin" body text. The hi-tech
+       fonts (Heebo / Geist) are designed to read confidently at medium
+       weight; 400 felt anemic against the cream/white canvas. */
+    font-weight: 500;
     font-feature-settings: 'cv11', 'ss01', 'ss03';
   }
 
@@ -224,9 +227,15 @@
 
   h1, h2, h3, h4, h5, h6 {
     @apply text-foreground;
-    font-weight: 600;
+    /* Bumped to 700 (was 600). On Heebo this is "Bold" — distinctly
+       heavier than body, reads as a real heading instead of vaguely
+       emphasised text. */
+    font-weight: 700;
     letter-spacing: -0.015em;
   }
+  h1 { font-weight: 800; }
+  h2 { font-weight: 700; }
+  h3 { font-weight: 700; }
 
   /* Numbers always get tabular-nums for column alignment. */
   .tabular, .num, [data-numeric] {
@@ -431,11 +440,12 @@
     font-family: 'Geist', 'Heebo', -apple-system, system-ui, sans-serif;
   }
 
-  /* Mono uppercase label — premium SaaS chrome */
+  /* Mono uppercase label — premium SaaS chrome. Weight 700 + darker
+     muted-foreground means these section kickers are actually legible. */
   .label-mono {
     font-family: 'Geist Mono', 'JetBrains Mono', monospace;
     font-size: 11px;
-    font-weight: 500;
+    font-weight: 700;
     letter-spacing: 0.10em;
     text-transform: uppercase;
     color: hsl(var(--muted-foreground));
