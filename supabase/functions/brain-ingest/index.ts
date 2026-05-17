@@ -1,30 +1,30 @@
 // brain-ingest/index.ts
 //
-// Admin-only ingestion endpoint. The Brain page uploads a PDF/image
-// to `brain-uploads` storage, then calls this function with the
-// resulting path + the metadata the operator entered. We:
+// Admin-only ingestion endpoint with ASYNC extraction.
 //
-//   1. Re-verify admin role (defense in depth on top of bucket RLS).
-//   2. Download the file using service_role.
-//   3. Extract plain text via Claude:
-//        - PDF → document content block (Claude reads the bytes
-//          directly, handles OCR for scanned pages).
-//        - Image → image content block (vision-capable Sonnet 4.6
-//          captions / OCRs the contents).
-//   4. Estimate token count (chars/4 heuristic — close enough; we'd
-//      need a real tokeniser for an exact number and that's overkill).
-//   5. Insert the `brain_documents` row.
+// Why async: Claude PDF extraction can take >120s for large documents.
+// Supabase Edge Functions are capped at 150s wall-clock. Synchronous
+// extraction was returning 504 to the client and the upload appeared
+// to hang.
 //
-// Returns the created row. On any failure between storage upload and
-// row insert the function does NOT clean up the storage object — the
-// client retries by calling delete on the orphan path. (Best-effort
-// cleanup belongs in the client which knows the path.)
+// Flow:
+//   1. Verify admin.
+//   2. Validate request + UUID + size.
+//   3. Insert brain_documents row with extraction_status=\'pending\'.
+//   4. Return 200 immediately with the pending row.
+//   5. Background task (EdgeRuntime.waitUntil):
+//        - Download file from storage.
+//        - Base64 + send to Claude for extraction.
+//        - Run prompt-injection scan.
+//        - Update row to status=\'ready\' + extracted_text + token_count,
+//          OR status=\'failed\' + extraction_error.
+//        - On failure, clean up the storage object.
 //
-// Why not extract on the client? The Anthropic API key cannot live in
-// the browser bundle. The server holds it.
+// UI polls the brain list while any row is \'pending\'.
 
 import "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
+import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { detectPromptInjection } from "../_shared/injectionScan.ts";
@@ -34,11 +34,6 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_OUTPUT_TOKENS = 16000;
 const MAX_EXTRACTED_CHARS = 200_000;
 const PDF_BUCKET = "brain-uploads";
-// Server-side cap on the downloaded file bytes. The Anthropic SDK base64-
-// encodes the whole payload (~1.33x bloat), and a Deno edge function has
-// ~150MB of heap. Two concurrent 50MB uploads can OOM the runtime; cap
-// at 20MB until streaming uploads land in the SDK. Client-side limit is
-// 50MB but a determined / buggy caller can bypass it.
 const MAX_INGEST_BYTES = 20 * 1024 * 1024;
 
 interface IngestRequestBody {
@@ -75,8 +70,7 @@ function parseRequest(body: IngestRequestBody): ParsedIngest {
     return v.trim();
   }
   function asNullableString(v: unknown): string | null {
-    if (v == null) return null;
-    if (typeof v !== "string") return null;
+    if (v == null || typeof v !== "string") return null;
     const t = v.trim();
     return t.length === 0 ? null : t;
   }
@@ -84,7 +78,6 @@ function parseRequest(body: IngestRequestBody): ParsedIngest {
     if (!Array.isArray(v)) return [];
     return v.filter((x): x is string => typeof x === "string" && x.trim().length > 0);
   }
-
   const sourceKindRaw = asString(body.source_kind, "source_kind");
   if (sourceKindRaw !== "pdf" && sourceKindRaw !== "image") {
     throw new HttpError(400, `Invalid source_kind: ${sourceKindRaw} (expected pdf|image)`);
@@ -111,7 +104,6 @@ function parseRequest(body: IngestRequestBody): ParsedIngest {
 }
 
 function uint8ToBase64(bytes: Uint8Array): string {
-  // chunked btoa to avoid call-stack overflow on multi-MB files.
   let binary = "";
   const chunkSize = 0x8000;
   for (let i = 0; i < bytes.length; i += chunkSize) {
@@ -121,13 +113,8 @@ function uint8ToBase64(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-interface AnthropicContentBlock {
-  type: string;
-  text?: unknown;
-}
-interface AnthropicMessageResponse {
-  content: ReadonlyArray<AnthropicContentBlock>;
-}
+interface AnthropicContentBlock { type: string; text?: unknown; }
+interface AnthropicMessageResponse { content: ReadonlyArray<AnthropicContentBlock>; }
 
 function firstTextBlock(response: AnthropicMessageResponse): string {
   const block = response.content.find((b) => b.type === "text");
@@ -135,11 +122,6 @@ function firstTextBlock(response: AnthropicMessageResponse): string {
   return block.text;
 }
 
-/**
- * One-shot extraction prompt. The agent is told to output ONLY the
- * plain text — no commentary, no markdown headers, no "I extracted:"
- * prefix. We feed the result back as the canonical brain content.
- */
 const EXTRACTION_SYSTEM = `You are an extraction worker. Read the attached document or image and return the plain-text content verbatim.
 
 Rules:
@@ -151,57 +133,33 @@ Rules:
 - If the document is empty or unreadable, output the literal string: (no extractable content)`;
 
 async function extractFromPdf(anthropic: Anthropic, base64Bytes: string): Promise<string> {
+  // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
     model: MODEL,
     max_tokens: MAX_OUTPUT_TOKENS,
     system: EXTRACTION_SYSTEM,
     messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "document",
-            source: {
-              type: "base64",
-              media_type: "application/pdf",
-              data: base64Bytes,
-            },
-          },
-          { type: "text", text: "Extract the full text of this document." },
-        ],
-      },
+      { role: "user", content: [
+        { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64Bytes } },
+        { type: "text", text: "Extract the full text of this document." },
+      ]},
     ],
-    // deno-lint-ignore no-explicit-any
   } as any);
   return firstTextBlock(raw as unknown as AnthropicMessageResponse);
 }
 
-async function extractFromImage(
-  anthropic: Anthropic,
-  base64Bytes: string,
-  mediaType: string,
-): Promise<string> {
+async function extractFromImage(anthropic: Anthropic, base64Bytes: string, mediaType: string): Promise<string> {
+  // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
     model: MODEL,
     max_tokens: MAX_OUTPUT_TOKENS,
     system: EXTRACTION_SYSTEM,
     messages: [
-      {
-        role: "user",
-        content: [
-          {
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: mediaType,
-              data: base64Bytes,
-            },
-          },
-          { type: "text", text: "Transcribe any text in this image." },
-        ],
-      },
+      { role: "user", content: [
+        { type: "image", source: { type: "base64", media_type: mediaType, data: base64Bytes } },
+        { type: "text", text: "Transcribe any text in this image." },
+      ]},
     ],
-    // deno-lint-ignore no-explicit-any
   } as any);
   return firstTextBlock(raw as unknown as AnthropicMessageResponse);
 }
@@ -214,6 +172,80 @@ function inferMediaTypeFromPath(path: string, sourceKind: "pdf" | "image"): stri
   if (lower.endsWith(".webp")) return "image/webp";
   if (lower.endsWith(".gif")) return "image/gif";
   return "image/png";
+}
+
+interface EdgeRuntimeShape { waitUntil(p: Promise<unknown>): void; }
+
+/**
+ * Background extraction — runs after the 200 response goes out. Never
+ * throws; reports outcome by updating extraction_status on the row.
+ */
+async function runExtraction(args: {
+  admin: SupabaseClient;
+  anthropic: Anthropic;
+  documentId: string;
+  storagePath: string;
+  sourceKind: "pdf" | "image";
+}): Promise<void> {
+  const { admin, anthropic, documentId, storagePath, sourceKind } = args;
+  const markFailed = async (errMsg: string) => {
+    await admin
+      .from("brain_documents")
+      .update({ extraction_status: "failed", extraction_error: errMsg.slice(0, 500) })
+      .eq("id", documentId);
+    await admin.storage.from(PDF_BUCKET).remove([storagePath]);
+  };
+
+  try {
+    const { data: fileBlob, error: dlErr } = await admin
+      .storage
+      .from(PDF_BUCKET)
+      .download(storagePath);
+    if (dlErr || !fileBlob) {
+      await markFailed(`Storage download failed: ${dlErr?.message ?? "no body"}`);
+      return;
+    }
+    const bytes = new Uint8Array(await fileBlob.arrayBuffer());
+    if (bytes.length > MAX_INGEST_BYTES) {
+      await markFailed(`File exceeds ingest limit (${bytes.length} bytes > 20MB)`);
+      return;
+    }
+    const base64 = uint8ToBase64(bytes);
+    const mediaType = inferMediaTypeFromPath(storagePath, sourceKind);
+
+    let extracted: string;
+    try {
+      extracted = sourceKind === "pdf"
+        ? await extractFromPdf(anthropic, base64)
+        : await extractFromImage(anthropic, base64, mediaType);
+    } catch (err) {
+      await markFailed(`Claude extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    const text = (extracted ?? "").slice(0, MAX_EXTRACTED_CHARS);
+
+    const injection = detectPromptInjection(text);
+    if (injection) {
+      await markFailed(`Prompt-injection rejected (${injection.reason}): ${injection.excerpt}`);
+      return;
+    }
+
+    const tokens = Math.ceil(text.length / 4);
+    const pageCount = sourceKind === "pdf" && text.length > 0 ? text.split(/\n\n/).length : null;
+
+    await admin
+      .from("brain_documents")
+      .update({
+        extraction_status: "ready",
+        extraction_error: null,
+        extracted_text: text,
+        token_count: tokens,
+        page_count: pageCount,
+      })
+      .eq("id", documentId);
+  } catch (err) {
+    await markFailed(`Unexpected: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 Deno.serve(async (req) => {
@@ -239,63 +271,8 @@ Deno.serve(async (req) => {
     }
     const anthropic = new Anthropic({ apiKey: anthropicApiKey });
 
-    // Download the file from storage via service_role.
-    const { data: fileBlob, error: dlErr } = await ctx.admin
-      .storage
-      .from(PDF_BUCKET)
-      .download(input.storagePath);
-    if (dlErr || !fileBlob) {
-      throw new HttpError(404, `Storage download failed: ${dlErr?.message ?? "no body"}`);
-    }
-    const arrayBuf = await fileBlob.arrayBuffer();
-    const bytes = new Uint8Array(arrayBuf);
-    if (bytes.length > MAX_INGEST_BYTES) {
-      // Clean up the storage object so it doesn\'t persist as garbage.
-      await ctx.admin.storage.from(PDF_BUCKET).remove([input.storagePath]);
-      throw new HttpError(
-        413,
-        `File exceeds server-side ingest limit (${bytes.length} bytes > ${MAX_INGEST_BYTES} bytes / 20MB)`,
-      );
-    }
-    const base64Bytes = uint8ToBase64(bytes);
-    const mediaType = inferMediaTypeFromPath(input.storagePath, input.sourceKind);
-
-    // Run extraction.
-    let extracted: string;
-    try {
-      extracted = input.sourceKind === "pdf"
-        ? await extractFromPdf(anthropic, base64Bytes)
-        : await extractFromImage(anthropic, base64Bytes, mediaType);
-    } catch (err) {
-      const detail = err instanceof Error ? err.message : String(err);
-      throw new HttpError(502, `Claude extraction failed: ${detail}`);
-    }
-    const text = (extracted ?? "").slice(0, MAX_EXTRACTED_CHARS);
-
-    // Prompt-injection defense: scan the extracted text for the most
-    // common jailbreak phrasings before we commit it to the brain. The
-    // system-prompt wrapper (<untrusted_evidence>) is the real defense;
-    // this scanner rejects obvious garbage at the door so the operator
-    // gets immediate, specific feedback instead of a silently-poisoned
-    // brain row. Cleanup: delete the storage object so we don't leave
-    // an orphan file when we reject the ingest.
-    const injection = detectPromptInjection(text);
-    if (injection) {
-      await ctx.admin.storage.from(PDF_BUCKET).remove([input.storagePath]);
-      throw new HttpError(
-        422,
-        `Document rejected: contains a prompt-injection pattern (${injection.reason}). Excerpt: ${injection.excerpt}`,
-      );
-    }
-
-    const tokens = Math.ceil(text.length / 4);
-    // Rough page count for PDFs from the extracted text (double-newline
-    // separator as per the extraction prompt). Falls back to null if
-    // extraction returned an empty body.
-    const pageCount = input.sourceKind === "pdf" && text.length > 0
-      ? text.split(/\n\n/).length
-      : null;
-
+    // Insert with pending status — UI immediately renders a card with
+    // "מעבד..." badge while extraction runs in the background.
     const { data: inserted, error: insErr } = await ctx.admin
       .from("brain_documents")
       .insert({
@@ -306,18 +283,34 @@ Deno.serve(async (req) => {
         ai_title: input.aiTitle,
         ai_description: input.aiDescription,
         storage_path: input.storagePath,
-        extracted_text: text,
+        extracted_text: "",
         file_size_bytes: input.fileSizeBytes,
-        page_count: pageCount,
-        token_count: tokens,
+        page_count: null,
+        token_count: 0,
         tags: input.tags,
         shared_across_agents: input.sharedAcrossAgents,
         uploaded_by: ctx.callerId,
+        extraction_status: "pending",
       })
       .select("*")
       .single();
     if (insErr || !inserted) {
       throw new HttpError(500, `Insert failed: ${insErr?.message ?? "no row"}`);
+    }
+
+    const runtime = (globalThis as { EdgeRuntime?: EdgeRuntimeShape }).EdgeRuntime;
+    const task = runExtraction({
+      admin: ctx.admin,
+      anthropic,
+      documentId: inserted.id as string,
+      storagePath: input.storagePath,
+      sourceKind: input.sourceKind,
+    });
+    if (runtime && typeof runtime.waitUntil === "function") {
+      runtime.waitUntil(task);
+    } else {
+      // Local dev fallback
+      await task;
     }
 
     return jsonResponse({ document: inserted }, { status: 200, headers: corsHeaders });

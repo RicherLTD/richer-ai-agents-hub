@@ -1,5 +1,7 @@
 export type BrainSourceKind = "pdf" | "image" | "note";
 
+export type BrainExtractionStatus = "pending" | "ready" | "failed";
+
 export interface BrainDocument {
   id: string;
   agent_id: string;
@@ -19,6 +21,8 @@ export interface BrainDocument {
   uploaded_by: string;
   uploaded_at: string;
   updated_at: string;
+  extraction_status: BrainExtractionStatus;
+  extraction_error: string | null;
 }
 
 export interface BrainDocumentSummary {

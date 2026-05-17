@@ -39,7 +39,7 @@ export const SUPPORTED_IMAGE_MIMES = [
 // the editor. Fetching it on the list view wasted ~10 MB of bandwidth
 // at 50 docs.
 const BRAIN_LIST_COLUMNS =
-  "id, agent_id, source_kind, title, description, ai_title, ai_description, storage_path, tags, page_count, file_size_bytes, token_count, is_active, shared_across_agents, uploaded_by, uploaded_at, updated_at";
+  "id, agent_id, source_kind, title, description, ai_title, ai_description, storage_path, tags, page_count, file_size_bytes, token_count, is_active, shared_across_agents, uploaded_by, uploaded_at, updated_at, extraction_status, extraction_error";
 
 export async function getBrainForAgent(agentId: string): Promise<BrainDocument[]> {
   // PostgREST .or() filter is built by string interpolation; a non-UUID

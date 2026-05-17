@@ -92,6 +92,14 @@ export function BrainPanel({ onUpdateBot }: BrainPanelProps) {
     queryKey: ["coach", "brain", agentId] as const,
     queryFn: () => getBrainForAgent(agentId as string),
     enabled: !!agentId,
+    // Poll every 4 seconds while any row is still processing — the
+    // brain-ingest function extracts in background and we want the UI
+    // to flip from "מעבד..." to ready without a manual refresh.
+    refetchInterval: (q) => {
+      const data = q.state.data as BrainDocument[] | undefined;
+      const hasPending = data?.some((r) => r.extraction_status === "pending");
+      return hasPending ? 4000 : false;
+    },
   });
 
   const rows = brainQuery.data ?? [];
@@ -491,35 +499,57 @@ function BrainDocCard({
   isToggling,
 }: RowActionsProps) {
   const Icon = row.source_kind === "pdf" ? FileText : ImageIcon;
+  const isPending = row.extraction_status === "pending";
+  const isFailed = row.extraction_status === "failed";
   return (
-    <Card className={row.is_active ? "" : "opacity-60"}>
+    <Card className={row.is_active && !isFailed ? "" : "opacity-60"}>
       <CardContent className="space-y-2 p-3">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-primary">
-            <Icon className="h-4 w-4" />
+            {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Icon className="h-4 w-4" />}
           </div>
           <div className="min-w-0 flex-1">
             <p className="truncate text-sm font-medium" title={row.title}>
               {row.title}
             </p>
             <p className="truncate text-[11px] text-muted-foreground">
-              {row.page_count ? `${row.page_count} עמודים · ` : ""}
-              {row.token_count ? `${formatTokens(row.token_count)} טוקנים` : ""}
+              {isPending
+                ? "מעבד את התוכן..."
+                : isFailed
+                  ? "החילוץ נכשל"
+                  : (row.page_count ? `${row.page_count} עמודים · ` : "") +
+                    (row.token_count ? `${formatTokens(row.token_count)} טוקנים` : "")}
             </p>
           </div>
           <div className="flex flex-col items-end gap-1">
             <Switch
               checked={row.is_active}
               onCheckedChange={onToggleActive}
-              disabled={isToggling}
+              disabled={isToggling || isPending}
               aria-label={row.is_active ? "כבה מסמך" : "הפעל מסמך"}
             />
           </div>
         </div>
-        {row.description && (
+        {isFailed && row.extraction_error && (
+          <p className="rounded border border-destructive/30 bg-destructive/5 px-2 py-1 text-[11px] text-destructive">
+            {row.extraction_error}
+          </p>
+        )}
+        {!isFailed && row.description && (
           <p className="line-clamp-2 text-xs text-muted-foreground">{row.description}</p>
         )}
         <div className="flex flex-wrap items-center gap-1">
+          {isPending && (
+            <Badge variant="secondary" className="gap-1 text-[10px]">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              מעבד
+            </Badge>
+          )}
+          {isFailed && (
+            <Badge variant="destructive" className="gap-1 text-[10px]">
+              נכשל
+            </Badge>
+          )}
           {row.shared_across_agents && (
             <Badge variant="secondary" className="gap-1 text-[10px]">
               <Globe className="h-3 w-3" />
