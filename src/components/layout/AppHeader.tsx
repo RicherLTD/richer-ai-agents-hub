@@ -2,7 +2,6 @@ import { Moon, Sun } from "lucide-react";
 import { useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { BrandLogo } from "@/components/BrandLogo";
 import { useAgent } from "@/contexts/AgentContext";
 import { useTheme } from "@/hooks/use-theme";
 
@@ -20,8 +19,6 @@ export function AppHeader() {
   const { activeAgent } = useAgent();
   const { theme, toggle } = useTheme();
 
-  // Match longest prefix so /coach, /coach/foo, /settings/x all land
-  // on their parent header entry.
   const entry =
     PAGE_TITLES[location.pathname] ??
     Object.entries(PAGE_TITLES)
@@ -30,16 +27,16 @@ export function AppHeader() {
     PAGE_TITLES["/"];
 
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/85 px-4 backdrop-blur-md supports-[backdrop-filter]:bg-background/70 md:px-6">
+    <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-background/70 px-4 backdrop-blur-xl md:px-6">
       <SidebarTrigger className="text-muted-foreground transition-colors hover:text-foreground" />
 
-      {/* Title block — bilingual: large Hebrew, small mono English label */}
-      <div className="flex min-w-0 items-baseline gap-2.5">
-        <h1 className="truncate text-lg font-semibold tracking-tight text-foreground">
+      {/* Title block — display serif + mono sub-label */}
+      <div className="flex min-w-0 items-baseline gap-3">
+        <h1 className="font-display truncate text-lg font-medium tracking-tight text-foreground">
           {entry.title}
         </h1>
         {entry.sub && (
-          <span className="hidden font-mono text-2xs uppercase tracking-wider text-muted-foreground/70 sm:inline" dir="ltr">
+          <span className="label-mono hidden !text-[10px] sm:inline" dir="ltr">
             {entry.sub}
           </span>
         )}
@@ -48,17 +45,22 @@ export function AppHeader() {
       <div className="me-auto flex items-center gap-1.5 md:gap-2">
         {activeAgent && (
           <div
-            className="hidden items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-surface-hover sm:inline-flex"
+            className="hidden items-center gap-2 rounded-full border border-border bg-card/60 px-3 py-1 text-xs font-medium text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground sm:inline-flex"
             title={`סוכן פעיל — ${activeAgent.display_name}`}
           >
-            <span className="relative flex h-1.5 w-1.5">
-              <span className="absolute inset-0 animate-ping rounded-full bg-success/50" />
-              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-success" />
-            </span>
-            <BrandLogo className="h-3.5 w-3.5" />
+            <span className="presence-dot" />
             <span className="hidden md:inline">{activeAgent.display_name}</span>
           </div>
         )}
+
+        {/* Future home for cmd+K — visible affordance even before wired */}
+        <kbd
+          className="label-mono hidden h-7 select-none items-center gap-1 rounded-md border border-border bg-card/60 px-2 !text-[10px] !tracking-wider text-muted-foreground transition-colors hover:bg-surface-hover hover:text-foreground md:inline-flex"
+          title="חיפוש מהיר (בקרוב)"
+          dir="ltr"
+        >
+          ⌘K
+        </kbd>
 
         <Button
           type="button"
