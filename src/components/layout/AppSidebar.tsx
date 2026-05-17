@@ -56,15 +56,19 @@ export function AppSidebar() {
 
   return (
     <Sidebar side="right" collapsible="icon">
-      <SidebarHeader className="border-b border-sidebar-border">
+      <SidebarHeader className="border-b border-sidebar-border bg-sidebar">
         <div className="flex items-center gap-2.5 px-2 py-2">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-primary-deep shadow-sm">
+          <div className="relative flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-primary-deep">
             <BrandLogo className="h-9 w-9" />
+            {/* Faint top-edge highlight — adds depth without shadow. */}
+            <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/15 to-transparent" />
           </div>
           {!collapsed && (
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold leading-tight text-foreground">מערכת ריצ'ר AI</p>
-              <p className="truncate text-[11px] text-muted-foreground">ניהול סוכני וואטסאפ</p>
+              <p className="truncate text-sm font-semibold leading-tight text-foreground">ריצ'ר AI</p>
+              <p className="truncate text-2xs uppercase tracking-wider text-muted-foreground">
+                Lead Operations
+              </p>
             </div>
           )}
         </div>
@@ -76,7 +80,11 @@ export function AppSidebar() {
         </div>
 
         <SidebarGroup>
-          {!collapsed && <SidebarGroupLabel>ניווט</SidebarGroupLabel>}
+          {!collapsed && (
+            <SidebarGroupLabel className="text-2xs font-semibold uppercase tracking-wider text-muted-foreground/70">
+              ניווט
+            </SidebarGroupLabel>
+          )}
           <SidebarGroupContent>
             <SidebarMenu>
               {visibleNav.map((item) => (
@@ -85,10 +93,10 @@ export function AppSidebar() {
                     <NavLink
                       to={item.url}
                       end={item.end}
-                      className="flex items-center gap-2.5 rounded-md text-sm text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                      className="group/nav relative flex items-center gap-2.5 rounded-md text-sm text-sidebar-foreground transition-colors hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
                       activeClassName="bg-sidebar-accent text-sidebar-accent-foreground font-medium"
                     >
-                      <item.icon className="h-4 w-4 shrink-0" />
+                      <item.icon className="h-4 w-4 shrink-0 transition-transform group-hover/nav:scale-110" />
                       {!collapsed && <span>{item.title}</span>}
                     </NavLink>
                   </SidebarMenuButton>
@@ -104,10 +112,10 @@ export function AppSidebar() {
           <DropdownMenuTrigger asChild>
             <Button
               variant="ghost"
-              className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-2 py-1.5 hover:bg-sidebar-accent"
+              className="flex h-auto w-full items-center justify-start gap-2.5 rounded-md px-2 py-1.5 transition-colors hover:bg-sidebar-accent"
               aria-label="תפריט משתמש"
             >
-              <Avatar className="h-8 w-8">
+              <Avatar className="h-8 w-8 ring-1 ring-border">
                 <AvatarFallback className="bg-primary-soft text-primary text-xs font-semibold">
                   {initials}
                 </AvatarFallback>
@@ -115,13 +123,15 @@ export function AppSidebar() {
               {!collapsed && (
                 <div className="min-w-0 text-right">
                   <p className="truncate text-sm font-medium text-foreground">{displayName || "—"}</p>
-                  <p className="truncate text-[11px] text-muted-foreground">{roleLabel}</p>
+                  <p className="truncate text-2xs uppercase tracking-wider text-muted-foreground">
+                    {roleLabel}
+                  </p>
                 </div>
               )}
             </Button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-56" dir="rtl">
-            <DropdownMenuLabel className="truncate" dir="ltr">
+          <DropdownMenuContent align="end" className="w-56 shadow-popover" dir="rtl">
+            <DropdownMenuLabel className="truncate font-mono text-xs text-muted-foreground" dir="ltr">
               {email}
             </DropdownMenuLabel>
             <DropdownMenuSeparator />

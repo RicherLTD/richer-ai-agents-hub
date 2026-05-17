@@ -39,23 +39,28 @@ const Index = () => {
 
   return (
     <div className="space-y-6">
-      <header className="flex flex-wrap items-baseline justify-between gap-2">
-        <div>
-          <h1 className="text-2xl font-bold">דף הבית</h1>
+      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-4">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight text-foreground">סקירה</h1>
+            <span className="rounded-full bg-primary-soft px-2 py-0.5 text-2xs font-medium uppercase tracking-wider text-primary">
+              {activeAgent.display_name}
+            </span>
+          </div>
           <p className="text-sm text-muted-foreground">
-            {activeAgent.display_name} — סקירה כללית
+            מבט מהיר על הלידים, השיחות הפעילות ושלב המשפך.
           </p>
         </div>
       </header>
 
       <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="grid w-full max-w-md grid-cols-2" dir="rtl">
-          <TabsTrigger value="overview" className="gap-1.5">
+        <TabsList className="inline-flex h-9 w-auto rounded-md border border-border bg-card p-0.5" dir="rtl">
+          <TabsTrigger value="overview" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none">
             <LayoutDashboard className="h-3.5 w-3.5" />
             סקירה
           </TabsTrigger>
           {isAdmin && (
-            <TabsTrigger value="advanced" className="gap-1.5">
+            <TabsTrigger value="advanced" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none">
               <BarChart3 className="h-3.5 w-3.5" />
               ניתוחים מתקדמים
             </TabsTrigger>
