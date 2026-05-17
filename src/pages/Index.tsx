@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { BarChart3, CalendarCheck, Flame, FlaskConical, Home, LayoutDashboard, MessageCircle, Users } from "lucide-react";
+import { Aurora } from "@/components/effects/Aurora";
 import { AiProviderBreakdown } from "@/components/analytics/AiProviderBreakdown";
 import { CostLatencyDashboard } from "@/components/analytics/CostLatencyDashboard";
 import { ExperimentCard } from "@/components/analytics/ExperimentCard";
@@ -38,29 +39,32 @@ const Index = () => {
   if (!activeAgent) return <EmptyState icon={Home} title="לא נבחר סוכן" />;
 
   return (
-    <div className="space-y-6">
-      <header className="flex flex-wrap items-end justify-between gap-3 border-b border-border pb-4">
-        <div className="space-y-1">
-          <div className="flex items-center gap-2">
-            <h1 className="text-xl font-semibold tracking-tight text-foreground">סקירה</h1>
-            <span className="rounded-full bg-primary-soft px-2 py-0.5 text-2xs font-medium uppercase tracking-wider text-primary">
-              {activeAgent.display_name}
-            </span>
-          </div>
-          <p className="text-sm text-muted-foreground">
-            מבט מהיר על הלידים, השיחות הפעילות ושלב המשפך.
+    <div className="relative isolate space-y-8">
+      {/* Aurora gradient mesh — anchored to top, fades behind the page */}
+      <Aurora variant="soft" />
+
+      <header className="relative flex flex-wrap items-end justify-between gap-3 pb-2 pt-2">
+        <div className="space-y-2">
+          <p className="label-mono" dir="ltr">
+            Overview · {activeAgent.name}
+          </p>
+          <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
+            ערב טוב, {activeAgent.display_name}
+          </h1>
+          <p className="max-w-prose text-sm text-muted-foreground">
+            מבט מהיר על הלידים, השיחות הפעילות ושלב המשפך. הכל מתעדכן בזמן אמת.
           </p>
         </div>
       </header>
 
-      <Tabs defaultValue="overview" className="space-y-4">
-        <TabsList className="inline-flex h-9 w-auto rounded-md border border-border bg-card p-0.5" dir="rtl">
-          <TabsTrigger value="overview" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none">
+      <Tabs defaultValue="overview" className="relative space-y-5">
+        <TabsList className="inline-flex h-9 w-auto rounded-md border border-border bg-card/60 p-0.5 backdrop-blur" dir="rtl">
+          <TabsTrigger value="overview" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
             <LayoutDashboard className="h-3.5 w-3.5" />
             סקירה
           </TabsTrigger>
           {isAdmin && (
-            <TabsTrigger value="advanced" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary-soft data-[state=active]:text-primary data-[state=active]:shadow-none">
+            <TabsTrigger value="advanced" className="gap-1.5 rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">
               <BarChart3 className="h-3.5 w-3.5" />
               ניתוחים מתקדמים
             </TabsTrigger>
