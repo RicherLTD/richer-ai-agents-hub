@@ -243,7 +243,7 @@ async function loadReferencedConversation(
   const { data: mem } = await admin
     .from("lead_memory")
     .select(
-      "q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency, q6_investment, conversation_summary, primary_objection, red_flags, notes_for_advisor",
+      "q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency, q6_investment, q7_email, conversation_summary, primary_objection, red_flags, notes_for_advisor",
     )
     .eq("conversation_id", conversationId)
     .maybeSingle();

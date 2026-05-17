@@ -48,6 +48,7 @@ export function LeadMemoryPanel({ memory, isLoading }: Props) {
     { label: "4. מה עוצר אותך?", value: memory.q4_blocker },
     { label: "5. עד כמה זה דחוף?", value: memory.q5_urgency },
     { label: "6. השקעה אפשרית", value: memory.q6_investment },
+    { label: "7. מייל", value: memory.q7_email },
   ];
 
   return (
@@ -65,7 +66,7 @@ export function LeadMemoryPanel({ memory, isLoading }: Props) {
 
       <section>
         <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-          6 השאלות
+          7 השאלות
         </h3>
         <dl className="space-y-2 text-sm">
           {questions.map((q) => (

@@ -22,6 +22,7 @@ describe("coerceExtractedMemory", () => {
       q4_blocker: null,
       q5_urgency: null,
       q6_investment: null,
+      q7_email: null,
       conversation_summary: null,
       primary_objection: null,
       red_flags: [],
@@ -37,6 +38,7 @@ describe("coerceExtractedMemory", () => {
       q4_blocker: "אין זמן",
       q5_urgency: "תוך כמה חודשים",
       q6_investment: "עד 10,000 ש\"ח",
+      q7_email: "israel@gmail.com",
       conversation_summary: "ליד צעיר עם רקע בבינה מלאכותית, מחפש הכנסה נוספת.",
       primary_objection: "timing",
       red_flags: [],
@@ -44,6 +46,20 @@ describe("coerceExtractedMemory", () => {
     };
     const out = coerceExtractedMemory(input);
     expect(out).toEqual(input);
+  });
+
+  it("lowercases and trims valid email addresses", () => {
+    expect(coerceExtractedMemory({ q7_email: "  Israel@Gmail.COM " })?.q7_email).toBe(
+      "israel@gmail.com",
+    );
+  });
+
+  it("rejects malformed emails (no @, no domain dot, empty, non-string)", () => {
+    expect(coerceExtractedMemory({ q7_email: "israel" })?.q7_email).toBeNull();
+    expect(coerceExtractedMemory({ q7_email: "israel@gmail" })?.q7_email).toBeNull();
+    expect(coerceExtractedMemory({ q7_email: "@gmail.com" })?.q7_email).toBeNull();
+    expect(coerceExtractedMemory({ q7_email: "" })?.q7_email).toBeNull();
+    expect(coerceExtractedMemory({ q7_email: 42 })?.q7_email).toBeNull();
   });
 
   it("treats q1_age as a number even when stringified", () => {
@@ -89,6 +105,7 @@ describe("decideConversationTag", () => {
     q4_blocker: null,
     q5_urgency: null,
     q6_investment: null,
+    q7_email: null,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],
@@ -144,6 +161,7 @@ describe("decideFunnelStage", () => {
     q4_blocker: null,
     q5_urgency: null,
     q6_investment: null,
+    q7_email: null,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],
@@ -232,6 +250,7 @@ describe("shouldTriggerZoomHandoff", () => {
     q4_blocker: null,
     q5_urgency: null,
     q6_investment: null,
+    q7_email: null,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],

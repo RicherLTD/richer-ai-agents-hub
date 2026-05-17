@@ -93,6 +93,10 @@ export interface ExtractedMemory {
   q4_blocker: string | null;
   q5_urgency: string | null;
   q6_investment: string | null;
+  /** Email captured during the warmup flow. Downstream consumers (Mooz
+   *  booking, Fireberry CRM) require it; if the lead refuses, the value
+   *  stays null and Make.com falls back to phone-only lookup. */
+  q7_email: string | null;
   conversation_summary: string | null;
   primary_objection: string | null;
   red_flags: string[];
@@ -127,6 +131,20 @@ export function coerceExtractedMemory(parsed: unknown): ExtractedMemory | null {
     if (typeof v !== "string") return null;
     return PRIMARY_OBJECTION_VALUES.has(v) ? v : null;
   }
+  // Light email validation: presence of @ + a dot in the domain side.
+  // We don't run RFC-5322 here — Claude only sees user-provided text and
+  // we'd rather pass through a slightly off email than drop it; the
+  // downstream CRM does its own validation.
+  function asEmail(v: unknown): string | null {
+    if (typeof v !== "string") return null;
+    const t = v.trim().toLowerCase();
+    if (t.length === 0 || t.length > 254) return null;
+    const at = t.indexOf("@");
+    if (at <= 0 || at === t.length - 1) return null;
+    const domain = t.slice(at + 1);
+    if (!domain.includes(".")) return null;
+    return t;
+  }
   function asStringArray(v: unknown): string[] {
     if (!Array.isArray(v)) return [];
     const out: string[] = [];
@@ -146,6 +164,7 @@ export function coerceExtractedMemory(parsed: unknown): ExtractedMemory | null {
     q4_blocker: asTrimmedString(o.q4_blocker),
     q5_urgency: asTrimmedString(o.q5_urgency),
     q6_investment: asTrimmedString(o.q6_investment),
+    q7_email: asEmail(o.q7_email),
     conversation_summary: asTrimmedString(o.conversation_summary),
     primary_objection: asObjection(o.primary_objection),
     red_flags: asStringArray(o.red_flags),
@@ -414,6 +433,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         q4_blocker: memory.q4_blocker,
         q5_urgency: memory.q5_urgency,
         q6_investment: memory.q6_investment,
+        q7_email: memory.q7_email,
         conversation_summary: memory.conversation_summary,
         red_flags: memory.red_flags.length > 0 ? memory.red_flags : null,
         notes_for_advisor: memory.notes_for_advisor,
@@ -520,8 +540,24 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         conversationId: input.conversationId,
       });
     } else {
+      // Read meeting config from the agent row so the payload includes the
+      // values Make.com needs without hardcoding them into the bot. Defaults
+      // (null id / 30 min) keep older agents working if config isn't seeded.
+      const { data: agentRow } = await input.admin
+        .from("agents")
+        .select("meeting_type_id, meeting_duration_minutes")
+        .eq("id", input.agentId)
+        .maybeSingle();
+      const meetingTypeId =
+        (agentRow?.meeting_type_id as string | null | undefined) ?? null;
+      const meetingDurationMinutes =
+        (agentRow?.meeting_duration_minutes as number | null | undefined) ?? 30;
+      const meetingEndAtIso = new Date(
+        new Date(zoomScheduledAt).getTime() + meetingDurationMinutes * 60_000,
+      ).toISOString();
       const dashboardBase = input.dashboardBaseUrl?.replace(/\/$/, "") ?? null;
       const il = formatJerusalemTime(zoomScheduledAt);
+      const ilEnd = formatJerusalemTime(meetingEndAtIso);
       const handoffConv: HandoffConversation = {
         id: input.conversationId,
         lead_phone: (existing?.lead_phone as string | null | undefined) ?? "",
@@ -533,6 +569,10 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         qualified_at_il_date: il.date,
         qualified_at_il_time: il.time,
         qualified_at_il_datetime: il.datetime,
+        meeting_type_id: meetingTypeId,
+        meeting_duration_minutes: meetingDurationMinutes,
+        meeting_end_at: meetingEndAtIso,
+        meeting_end_at_il_datetime: ilEnd.datetime,
         source_campaign: (existing?.source_campaign as string | null | undefined) ?? null,
         source_funnel: (existing?.source_funnel as string | null | undefined) ?? null,
         created_at: (existing?.created_at as string | null | undefined) ?? null,
@@ -545,6 +585,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         q4_blocker: memory.q4_blocker,
         q5_urgency: memory.q5_urgency,
         q6_investment: memory.q6_investment,
+        q7_email: memory.q7_email,
         conversation_summary: memory.conversation_summary,
         primary_objection: memory.primary_objection,
         red_flags: memory.red_flags,
