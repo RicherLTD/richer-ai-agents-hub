@@ -71,9 +71,29 @@ export default {
         },
       },
       borderRadius: {
-        lg: "var(--radius)",
-        md: "calc(var(--radius) - 2px)",
-        sm: "calc(var(--radius) - 4px)",
+        lg: "var(--radius-lg)",          /* 8px — modals */
+        md: "var(--radius)",              /* 6px — cards, default buttons */
+        sm: "var(--radius-sm)",           /* 4px — inputs, chips */
+      },
+      fontSize: {
+        "2xs":  ["11px", { lineHeight: "14px" }],
+        xs:     ["12px", { lineHeight: "16px" }],
+        sm:     ["13px", { lineHeight: "18px" }],
+        base:   ["14px", { lineHeight: "20px" }],
+        md:     ["16px", { lineHeight: "24px" }],
+        lg:     ["20px", { lineHeight: "28px" }],
+        xl:     ["24px", { lineHeight: "32px" }],
+        "2xl":  ["32px", { lineHeight: "40px" }],
+        "3xl":  ["40px", { lineHeight: "48px" }],
+      },
+      transitionTimingFunction: {
+        "out-quint": "cubic-bezier(0.16, 1, 0.3, 1)",
+      },
+      transitionDuration: {
+        DEFAULT: "150ms",
+      },
+      boxShadow: {
+        popover: "var(--shadow-popover)",
       },
       keyframes: {
         "accordion-down": {

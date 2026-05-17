@@ -2,97 +2,153 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Richer College — WhatsApp AI Agents Dashboard
-   All colors MUST be HSL. Brand purple: #451470 */
+/* ============================================================
+   Richer College — WhatsApp AI Agents Dashboard
+   Design DNA: Linear × Stripe × Mercury, RTL-first, Hebrew-native.
+   The signature is restraint. Purple is the brand accent —
+   used sparingly. Numbers + density carry the data.
+   ============================================================ */
 
 @layer base {
   :root {
-    /* Surfaces */
+    /* ----- Surfaces (neutral base; 90% of pixels) ----- */
     --background: 0 0% 100%;
-    --foreground: 270 40% 12%;
+    --foreground: 240 10% 10%;            /* zinc-900 vibe, no purple tint */
 
     --card: 0 0% 100%;
-    --card-foreground: 270 40% 12%;
+    --card-foreground: 240 10% 10%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 270 40% 12%;
+    --popover-foreground: 240 10% 10%;
 
-    /* Brand — Richer Purple #451470 */
-    --primary: 271 70% 26%;
+    /* Layered surfaces — gives depth via tone, not shadow */
+    --surface-elevated: 0 0% 100%;        /* same as bg — neutral cards */
+    --surface-subtle: 240 5% 96%;         /* table headers, sidebar wash */
+    --surface-hover: 240 5% 96%;          /* row hover, button hover */
+    --surface-active: 240 6% 90%;         /* pressed state */
+
+    /* ----- Brand (use sparingly — ≤3 surfaces per screen) ----- */
+    --primary: 271 70% 26%;               /* Richer purple #451470 */
     --primary-foreground: 0 0% 100%;
-    --primary-deep: 271 69% 18%;       /* #2D0E4A */
-    --primary-light: 271 37% 48%;      /* #7A4FA8 */
-    --primary-soft: 271 60% 96%;       /* light purple wash */
+    --primary-deep: 271 69% 18%;
+    --primary-light: 271 37% 48%;
+    --primary-soft: 271 60% 96%;          /* selected row, focused chip */
 
-    /* Neutrals */
-    --secondary: 220 14% 96%;          /* #F9FAFB-ish */
-    --secondary-foreground: 270 40% 12%;
+    /* ----- Neutrals ----- */
+    --secondary: 240 5% 96%;
+    --secondary-foreground: 240 10% 10%;
 
-    --muted: 220 14% 96%;
-    --muted-foreground: 220 9% 46%;
+    --muted: 240 5% 96%;
+    --muted-foreground: 240 4% 46%;       /* zinc-600 — secondary text */
 
     --accent: 271 60% 96%;
     --accent-foreground: 271 70% 26%;
 
-    --destructive: 0 72% 51%;
+    /* ----- Semantic (muted; never neon) ----- */
+    --destructive: 0 72% 50%;             /* rose-600 */
     --destructive-foreground: 0 0% 100%;
 
-    --success: 142 71% 38%;
+    --success: 158 64% 38%;               /* emerald-600 */
     --success-foreground: 0 0% 100%;
+    --success-soft: 152 81% 95%;          /* emerald-50 */
 
-    --warning: 38 92% 50%;
+    --warning: 32 95% 44%;                /* amber-600 */
     --warning-foreground: 0 0% 100%;
+    --warning-soft: 48 100% 95%;          /* amber-50 */
 
-    --border: 220 13% 91%;
-    --input: 220 13% 91%;
-    --ring: 271 70% 26%;
+    --info: 200 90% 39%;                  /* sky-600 */
 
-    --radius: 0.5rem;
+    /* ----- Borders ----- */
+    --border: 240 6% 90%;                 /* default — visible but quiet */
+    --border-strong: 240 5% 84%;          /* between major sections */
+    --border-subtle: 240 5% 96%;          /* between table rows */
 
-    /* Sidebar (right side in RTL) */
+    --input: 240 6% 90%;
+    --ring: 271 70% 26%;                  /* focus ring = brand */
+
+    /* ----- Geometry ----- */
+    --radius: 0.375rem;                   /* 6px — cards, default buttons */
+    --radius-sm: 0.25rem;                 /* 4px — inputs, chips */
+    --radius-lg: 0.5rem;                  /* 8px — modals */
+
+    /* ----- Sidebar tones ----- */
     --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 270 30% 20%;
+    --sidebar-foreground: 240 6% 28%;
     --sidebar-primary: 271 70% 26%;
     --sidebar-primary-foreground: 0 0% 100%;
     --sidebar-accent: 271 60% 96%;
     --sidebar-accent-foreground: 271 70% 26%;
-    --sidebar-border: 220 13% 91%;
+    --sidebar-border: 240 6% 90%;
     --sidebar-ring: 271 70% 26%;
 
-    /* Effects */
-    --shadow-sm: 0 1px 2px 0 hsl(271 70% 26% / 0.04);
-    --shadow-md: 0 4px 12px -2px hsl(271 70% 26% / 0.08);
+    /* ----- Elevation (rare; only floating elements) ----- */
+    --shadow-sm:      0 1px 2px 0 hsl(240 10% 10% / 0.04);
+    --shadow-md:      0 4px 12px -2px hsl(240 10% 10% / 0.06);
+    --shadow-popover: 0 8px 24px -4px hsl(240 10% 10% / 0.10),
+                       0 2px 4px hsl(240 10% 10% / 0.04);
+
+    /* ----- Brand gradient (used VERY sparingly — cover sheets, login) ----- */
     --gradient-brand: linear-gradient(135deg, hsl(var(--primary-deep)) 0%, hsl(var(--primary)) 60%, hsl(var(--primary-light)) 100%);
   }
 
   .dark {
-    --background: 271 30% 8%;
+    --background: 240 10% 4%;             /* zinc-950 — pure dark, not navy */
     --foreground: 0 0% 98%;
-    --card: 271 30% 10%;
+
+    --card: 240 8% 8%;                    /* zinc-900 */
     --card-foreground: 0 0% 98%;
-    --popover: 271 30% 10%;
+
+    --popover: 240 8% 8%;
     --popover-foreground: 0 0% 98%;
-    --primary: 271 50% 65%;
-    --primary-foreground: 271 69% 12%;
-    --secondary: 271 20% 16%;
+
+    --surface-elevated: 240 8% 8%;
+    --surface-subtle: 240 8% 10%;
+    --surface-hover: 240 6% 14%;          /* zinc-800 */
+    --surface-active: 240 5% 22%;         /* zinc-700 */
+
+    --primary: 271 60% 70%;               /* lighter purple on dark */
+    --primary-foreground: 240 10% 4%;
+    --primary-deep: 271 50% 50%;
+    --primary-light: 271 65% 80%;
+    --primary-soft: 271 50% 14%;
+
+    --secondary: 240 6% 14%;
     --secondary-foreground: 0 0% 98%;
-    --muted: 271 20% 16%;
-    --muted-foreground: 271 10% 65%;
-    --accent: 271 20% 18%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62% 45%;
+
+    --muted: 240 6% 14%;
+    --muted-foreground: 240 5% 65%;
+
+    --accent: 271 50% 18%;
+    --accent-foreground: 271 60% 80%;
+
+    --destructive: 0 65% 55%;
     --destructive-foreground: 0 0% 98%;
-    --border: 271 20% 18%;
-    --input: 271 20% 18%;
-    --ring: 271 50% 65%;
-    --sidebar-background: 271 30% 10%;
-    --sidebar-foreground: 0 0% 95%;
-    --sidebar-primary: 271 50% 65%;
-    --sidebar-primary-foreground: 271 69% 12%;
-    --sidebar-accent: 271 20% 16%;
-    --sidebar-accent-foreground: 0 0% 98%;
-    --sidebar-border: 271 20% 18%;
-    --sidebar-ring: 271 50% 65%;
+
+    --success: 158 55% 50%;
+    --success-foreground: 0 0% 98%;
+    --success-soft: 158 50% 14%;
+
+    --warning: 38 80% 55%;
+    --warning-foreground: 240 10% 4%;
+    --warning-soft: 38 50% 14%;
+
+    --info: 200 80% 60%;
+
+    --border: 240 6% 16%;
+    --border-strong: 240 5% 22%;
+    --border-subtle: 240 8% 10%;
+
+    --input: 240 6% 16%;
+    --ring: 271 60% 70%;
+
+    --sidebar-background: 240 9% 6%;
+    --sidebar-foreground: 240 5% 75%;
+    --sidebar-primary: 271 60% 70%;
+    --sidebar-primary-foreground: 240 10% 4%;
+    --sidebar-accent: 271 50% 16%;
+    --sidebar-accent-foreground: 271 60% 80%;
+    --sidebar-border: 240 6% 16%;
+    --sidebar-ring: 271 60% 70%;
   }
 }
 
@@ -101,16 +157,127 @@
     @apply border-border;
   }
 
+  /* Heebo for Hebrew, Inter for ASCII fragments (numbers, IDs, brands).
+     Hebrew comes first so Heebo wins; Inter catches everything outside
+     Hebrew Unicode block. The result: numerals look like Inter on the
+     page, but Hebrew runs render in Heebo. */
   html {
-    font-family: 'Heebo', system-ui, -apple-system, sans-serif;
+    font-family: 'Heebo', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   body {
-    @apply bg-background text-foreground antialiased;
-    font-family: 'Heebo', system-ui, -apple-system, sans-serif;
+    @apply bg-background text-foreground;
+    font-feature-settings: 'cv11', 'ss01', 'ss03';
+    /* Subtle dotted texture in the very corners — gives a feeling of
+       depth without using shadows. Almost invisible (alpha 0.02) but
+       breaks the "flat plastic" feel. */
+    background-image: radial-gradient(hsl(var(--foreground) / 0.025) 1px, transparent 1px);
+    background-size: 24px 24px;
+    background-position: 0 0;
+  }
+
+  .dark body {
+    background-image: radial-gradient(hsl(0 0% 100% / 0.02) 1px, transparent 1px);
+  }
+
+  /* Numeric content always uses tabular-nums so columns align. */
+  .tabular, .num, [data-numeric] {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Display monospace for IDs / hashes / code fragments. */
+  code, kbd, samp, pre, .mono {
+    font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+    font-feature-settings: 'zero', 'ss02';
   }
 
   h1, h2, h3, h4, h5, h6 {
-    @apply font-semibold tracking-tight;
+    @apply font-semibold tracking-tight text-foreground;
+  }
+
+  /* h1 = page title — large but never centered, never with chrome. */
+  h1 { @apply text-2xl; letter-spacing: -0.015em; }
+  h2 { @apply text-xl; letter-spacing: -0.01em; }
+  h3 { @apply text-lg; }
+
+  /* Disable native browser focus ring everywhere — we render our own
+     so we get consistent 2px brand ring with offset, regardless of
+     element type. */
+  *:focus-visible {
+    @apply outline-none ring-2 ring-ring/40 ring-offset-2 ring-offset-background;
+  }
+
+  /* Selection color matches brand. */
+  ::selection {
+    background: hsl(var(--primary) / 0.18);
+    color: hsl(var(--foreground));
+  }
+
+  /* Scrollbar — slim, brand-tinted, never garish. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--border-strong));
+    border-radius: 999px;
+    border: 2px solid hsl(var(--background));
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground));
+  }
+}
+
+/* ----- Utility: subtle glow on primary CTAs (uses brand, never neon) ----- */
+@layer utilities {
+  .glow-primary {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.10),
+                0 4px 12px -2px hsl(var(--primary) / 0.18);
+  }
+  .glow-primary-soft {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.06),
+                0 2px 8px -2px hsl(var(--primary) / 0.10);
+  }
+
+  /* Layered surface depth — replaces shadows on cards. */
+  .surface-elevated {
+    background-color: hsl(var(--surface-elevated));
+    border: 1px solid hsl(var(--border));
+  }
+  .surface-subtle {
+    background-color: hsl(var(--surface-subtle));
+  }
+
+  /* Sticky table header tone. */
+  .table-head {
+    background-color: hsl(var(--surface-subtle));
+    color: hsl(var(--muted-foreground));
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  /* Status chip primitives (semantic colors at low saturation). */
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium;
+  }
+  .chip-success { background: hsl(var(--success-soft)); color: hsl(var(--success)); }
+  .chip-warning { background: hsl(var(--warning-soft)); color: hsl(var(--warning)); }
+  .chip-error   { background: hsl(0 92% 96%); color: hsl(var(--destructive)); }
+  .chip-info    { background: hsl(var(--primary-soft)); color: hsl(var(--primary)); }
+  .chip-muted   { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
+
+  /* RTL-aware logical helpers for icons/digits inside Hebrew runs. */
+  .ltr-embed {
+    direction: ltr;
+    unicode-bidi: embed;
+    font-variant-numeric: tabular-nums;
   }
 }

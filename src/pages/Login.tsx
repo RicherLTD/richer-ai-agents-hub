@@ -42,15 +42,35 @@ export default function Login() {
   };
 
   return (
-    <div dir="rtl" className="flex min-h-screen items-center justify-center bg-secondary/40 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-8 shadow-md">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <div className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-xl bg-primary-deep shadow-sm">
-            <BrandLogo className="h-14 w-14" />
+    <div dir="rtl" className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background px-4">
+      {/* Ambient brand gradient — large, soft, very low-saturation.
+          Anchored top-right, decorative, never gets in the way of content. */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -top-40 -right-40 h-[42rem] w-[42rem] rounded-full bg-primary/15 blur-[120px]"
+      />
+      <div
+        aria-hidden
+        className="pointer-events-none absolute -bottom-40 -left-40 h-[36rem] w-[36rem] rounded-full bg-primary/10 blur-[120px]"
+      />
+
+      <div className="relative w-full max-w-sm">
+        {/* Top label — like Linear's login: small mono label above the card */}
+        <p className="mb-3 text-center font-mono text-2xs uppercase tracking-[0.2em] text-muted-foreground" dir="ltr">
+          Richer · WhatsApp AI Console
+        </p>
+
+        <div className="rounded-lg border border-border bg-card/80 p-7 backdrop-blur-sm">
+          <div className="mb-6 flex flex-col items-center gap-3 text-center">
+            <div className="relative flex h-12 w-12 items-center justify-center overflow-hidden rounded-md bg-primary-deep">
+              <BrandLogo className="h-12 w-12" />
+              <span className="pointer-events-none absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
+            </div>
+            <div className="space-y-0.5">
+              <h1 className="text-lg font-semibold tracking-tight text-foreground">ברוך הבא</h1>
+              <p className="text-xs text-muted-foreground">התחבר כדי להמשיך</p>
+            </div>
           </div>
-          <h1 className="text-xl font-semibold text-foreground">מערכת ריצ'ר AI</h1>
-          <p className="text-sm text-muted-foreground">התחבר כדי להמשיך</p>
-        </div>
 
         <form onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
           <div className="flex flex-col gap-1.5">
@@ -107,6 +127,11 @@ export default function Login() {
 
         <p className="mt-6 text-center text-xs text-muted-foreground">
           אין לך חשבון? פנה למנהל המערכת.
+        </p>
+        </div>
+
+        <p className="mt-4 text-center text-2xs text-muted-foreground/60" dir="ltr">
+          © Richer College · v2026.05
         </p>
       </div>
     </div>
