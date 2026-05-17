@@ -34,7 +34,11 @@ const MODEL = "claude-sonnet-4-6";
 const MAX_OUTPUT_TOKENS = 16000;
 const MAX_EXTRACTED_CHARS = 200_000;
 const PDF_BUCKET = "brain-uploads";
-const MAX_INGEST_BYTES = 20 * 1024 * 1024;
+// 10MB practical cap. Even within this, very text-dense PDFs can blow
+// past Claude\'s 1M-token input limit. Larger files should be split
+// before upload.
+const MAX_INGEST_BYTES = 10 * 1024 * 1024;
+const SIZE_HINT = "10MB";
 
 interface IngestRequestBody {
   agent_id?: unknown;
@@ -207,7 +211,10 @@ async function runExtraction(args: {
     }
     const bytes = new Uint8Array(await fileBlob.arrayBuffer());
     if (bytes.length > MAX_INGEST_BYTES) {
-      await markFailed(`File exceeds ingest limit (${bytes.length} bytes > 20MB)`);
+      const mb = (bytes.length / (1024 * 1024)).toFixed(1);
+      await markFailed(
+        `הקובץ גדול מדי (${mb}MB > ${SIZE_HINT}). פצל ל־PDFים קטנים יותר ונסה שוב.`,
+      );
       return;
     }
     const base64 = uint8ToBase64(bytes);
@@ -219,7 +226,27 @@ async function runExtraction(args: {
         ? await extractFromPdf(anthropic, base64)
         : await extractFromImage(anthropic, base64, mediaType);
     } catch (err) {
-      await markFailed(`Claude extraction failed: ${err instanceof Error ? err.message : String(err)}`);
+      const raw = err instanceof Error ? err.message : String(err);
+      // Anthropic returns 400 with "prompt is too long: <X> tokens > <Y>
+      // maximum" when the PDF content exceeds Claude\'s 1M token input
+      // window. Translate to a friendly Hebrew message the operator
+      // can act on.
+      if (raw.includes("prompt is too long") || raw.includes("max_tokens")) {
+        const tokenMatch = raw.match(/(\d+)\s*tokens?\s*>/);
+        const tokens = tokenMatch ? Math.round(parseInt(tokenMatch[1], 10) / 1000) : null;
+        await markFailed(
+          tokens
+            ? `המסמך גדול מדי לעיבוד (~${tokens}K טוקנים, מעל המגבלה של מיליון). פצל לקבצים של עד ~80 עמודים ונסה שוב.`
+            : "המסמך גדול מדי לעיבוד. פצל לקבצים של עד ~80 עמודים ונסה שוב.",
+        );
+        return;
+      }
+      // Anthropic 429 → suggest retry, not split.
+      if (raw.includes("rate_limit") || raw.includes("429")) {
+        await markFailed("עומס זמני על Claude. נסה שוב בעוד דקה.");
+        return;
+      }
+      await markFailed(`Claude extraction failed: ${raw}`);
       return;
     }
     const text = (extracted ?? "").slice(0, MAX_EXTRACTED_CHARS);

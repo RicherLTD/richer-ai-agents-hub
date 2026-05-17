@@ -19,7 +19,10 @@ import { supabase } from "@/lib/supabase/client";
 import { assertUuid } from "@/lib/validation";
 import type { BrainDocument, BrainSourceKind } from "@/types/brain";
 
-export const MAX_UPLOAD_BYTES = 50 * 1024 * 1024; // 50MB
+// 10MB — matches the server cap in brain-ingest. We can't safely go
+// higher even at the client level because dense text PDFs blow past
+// Claude's 1M-token input window beyond this size.
+export const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
 export const SUPPORTED_PDF_MIMES = ["application/pdf"] as const;
 export const SUPPORTED_IMAGE_MIMES = [
   "image/png",

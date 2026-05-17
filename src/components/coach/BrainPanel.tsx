@@ -1022,7 +1022,7 @@ function UploadDialog({
         <DialogHeader>
           <DialogTitle>העלה למוח</DialogTitle>
           <DialogDescription>
-            PDF או תמונה. אנחנו נחלץ את הטקסט אוטומטית (עד {MAX_UPLOAD_BYTES / 1024 / 1024}MB).
+            PDF או תמונה (עד {MAX_UPLOAD_BYTES / 1024 / 1024}MB / ~80 עמודים). חילוץ הטקסט אוטומטי. PDF גדול יותר — פצל לקבצים נפרדים.
           </DialogDescription>
         </DialogHeader>
         <div className="flex-1 space-y-3 overflow-y-auto pe-1">
