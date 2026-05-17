@@ -82,10 +82,11 @@ const Prompts = () => {
 
   return (
     <div className="space-y-6">
-      <header>
-        <h1 className="text-2xl font-bold">ניהול Prompts</h1>
+      <header className="space-y-2">
+        <p className="label-mono" dir="ltr">Prompts · {activeAgent.name}</p>
+        <h1 className="font-display text-3xl font-medium tracking-tight">ניהול Prompts</h1>
         <p className="text-sm text-muted-foreground">
-          {activeAgent.display_name} — {list.length} prompts
+          <span className="tabular-nums font-medium text-foreground">{list.length}</span> prompts לסוכן {activeAgent.display_name}.
         </p>
       </header>
 

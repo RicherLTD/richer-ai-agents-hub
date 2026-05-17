@@ -82,23 +82,24 @@ const Leads = () => {
 
   return (
     <div className="space-y-6">
-      <header className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">לידים</h1>
+      <header className="flex items-end justify-between gap-4 pb-2">
+        <div className="space-y-2">
+          <p className="label-mono" dir="ltr">Leads · {activeAgent.name}</p>
+          <h1 className="font-display text-3xl font-medium tracking-tight">לידים</h1>
           <p className="text-sm text-muted-foreground">
-            {activeAgent.display_name} — {list.length} לידים{debouncedSearch ? " (מסונן)" : ""}
+            <span className="tabular-nums font-medium text-foreground">{list.length}</span> לידים{debouncedSearch ? " (מסונן)" : ""} עבור {activeAgent.display_name}.
           </p>
         </div>
       </header>
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="relative flex-1 min-w-[220px]">
-          <Search className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="conic-focus relative flex-1 min-w-[260px] rounded-md">
+          <Search className="pointer-events-none absolute end-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             placeholder="חיפוש לפי שם או טלפון…"
-            className="ps-9"
+            className="pe-9"
           />
         </div>
         <Select value={funnel} onValueChange={(v) => setFunnel(v as FunnelFilter)}>
@@ -135,22 +136,22 @@ const Leads = () => {
           <Skeleton className="h-10 w-full" />
         </div>
       ) : (
-        <div className="rounded-md border">
+        <div className="overflow-hidden rounded-lg border border-border bg-card/40">
           <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>שם</TableHead>
-                <TableHead>טלפון</TableHead>
-                <TableHead>שלב</TableHead>
-                <TableHead>תיוג</TableHead>
-                <TableHead>סטטוס</TableHead>
-                <TableHead>אינטראקציה אחרונה</TableHead>
+            <TableHeader className="bg-surface-subtle">
+              <TableRow className="border-border hover:bg-transparent">
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">שם</TableHead>
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">טלפון</TableHead>
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">שלב</TableHead>
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">תיוג</TableHead>
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">סטטוס</TableHead>
+                <TableHead className="label-mono !text-[10px] !text-muted-foreground/80 h-10">פעילות אחרונה</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {list.length === 0 ? (
-                <TableRow>
-                  <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+                <TableRow className="hover:bg-transparent">
+                  <TableCell colSpan={6} className="py-16 text-center text-sm text-muted-foreground">
                     {debouncedSearch || funnel !== "all" || status !== "all"
                       ? "אין לידים שתואמים לפילטרים."
                       : "עדיין אין לידים לסוכן הזה. הם יופיעו כאן ברגע שיתחילו להגיע."}
@@ -160,7 +161,7 @@ const Leads = () => {
                 list.map((lead) => (
                   <TableRow
                     key={lead.id}
-                    className="cursor-pointer transition-colors hover:bg-muted/50"
+                    className="group cursor-pointer border-border-subtle transition-colors hover:bg-surface-hover"
                     onClick={() => navigate(`/conversations/${lead.id}`)}
                     role="button"
                     tabIndex={0}
@@ -171,8 +172,10 @@ const Leads = () => {
                       }
                     }}
                   >
-                    <TableCell className="font-medium">{lead.lead_name?.trim() || "—"}</TableCell>
-                    <TableCell dir="ltr" className="font-mono text-xs">
+                    <TableCell className="h-12 font-medium text-foreground transition-colors group-hover:text-primary">
+                      {lead.lead_name?.trim() || "—"}
+                    </TableCell>
+                    <TableCell dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
                       {maskPhone(lead.lead_phone)}
                     </TableCell>
                     <TableCell>

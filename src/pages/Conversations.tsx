@@ -71,19 +71,20 @@ const Conversations = () => {
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col gap-3">
       <header className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold">שיחות פעילות</h1>
+        <div className="space-y-2">
+          <p className="label-mono" dir="ltr">Conversations · {activeAgent.name}</p>
+          <h1 className="font-display text-3xl font-medium tracking-tight">שיחות פעילות</h1>
           <p className="text-sm text-muted-foreground">
-            {activeAgent.display_name} — {list.length} שיחות{includeInactive ? " (כולל לא פעילות)" : ""}
+            <span className="tabular-nums font-medium text-foreground">{list.length}</span> שיחות{includeInactive ? " (כולל לא פעילות)" : ""}
           </p>
         </div>
-        <label className="flex items-center gap-2 text-sm">
+        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
           <Switch checked={includeInactive} onCheckedChange={setIncludeInactive} />
-          <span className="text-muted-foreground">הצג גם לא פעילות</span>
+          <span>הצג גם לא פעילות</span>
         </label>
       </header>
 
-      <div className="flex flex-1 gap-3 overflow-hidden rounded-lg border">
+      <div className="flex flex-1 gap-3 overflow-hidden rounded-lg border border-border bg-card/40">
         {/* Right side: list */}
         <div
           className={cn(
