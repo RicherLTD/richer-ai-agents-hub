@@ -36,6 +36,7 @@ import {
   resignCoachAttachment,
   sendCoachMessage,
   uploadCoachAttachment,
+  type BrainDocUsed,
   type CoachMessageRow,
   type UploadCoachAttachmentResult,
 } from "@/lib/coach";
@@ -67,6 +68,13 @@ function CoachInner() {
     enabled: !!agentId,
   });
 
+  // Per-assistant-message transparency: which brain docs Coach saw on
+  // each reply. Populated on send success, keyed by assistant message id.
+  // Only the freshest few turns matter for the UX — older ones fade
+  // back to "no breadcrumb" after refresh. brain_usage_log keeps the
+  // permanent record for audit.
+  const [brainBreadcrumbs, setBrainBreadcrumbs] = useState<Record<string, BrainDocUsed[]>>({});
+
   const sendMutation = useMutation({
     mutationFn: async (text: string) => {
       if (!agentId) throw new Error("בחר סוכן לפני שליחה");
@@ -78,9 +86,16 @@ function CoachInner() {
         attachmentMediaType: attachment?.mediaType,
       });
     },
-    onSuccess: () => {
+    onSuccess: (result) => {
       setDraft("");
       setAttachment(null);
+      // Capture the brain docs used for the just-arrived assistant reply.
+      if (result.brainDocsUsed && result.brainDocsUsed.length > 0) {
+        setBrainBreadcrumbs((prev) => ({
+          ...prev,
+          [result.assistantMessage.id]: result.brainDocsUsed!,
+        }));
+      }
       void queryClient.invalidateQueries({ queryKey: ["coach", "history", agentId] });
     },
     onError: (err: unknown) => {
@@ -224,7 +239,12 @@ function CoachInner() {
             </Card>
           )}
           {messages.map((m) => (
-            <MessageBubble key={m.id} message={m} onReview={() => setReviewing(m)} />
+            <MessageBubble
+              key={m.id}
+              message={m}
+              onReview={() => setReviewing(m)}
+              brainDocsUsed={brainBreadcrumbs[m.id]}
+            />
           ))}
           {sendMutation.isPending && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -352,9 +372,13 @@ function CoachInner() {
 function MessageBubble({
   message,
   onReview,
+  brainDocsUsed,
 }: {
   message: CoachMessageRow;
   onReview: () => void;
+  /** Brain docs that fed Coach for this assistant reply (post-send only;
+   *  not persisted to message history yet). Renders a "ראיתי:" breadcrumb. */
+  brainDocsUsed?: BrainDocUsed[];
 }) {
   const isUser = message.role === "user";
   const hasProposal = !!message.proposed_prompt_content;
@@ -406,6 +430,13 @@ function MessageBubble({
         >
           <div className="whitespace-pre-wrap">{message.content}</div>
         </div>
+        {!isUser && brainDocsUsed && brainDocsUsed.length > 0 && (
+          <p className="max-w-full text-[10px] leading-relaxed text-muted-foreground">
+            <span className="font-medium">ראיתי:</span>{" "}
+            {brainDocsUsed.slice(0, 4).map((d) => d.title).join(" · ")}
+            {brainDocsUsed.length > 4 && ` ועוד ${brainDocsUsed.length - 4}`}
+          </p>
+        )}
         {hasProposal && (
           <div className="flex items-center gap-2">
             {isApplied ? (
