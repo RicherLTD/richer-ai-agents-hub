@@ -14,6 +14,12 @@ export default {
       },
     },
     extend: {
+      fontFamily: {
+        sans:    ["Heebo", "Geist", "-apple-system", "BlinkMacSystemFont", "system-ui", "sans-serif"],
+        latin:   ["Geist", "Heebo", "-apple-system", "system-ui", "sans-serif"],
+        display: ["Instrument Serif", "Heebo", "serif"],
+        mono:    ["Geist Mono", "JetBrains Mono", "ui-monospace", "SF Mono", "Menlo", "monospace"],
+      },
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
