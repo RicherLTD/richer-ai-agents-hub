@@ -41,6 +41,9 @@ export interface HandoffLeadMemory {
   q4_blocker: string | null;
   q5_urgency: string | null;
   q6_investment: string | null;
+  /** Email collected by the bot in q7. null when the lead refused to share
+   *  it — Make.com should fall back to phone-only CRM matching in that case. */
+  q7_email: string | null;
   conversation_summary: string | null;
   primary_objection: string | null;
   red_flags: string[];
@@ -75,6 +78,25 @@ export interface HandoffConversation {
   /** Hebrew-style combined display: "DD/MM/YYYY HH:mm" in Asia/Jerusalem.
    *  Drop straight into a single CRM text/note column. */
   qualified_at_il_datetime: string;
+
+  /** ----- Meeting fields (used by Mooz / Calendly-style booking APIs) ----- */
+
+  /** Configured meeting-type id from `agents.meeting_type_id`. Constant per
+   *  agent. Make.com passes this straight through to Mooz; nullable because
+   *  not every agent is fully configured yet. */
+  meeting_type_id: string | null;
+
+  /** Configured meeting length in minutes (default 30). Mooz uses this to
+   *  compute the booking end-time when start_time is sent without end_time. */
+  meeting_duration_minutes: number;
+
+  /** ISO-8601 UTC — `zoom_scheduled_at + meeting_duration_minutes`. Sent
+   *  alongside start_time so consumers that REQUIRE end_time get it for
+   *  free. Make.com filters/maps can ignore if not needed. */
+  meeting_end_at: string;
+
+  /** Hebrew-style "DD/MM/YYYY HH:mm" of meeting_end_at in Asia/Jerusalem. */
+  meeting_end_at_il_datetime: string;
 
   source_campaign: string | null;
   source_funnel: string | null;

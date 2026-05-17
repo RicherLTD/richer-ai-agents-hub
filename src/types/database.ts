@@ -110,6 +110,8 @@ export type Database = {
           display_name: string
           icon_url: string | null
           id: string
+          meeting_duration_minutes: number
+          meeting_type_id: string | null
           name: string
           primary_goal: string | null
           product_info: Json | null
@@ -127,6 +129,8 @@ export type Database = {
           display_name: string
           icon_url?: string | null
           id?: string
+          meeting_duration_minutes?: number
+          meeting_type_id?: string | null
           name: string
           primary_goal?: string | null
           product_info?: Json | null
@@ -144,6 +148,8 @@ export type Database = {
           display_name?: string
           icon_url?: string | null
           id?: string
+          meeting_duration_minutes?: number
+          meeting_type_id?: string | null
           name?: string
           primary_goal?: string | null
           product_info?: Json | null
@@ -550,6 +556,7 @@ export type Database = {
           q4_blocker: string | null
           q5_urgency: string | null
           q6_investment: string | null
+          q7_email: string | null
           question_version:
             | Database["public"]["Enums"]["question_version_enum"]
             | null
@@ -569,6 +576,7 @@ export type Database = {
           q4_blocker?: string | null
           q5_urgency?: string | null
           q6_investment?: string | null
+          q7_email?: string | null
           question_version?:
             | Database["public"]["Enums"]["question_version_enum"]
             | null
@@ -588,6 +596,7 @@ export type Database = {
           q4_blocker?: string | null
           q5_urgency?: string | null
           q6_investment?: string | null
+          q7_email?: string | null
           question_version?:
             | Database["public"]["Enums"]["question_version_enum"]
             | null
