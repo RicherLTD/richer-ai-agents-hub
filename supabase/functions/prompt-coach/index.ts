@@ -34,6 +34,7 @@ import {
 } from "../_shared/brainContext.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
+import { isUuid } from "../_shared/validation.ts";
 
 const SOURCE = "prompt-coach";
 const COACH_MODEL = "claude-sonnet-4-6";
@@ -63,6 +64,9 @@ function parseRequestBody(raw: unknown): CoachRequest {
   const o = raw as Record<string, unknown>;
   if (typeof o.agentId !== "string" || !o.agentId) {
     throw new HttpError(400, "agentId is required");
+  }
+  if (!isUuid(o.agentId)) {
+    throw new HttpError(400, "agentId must be a UUID");
   }
   if (typeof o.userMessage !== "string" || !o.userMessage.trim()) {
     throw new HttpError(400, "userMessage is required");
@@ -131,49 +135,50 @@ async function loadCoachContext(
   agentId: string,
   referencedConversationId: string | undefined,
 ): Promise<CoachContext> {
-  // Agent name (for the system prompt).
-  const { data: agent, error: agentErr } = await admin
-    .from("agents")
-    .select("name")
-    .eq("id", agentId)
-    .maybeSingle();
-  if (agentErr || !agent) {
-    throw new HttpError(404, `Agent not found: ${agentErr?.message ?? "no row"}`);
-  }
-  const agentName = agent.name as string;
+  // The three reads below are independent — run them in parallel to
+  // shave ~80-160ms off every Coach turn (network round-trip × 3).
+  const [agentResult, promptResult, historyResult] = await Promise.all([
+    admin.from("agents").select("name").eq("id", agentId).maybeSingle(),
+    admin
+      .from("prompts")
+      .select("id, version, content")
+      .eq("agent_id", agentId)
+      .eq("prompt_type", MAIN_PROMPT_TYPE)
+      .eq("is_active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    admin
+      .from("coach_messages")
+      .select("role, content, created_at")
+      .eq("agent_id", agentId)
+      .order("created_at", { ascending: false })
+      .limit(MAX_HISTORY_TURNS),
+  ]);
 
-  // Current active main prompt.
-  const { data: prompt, error: promptErr } = await admin
-    .from("prompts")
-    .select("id, version, content")
-    .eq("agent_id", agentId)
-    .eq("prompt_type", MAIN_PROMPT_TYPE)
-    .eq("is_active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (promptErr) {
-    throw new HttpError(500, `Failed to load prompt: ${promptErr.message}`);
+  if (agentResult.error || !agentResult.data) {
+    throw new HttpError(
+      404,
+      `Agent not found: ${agentResult.error?.message ?? "no row"}`,
+    );
   }
-  const currentPrompt = prompt
+  const agentName = agentResult.data.name as string;
+
+  if (promptResult.error) {
+    throw new HttpError(500, `Failed to load prompt: ${promptResult.error.message}`);
+  }
+  const currentPrompt = promptResult.data
     ? {
-      id: prompt.id as string,
-      version: prompt.version as string,
-      content: prompt.content as string,
+      id: promptResult.data.id as string,
+      version: promptResult.data.version as string,
+      content: promptResult.data.content as string,
     }
     : null;
 
-  // Recent coach history for chat continuity (oldest first for Claude).
-  const { data: historyRows, error: histErr } = await admin
-    .from("coach_messages")
-    .select("role, content, created_at")
-    .eq("agent_id", agentId)
-    .order("created_at", { ascending: false })
-    .limit(MAX_HISTORY_TURNS);
-  if (histErr) {
-    throw new HttpError(500, `Failed to load coach history: ${histErr.message}`);
+  if (historyResult.error) {
+    throw new HttpError(500, `Failed to load coach history: ${historyResult.error.message}`);
   }
-  const history = (historyRows ?? [])
+  const history = (historyResult.data ?? [])
     .slice()
     .reverse()
     .map((row) => ({

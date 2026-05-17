@@ -120,9 +120,14 @@ export function decideConversationTag(
   memory: ExtractedMemory,
   currentTag: string | null,
 ): string | null {
-  if (currentTag && TERMINAL_TAGS.has(currentTag)) return null;
   const flags = memory.red_flags.map((f) => f.toLowerCase());
+  // SAFETY OVERRIDE: underage red_flag wins over EVERYTHING including
+  // terminal tags. A lead who answered the 5 questions ("done") and got
+  // zoom_scheduled can later admit being a minor — we must re-tag so
+  // advisors don't reach out. Legal exposure under Israeli consumer law.
   if (flags.some((f) => f.includes("underage"))) return "underage";
+  // Other terminal tags otherwise stay (zoom_scheduled / opted_out / ghosted).
+  if (currentTag && TERMINAL_TAGS.has(currentTag)) return null;
   if (memory.red_flags.length > 0) return "requires_human";
   return null;
 }

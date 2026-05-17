@@ -120,9 +120,28 @@ export function BrainPanel({ onUpdateBot }: BrainPanelProps) {
   const refresh = () =>
     queryClient.invalidateQueries({ queryKey: ["coach", "brain", agentId] });
 
+  // Track pending toggles by id rather than relying on mutation.variables.
+  // Two rapid clicks on different rows would otherwise overwrite the
+  // mutation's variables — the second row's spinner showed on the first
+  // row, both rows could be toggled simultaneously, etc.
+  const [togglingIds, setTogglingIds] = useState<Set<string>>(new Set());
   const toggleActive = useMutation({
-    mutationFn: (row: BrainDocument) =>
-      updateBrainDocument({ id: row.id, isActive: !row.is_active }),
+    mutationFn: async (row: BrainDocument) => {
+      setTogglingIds((s) => {
+        const n = new Set(s);
+        n.add(row.id);
+        return n;
+      });
+      try {
+        return await updateBrainDocument({ id: row.id, isActive: !row.is_active });
+      } finally {
+        setTogglingIds((s) => {
+          const n = new Set(s);
+          n.delete(row.id);
+          return n;
+        });
+      }
+    },
     onSuccess: () => void refresh(),
     onError: (err: unknown) => {
       toast.error("שינוי המצב נכשל", {
@@ -246,7 +265,7 @@ export function BrainPanel({ onUpdateBot }: BrainPanelProps) {
                     ? () => onUpdateBot({ id: n.id, title: n.title, source_kind: n.source_kind })
                     : undefined
                 }
-                isToggling={toggleActive.isPending && toggleActive.variables?.id === n.id}
+                isToggling={togglingIds.has(n.id)}
               />
             ))}
           </div>
@@ -280,7 +299,7 @@ export function BrainPanel({ onUpdateBot }: BrainPanelProps) {
                     ? () => onUpdateBot({ id: d.id, title: d.title, source_kind: d.source_kind })
                     : undefined
                 }
-                isToggling={toggleActive.isPending && toggleActive.variables?.id === d.id}
+                isToggling={togglingIds.has(d.id)}
               />
             ))}
           </div>

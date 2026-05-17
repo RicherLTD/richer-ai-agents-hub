@@ -28,11 +28,18 @@ import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { detectPromptInjection } from "../_shared/injectionScan.ts";
+import { isUuid } from "../_shared/validation.ts";
 
 const MODEL = "claude-sonnet-4-6";
 const MAX_OUTPUT_TOKENS = 16000;
 const MAX_EXTRACTED_CHARS = 200_000;
 const PDF_BUCKET = "brain-uploads";
+// Server-side cap on the downloaded file bytes. The Anthropic SDK base64-
+// encodes the whole payload (~1.33x bloat), and a Deno edge function has
+// ~150MB of heap. Two concurrent 50MB uploads can OOM the runtime; cap
+// at 20MB until streaming uploads land in the SDK. Client-side limit is
+// 50MB but a determined / buggy caller can bypass it.
+const MAX_INGEST_BYTES = 20 * 1024 * 1024;
 
 interface IngestRequestBody {
   agent_id?: unknown;
@@ -82,8 +89,12 @@ function parseRequest(body: IngestRequestBody): ParsedIngest {
   if (sourceKindRaw !== "pdf" && sourceKindRaw !== "image") {
     throw new HttpError(400, `Invalid source_kind: ${sourceKindRaw} (expected pdf|image)`);
   }
+  const agentIdValue = asString(body.agent_id, "agent_id");
+  if (!isUuid(agentIdValue)) {
+    throw new HttpError(400, "agent_id must be a UUID");
+  }
   return {
-    agentId: asString(body.agent_id, "agent_id"),
+    agentId: agentIdValue,
     sourceKind: sourceKindRaw,
     storagePath: asString(body.storage_path, "storage_path"),
     fileSizeBytes:
@@ -238,6 +249,14 @@ Deno.serve(async (req) => {
     }
     const arrayBuf = await fileBlob.arrayBuffer();
     const bytes = new Uint8Array(arrayBuf);
+    if (bytes.length > MAX_INGEST_BYTES) {
+      // Clean up the storage object so it doesn\'t persist as garbage.
+      await ctx.admin.storage.from(PDF_BUCKET).remove([input.storagePath]);
+      throw new HttpError(
+        413,
+        `File exceeds server-side ingest limit (${bytes.length} bytes > ${MAX_INGEST_BYTES} bytes / 20MB)`,
+      );
+    }
     const base64Bytes = uint8ToBase64(bytes);
     const mediaType = inferMediaTypeFromPath(input.storagePath, input.sourceKind);
 

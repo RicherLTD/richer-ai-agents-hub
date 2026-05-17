@@ -31,7 +31,7 @@ interface HallucinationRule {
 const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   // AI brand names — ASCII, so \b works fine.
   {
-    pattern: /\b(ChatGPT|GPT[-\s]?[345]|OpenAI|Claude|Anthropic|Gemini)\b/i,
+    pattern: /\b(ChatGPT|GPT[-\s]?[345]|OpenAI|Claude|Anthropic|Gemini|LLM|GPT)\b/i,
     reason: "ai_brand_leak",
   },
   // Hebrew "I am an AI / bot / language model" self-disclosure.
@@ -40,7 +40,7 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     reason: "hebrew_ai_self_disclosure",
   },
   {
-    pattern: /(?:מודל\s*שפה|בינה\s*מלאכותית)/,
+    pattern: /(?:מודל\s*שפה|בינה\s*מלאכותית|מערכת\s*אוטומטית|זה\s*לא\s*בנאדם|לא\s*בן\s*אדם)/,
     reason: "hebrew_ai_self_disclosure",
   },
   // Currency symbols + Hebrew currency words. The prompt forbids any
@@ -50,10 +50,27 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     pattern: /[₪$€£]|ש["״']ח|שקלים?|דולר(?:ים)?|יורו/,
     reason: "currency_mention",
   },
-  // Income guarantees and "earn X" promises. Match any inflection of
-  // מובטח / מבטיח plus ערבות.
+  // Numeric prices without a currency symbol. Catches "5000", "5K", "5,000"
+  // etc when they appear near price-related verbs/nouns. Common bypass: the
+  // model says "התוכנית עולה 5000" — no ₪, but it IS pricing.
+  {
+    pattern: /(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}\d{2,}[\s]*(?:אלף|אלפים|K|k)?/,
+    reason: "currency_mention",
+  },
+  // Standalone large numbers paired with money words (אלף / K / אלפים).
+  {
+    pattern: /\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)/,
+    reason: "currency_mention",
+  },
+  // Income guarantees: classical forms (מובטח / מבטיח / ערבות) PLUS the
+  // sales-y "תרוויח/תכניס/תעשה X בחודש/בשנה" pattern which sneaks past
+  // the מובטח filter.
   {
     pattern: /מובטח(?:ת|ים|ות)?|מבטיח(?:ה|ים|ות)?|ערבות/,
+    reason: "income_guarantee",
+  },
+  {
+    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
     reason: "income_guarantee",
   },
 ];

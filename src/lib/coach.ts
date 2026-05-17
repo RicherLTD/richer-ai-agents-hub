@@ -154,17 +154,18 @@ export async function sendCoachMessage(
     { body: input },
   );
   if (error) {
-    // supabase-js wraps non-2xx as FunctionsHttpError with a `context` Response
-    // we need to read to surface the real message.
+    // supabase-js wraps non-2xx as FunctionsHttpError with a `context`
+    // Response we need to read to surface the real server-side message.
+    // Note: we do NOT nest the throw inside try/catch — that swallowed
+    // the resolved server message and re-threw the wrapper text.
     const ctx = (error as unknown as { context?: Response }).context;
     if (ctx) {
-      try {
-        const body = await ctx.json();
-        const msg = typeof body?.error === "string" ? body.error : error.message;
-        throw new Error(msg);
-      } catch {
-        throw new Error(error.message);
-      }
+      const body = await ctx.json().catch(() => null);
+      const msg =
+        body && typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : error.message;
+      throw new Error(msg);
     }
     throw new Error(error.message);
   }
@@ -187,13 +188,12 @@ export async function applyCoachEdit(coachMessageId: string): Promise<ApplyCoach
   if (error) {
     const ctx = (error as unknown as { context?: Response }).context;
     if (ctx) {
-      try {
-        const body = await ctx.json();
-        const msg = typeof body?.error === "string" ? body.error : error.message;
-        throw new Error(msg);
-      } catch {
-        throw new Error(error.message);
-      }
+      const body = await ctx.json().catch(() => null);
+      const msg =
+        body && typeof (body as { error?: unknown }).error === "string"
+          ? (body as { error: string }).error
+          : error.message;
+      throw new Error(msg);
     }
     throw new Error(error.message);
   }

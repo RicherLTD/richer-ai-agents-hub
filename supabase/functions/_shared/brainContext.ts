@@ -21,6 +21,7 @@
 //   - We always send extracted_text verbatim (it IS the content).
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { assertUuid } from "./validation.ts";
 
 export interface BrainRow {
   id: string;
@@ -44,6 +45,8 @@ export async function loadBrainRows(
   admin: SupabaseClient,
   agentId: string,
 ): Promise<BrainRow[]> {
+  // Defense in depth: validate before string-interpolating into .or().
+  assertUuid(agentId, "agentId");
   const { data, error } = await admin
     .from("brain_documents")
     .select(

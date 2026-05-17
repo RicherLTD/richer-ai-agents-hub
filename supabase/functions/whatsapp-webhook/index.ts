@@ -38,6 +38,7 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
+import { callWithRetry } from "../_shared/anthropicRetry.ts";
 import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
@@ -68,9 +69,17 @@ interface MetaMessage {
   id?: string;
   timestamp?: string;
 }
+interface MetaMetadata {
+  display_phone_number?: string;
+  phone_number_id?: string;
+}
 interface MetaChange {
   field?: string;
-  value?: { messages?: MetaMessage[]; contacts?: MetaContact[] };
+  value?: {
+    messages?: MetaMessage[];
+    contacts?: MetaContact[];
+    metadata?: MetaMetadata;
+  };
 }
 interface MetaEntry {
   id?: string;
@@ -451,13 +460,32 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   let response: AnthropicMessageResponse;
   const startTime = new Date();
   try {
-    const raw = await ctx.anthropic.messages.create({
-      model: CLAUDE_MODEL,
-      max_tokens: 1024,
-      thinking: { type: "adaptive" },
-      system: turn.promptContent,
-      messages: turn.claudeMessages,
-    });
+    const raw = await callWithRetry(
+      () =>
+        ctx.anthropic.messages.create({
+          model: CLAUDE_MODEL,
+          max_tokens: 1024,
+          thinking: { type: "adaptive" },
+          system: turn.promptContent,
+          messages: turn.claudeMessages,
+        }),
+      {
+        maxAttempts: 3,
+        baseDelayMs: 1000,
+        onRetry: ({ attempt, delayMs, status }) => {
+          void logError({
+            admin: ctx.admin,
+            source: AGENT_LOOP_SOURCE,
+            errorType: "anthropic_retry",
+            level: "info",
+            message: `retry ${attempt} after ${delayMs}ms (status=${status})`,
+            context: { attempt, delayMs, status, model: CLAUDE_MODEL },
+            agentId: ctx.agentId,
+            conversationId: ctx.conversationId,
+          });
+        },
+      },
+    );
     response = raw as unknown as AnthropicMessageResponse;
   } catch (err) {
     await logAndDlq(
@@ -579,6 +607,52 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   });
 }
 
+const NON_TEXT_CANNED_REPLY = "היי 😊 רק שתדע, אני יותר טוב/ה בטקסט מאשר בקבצי קול. תוכל/י לכתוב לי את זה במקום? תודה!";
+
+/**
+ * Send a fixed "please type in text" reply when the lead sends voice /
+ * image / sticker / video / document. We DO NOT run Claude for this —
+ * it's a constant string. Records as an outbound row so the operator
+ * sees it in the dashboard. Never throws; logs to error_logs on failure.
+ */
+async function sendCannedNonTextReply(
+  ctx: { admin: SupabaseClient; hookmyapp: HookMyAppCreds; agentId: string; conversationId: string; leadPhone: string },
+): Promise<void> {
+  const sendResult = await sendWhatsAppText({
+    apiUrl: ctx.hookmyapp.apiUrl,
+    accessToken: ctx.hookmyapp.accessToken,
+    phoneNumberId: ctx.hookmyapp.phoneNumberId,
+    to: ctx.leadPhone,
+    body: NON_TEXT_CANNED_REPLY,
+  });
+  if (!sendResult.ok) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "canned_non_text_send_failed",
+      level: "warn",
+      message: `canned reply send failed status=${sendResult.status}`,
+      context: { status: sendResult.status, errorBody: sendResult.errorBody },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return;
+  }
+  const ts = new Date().toISOString();
+  await ctx.admin.from("messages").insert({
+    conversation_id: ctx.conversationId,
+    direction: "outbound",
+    message_type: "text",
+    content: NON_TEXT_CANNED_REPLY,
+    timestamp: ts,
+    meta_message_id: sendResult.metaMessageId,
+  });
+  await ctx.admin
+    .from("conversations")
+    .update({ last_interaction_at: ts })
+    .eq("id", ctx.conversationId);
+}
+
 interface EdgeRuntimeShape {
   waitUntil(p: Promise<unknown>): void;
 }
@@ -597,6 +671,11 @@ function fireAndForget(promise: Promise<void>): void {
 
 interface InboundOutcome {
   needsAgentReply: boolean;
+  /** Set when the inbound message was non-text (voice / image / sticker /
+   *  video / document). We don't run the full agent loop but DO send a
+   *  canned reply asking the lead to type — silent bot is the #1 way to
+   *  lose Israeli leads who default to voice notes. */
+  needsCannedNonTextReply: boolean;
   conversationId: string;
   leadPhone: string;
 }
@@ -681,7 +760,7 @@ async function ingestInboundMessage(
         agentId,
         conversationId,
       });
-      return { needsAgentReply: false, conversationId, leadPhone: phone };
+      return { needsAgentReply: false, needsCannedNonTextReply: false, conversationId, leadPhone: phone };
     }
     await logError({
       admin,
@@ -711,10 +790,12 @@ async function ingestInboundMessage(
     });
   }
 
-  // Only text triggers the agent — media placeholders ('[image]',
-  // '[audio]') carry no semantic content for Claude to respond to yet.
+  // Only text triggers the full agent loop. For non-text we'll send a
+  // canned "please type" reply elsewhere — never leave the lead with
+  // silence.
   const needsAgentReply = type === "text" && content.trim().length > 0;
-  return { needsAgentReply, conversationId, leadPhone: phone };
+  const needsCannedNonTextReply = type !== "text";
+  return { needsAgentReply, needsCannedNonTextReply, conversationId, leadPhone: phone };
 }
 
 Deno.serve(async (req) => {
@@ -739,11 +820,15 @@ Deno.serve(async (req) => {
     return new Response("Server misconfigured", { status: 500 });
   }
 
-  // GET verification — supports two patterns:
-  // 1. Meta Cloud API style: ?hub.mode=subscribe&hub.verify_token=X&hub.challenge=Y
-  //    → verify token matches, echo the `hub.challenge` back as the body.
-  // 2. HookMyApp sandbox style (or any caller without query params):
-  //    → echo the VERIFY_TOKEN itself, which is what the sandbox expects.
+  // GET verification — Meta Cloud API style only:
+  //   ?hub.mode=subscribe&hub.verify_token=X&hub.challenge=Y
+  // → verify token matches, echo the `hub.challenge` back as the body.
+  //
+  // We DO NOT echo VERIFY_TOKEN on bare GETs anymore — doing so leaked the
+  // HMAC signing secret to any unauthenticated caller, who could then forge
+  // valid webhook signatures. If you need the legacy HookMyApp sandbox
+  // echo for one-time URL registration, set HOOKMYAPP_SANDBOX_ECHO=true
+  // temporarily, then unset.
   if (req.method === "GET") {
     const url = new URL(req.url);
     const challenge = url.searchParams.get("hub.challenge");
@@ -759,10 +844,13 @@ Deno.serve(async (req) => {
         headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
       });
     }
-    return new Response(verifyToken, {
-      status: 200,
-      headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
-    });
+    if (Deno.env.get("HOOKMYAPP_SANDBOX_ECHO") === "true") {
+      return new Response(verifyToken, {
+        status: 200,
+        headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+      });
+    }
+    return new Response("Method requires hub.challenge", { status: 400 });
   }
   if (req.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -813,38 +901,57 @@ Deno.serve(async (req) => {
     auth: { persistSession: false, autoRefreshToken: false },
   });
 
-  // Resolve the configured agent (sandbox = single agent).
-  const { data: agent, error: agentErr } = await admin
-    .from("agents")
-    .select("id")
-    .eq("name", agentName)
-    .maybeSingle();
-  if (agentErr) {
-    await logError({
-      admin,
-      source: SOURCE,
-      errorType: "agent_lookup_failed",
-      message: agentErr.message,
-      context: { agentName },
-    });
-    return new Response("Agent lookup failed", { status: 500 });
+  // Resolve the agent for this inbound. Order of attempts:
+  //   1. By phone_number_id from Meta payload metadata (multi-agent ready).
+  //   2. By HOOKMYAPP_AGENT_NAME env (single-agent legacy fallback).
+  // If neither matches, log and return 500 — the webhook caller will retry
+  // and the operator gets a visible error in the dashboard.
+  const inboundPhoneNumberId = payload.entry?.[0]?.changes?.[0]?.value?.metadata
+    ?.phone_number_id ?? null;
+
+  let agentId: string | null = null;
+  if (inboundPhoneNumberId) {
+    const { data: byPhone } = await admin
+      .from("agents")
+      .select("id")
+      .eq("whatsapp_phone_number_id", inboundPhoneNumberId)
+      .maybeSingle();
+    if (byPhone) agentId = byPhone.id as string;
   }
-  if (!agent) {
-    await logError({
-      admin,
-      source: SOURCE,
-      errorType: "agent_not_configured",
-      message: `agent "${agentName}" not found`,
-      context: { agentName },
-    });
-    return new Response("Agent not configured", { status: 500 });
+  if (!agentId) {
+    const { data: byName, error: agentErr } = await admin
+      .from("agents")
+      .select("id")
+      .eq("name", agentName)
+      .maybeSingle();
+    if (agentErr) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "agent_lookup_failed",
+        message: agentErr.message,
+        context: { agentName, inboundPhoneNumberId },
+      });
+      return new Response("Agent lookup failed", { status: 500 });
+    }
+    if (!byName) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "agent_not_configured",
+        message: `no agent matched (phone_number_id=${inboundPhoneNumberId ?? "missing"}, name="${agentName}")`,
+        context: { agentName, inboundPhoneNumberId },
+      });
+      return new Response("Agent not configured", { status: 500 });
+    }
+    agentId = byName.id as string;
   }
-  const agentId = agent.id as string;
 
   // Conversations that received an inbound text this webhook → trigger one
   // agent reply per conversation (not per message) to avoid double-replies
   // when a user fires off multiple messages in quick succession.
   const conversationsNeedingReply = new Map<string, string>(); // id → leadPhone
+  const conversationsNeedingCannedReply = new Map<string, string>(); // id → leadPhone
 
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
@@ -854,6 +961,8 @@ Deno.serve(async (req) => {
         const outcome = await ingestInboundMessage(admin, agentId, contacts, message);
         if (outcome?.needsAgentReply) {
           conversationsNeedingReply.set(outcome.conversationId, outcome.leadPhone);
+        } else if (outcome?.needsCannedNonTextReply) {
+          conversationsNeedingCannedReply.set(outcome.conversationId, outcome.leadPhone);
         }
       }
     }
@@ -914,6 +1023,28 @@ Deno.serve(async (req) => {
       },
       agentId,
     });
+  }
+
+  // Fire canned "please type" replies for non-text inbound (voice notes,
+  // images, stickers). No Claude call — just a constant string. Critical:
+  // Israeli WhatsApp users default to voice notes; without this reply the
+  // bot looks broken to them.
+  if (
+    conversationsNeedingCannedReply.size > 0 &&
+    whatsappApiUrl &&
+    whatsappAccessToken &&
+    whatsappPhoneNumberId
+  ) {
+    const hookmyapp: HookMyAppCreds = {
+      apiUrl: whatsappApiUrl,
+      accessToken: whatsappAccessToken,
+      phoneNumberId: whatsappPhoneNumberId,
+    };
+    for (const [conversationId, leadPhone] of conversationsNeedingCannedReply) {
+      fireAndForget(
+        sendCannedNonTextReply({ admin, hookmyapp, agentId, conversationId, leadPhone }),
+      );
+    }
   }
 
   return new Response(JSON.stringify({ status: "ok" }), {
