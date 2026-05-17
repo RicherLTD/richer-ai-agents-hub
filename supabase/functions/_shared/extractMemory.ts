@@ -24,6 +24,48 @@ import {
   type HandoffLeadMemory,
 } from "./fireHandoffWebhook.ts";
 
+
+// Format an ISO timestamp into Asia/Jerusalem date / time / datetime
+// strings. Independent of the host timezone — uses Intl with the
+// timeZone option so it works the same in Supabase Edge (UTC) and
+// any other runtime. Returns three matched formats so Make.com can
+// pick whichever fits the target CRM column.
+function formatJerusalemTime(iso: string): {
+  date: string;
+  time: string;
+  datetime: string;
+} {
+  const d = new Date(iso);
+  // YYYY-MM-DD — sortable; works as a Fireberry Date field.
+  const date = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(d);
+  // HH:mm 24-hour.
+  const time = new Intl.DateTimeFormat("he-IL", {
+    timeZone: "Asia/Jerusalem",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  // Hebrew-style "DD/MM/YYYY HH:mm" — drop into a single CRM note.
+  const dt = new Intl.DateTimeFormat("he-IL", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(d);
+  // Intl in "he-IL" returns "DD.MM.YYYY, HH:mm" — normalise the
+  // separators so Make.com sees a predictable "DD/MM/YYYY HH:mm".
+  const datetime = dt.replace(/\./g, "/").replace(",", "").replace(/\s+/g, " ").trim();
+  return { date, time, datetime };
+}
+
 export const MEMORY_EXTRACTOR_MODEL = "claude-haiku-4-5";
 export const MEMORY_EXTRACTOR_PROMPT_TYPE = "memory_extractor";
 
@@ -479,6 +521,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       });
     } else {
       const dashboardBase = input.dashboardBaseUrl?.replace(/\/$/, "") ?? null;
+      const il = formatJerusalemTime(zoomScheduledAt);
       const handoffConv: HandoffConversation = {
         id: input.conversationId,
         lead_phone: (existing?.lead_phone as string | null | undefined) ?? "",
@@ -487,6 +530,9 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         current_tag: "zoom_scheduled",
         funnel_stage: "done",
         zoom_scheduled_at: zoomScheduledAt,
+        qualified_at_il_date: il.date,
+        qualified_at_il_time: il.time,
+        qualified_at_il_datetime: il.datetime,
         source_campaign: (existing?.source_campaign as string | null | undefined) ?? null,
         source_funnel: (existing?.source_funnel as string | null | undefined) ?? null,
         created_at: (existing?.created_at as string | null | undefined) ?? null,
