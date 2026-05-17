@@ -40,6 +40,7 @@ import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "../_shared/anthropicRetry.ts";
 import { judgeReply } from "../_shared/judgeReply.ts";
+import { transcribeVoiceNote } from "../_shared/transcribeVoice.ts";
 import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
@@ -70,10 +71,17 @@ interface MetaContact {
   profile?: { name?: string };
   wa_id?: string;
 }
+interface MetaMediaRef { id?: string; mime_type?: string; }
 interface MetaMessage {
   from?: string;
   type?: string;
   text?: { body?: string };
+  audio?: MetaMediaRef;
+  voice?: MetaMediaRef;
+  image?: MetaMediaRef & { caption?: string };
+  video?: MetaMediaRef & { caption?: string };
+  document?: MetaMediaRef & { caption?: string; filename?: string };
+  sticker?: MetaMediaRef;
   id?: string;
   timestamp?: string;
 }
@@ -763,11 +771,18 @@ interface InboundOutcome {
  * race-safe via the unique index on (agent_id, lead_phone) + upsert
  * (migration 0010).
  */
+interface IngestEnv {
+  apiUrl: string | undefined;
+  accessToken: string | undefined;
+  openaiApiKey: string | undefined;
+}
+
 async function ingestInboundMessage(
   admin: SupabaseClient,
   agentId: string,
   contacts: ReadonlyArray<MetaContact>,
   message: MetaMessage,
+  envForTranscription: IngestEnv,
 ): Promise<InboundOutcome | null> {
   const phone = message.from;
   if (!phone) return null;
@@ -806,10 +821,40 @@ async function ingestInboundMessage(
   }
   const conversationId = upserted.id as string;
 
-  const type = normaliseType(message.type);
-  const content = type === "text"
-    ? message.text?.body ?? ""
-    : `[${message.type ?? "unknown"}]`;
+  const rawType = normaliseType(message.type);
+  let type: MessageType = rawType;
+  let content: string;
+  if (rawType === "text") {
+    content = message.text?.body ?? "";
+  } else if (
+    (rawType === "audio" || message.type === "voice") &&
+    envForTranscription.apiUrl &&
+    envForTranscription.accessToken &&
+    envForTranscription.openaiApiKey
+  ) {
+    // Voice note: try Whisper Hebrew transcription. On success we treat
+    // the message as a text turn — the agent loop replies as if the lead
+    // typed the words. On failure we fall through to the placeholder and
+    // the canned "please type" reply.
+    const mediaId = message.audio?.id ?? message.voice?.id;
+    let transcript: string | null = null;
+    if (mediaId) {
+      transcript = await transcribeVoiceNote({
+        mediaId,
+        apiUrl: envForTranscription.apiUrl,
+        accessToken: envForTranscription.accessToken,
+        openaiApiKey: envForTranscription.openaiApiKey,
+      });
+    }
+    if (transcript && transcript.length >= 2) {
+      content = transcript;
+      type = "text"; // override so the agent loop treats it as text
+    } else {
+      content = `[${message.type ?? "audio"}]`;
+    }
+  } else {
+    content = `[${message.type ?? "unknown"}]`;
+  }
 
   const { error: msgErr } = await admin.from("messages").insert({
     conversation_id: conversationId,
@@ -1031,12 +1076,19 @@ Deno.serve(async (req) => {
   const conversationsNeedingReply = new Map<string, string>(); // id → leadPhone
   const conversationsNeedingCannedReply = new Map<string, string>(); // id → leadPhone
 
+  const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
+  const ingestEnv: IngestEnv = {
+    apiUrl: whatsappApiUrl,
+    accessToken: whatsappAccessToken,
+    openaiApiKey,
+  };
+
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       if (change.field !== "messages") continue;
       const contacts = change.value?.contacts ?? [];
       for (const message of change.value?.messages ?? []) {
-        const outcome = await ingestInboundMessage(admin, agentId, contacts, message);
+        const outcome = await ingestInboundMessage(admin, agentId, contacts, message, ingestEnv);
         if (outcome?.needsAgentReply) {
           conversationsNeedingReply.set(outcome.conversationId, outcome.leadPhone);
         } else if (outcome?.needsCannedNonTextReply) {
