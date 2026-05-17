@@ -45,13 +45,13 @@ export function KpiCard({ label, value, icon: Icon, hint, delta, isLoading }: Pr
 
       <CardContent className="relative flex items-start justify-between gap-3 p-5">
         <div className="min-w-0 space-y-2">
-          <p className="label-mono">{label}</p>
+          <p className="text-xs font-bold uppercase tracking-wider text-muted-foreground">{label}</p>
           {isLoading ? (
             <Skeleton className="h-10 w-24" />
           ) : (
             <p
               className={cn(
-                "font-display text-3xl font-medium tabular-nums leading-none tracking-tight text-foreground",
+                "text-3xl font-bold tabular-nums leading-none tracking-tight text-foreground",
                 "transition-colors group-hover/kpi:text-primary",
               )}
             >

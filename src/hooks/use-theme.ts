@@ -17,12 +17,13 @@ const STORAGE_KEY = "ui.theme";
 export type Theme = "light" | "dark";
 
 function readInitialTheme(): Theme {
-  if (typeof window === "undefined") return "dark";
+  if (typeof window === "undefined") return "light";
   const stored = window.localStorage.getItem(STORAGE_KEY);
   if (stored === "light" || stored === "dark") return stored;
-  // Default to dark (the canonical brand) unless the OS strongly
-  // prefers light.
-  return window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  // Default to LIGHT — operators reported the dark surface made body
+  // text feel low-contrast. Light is the new canonical, dark stays as
+  // opt-in via the header toggle.
+  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
 }
 
 function applyTheme(theme: Theme) {
