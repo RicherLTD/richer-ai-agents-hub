@@ -3,166 +3,189 @@
 @tailwind utilities;
 
 /* ============================================================
-   Richer College — WhatsApp AI Agents Dashboard
-   Design DNA: Linear × Stripe × Mercury, RTL-first, Hebrew-native.
-   The signature is restraint. Purple is the brand accent —
-   used sparingly. Numbers + density carry the data.
+   Richer College — WhatsApp AI Console
+
+   Design DNA: Editorial dark, warm. Inspired by kutai-prod-v2:
+   - Near-black warm background (#070708), not cool zinc.
+   - Cream foreground (#F5E9D6), not pure white.
+   - Single warm accent: amber #E8A85C — used confidently on
+     CTAs and active states.
+   - Brand purple is preserved as a secondary brand mark (logo,
+     deep accent) but day-to-day controls are amber.
+   - Editorial typography: Heebo for Hebrew, Playfair Display
+     fallback adds character to large headings.
    ============================================================ */
 
 @layer base {
   :root {
-    /* ----- Surfaces (neutral base; 90% of pixels) ----- */
-    --background: 0 0% 100%;
-    --foreground: 240 10% 10%;            /* zinc-900 vibe, no purple tint */
+    /* ----- DARK is the default — the system feels premium in dark.
+            Light mode is a real second-class citizen we still ship,
+            but the canonical brand is dark. ----- */
+    color-scheme: dark;
+  }
 
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 10%;
+  /* ----- DARK (default) ----- */
+  :root,
+  .dark {
+    /* Canvas */
+    --background:        240 8% 4%;        /* #070708 */
+    --foreground:        38 60% 90%;       /* #F5E9D6 — cream */
 
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 10%;
+    /* Cards / surfaces — slightly lifted from canvas, still dark */
+    --card:              240 8% 7%;        /* #11111A subtle lift */
+    --card-foreground:   38 60% 90%;
 
-    /* Layered surfaces — gives depth via tone, not shadow */
-    --surface-elevated: 0 0% 100%;        /* same as bg — neutral cards */
-    --surface-subtle: 240 5% 96%;         /* table headers, sidebar wash */
-    --surface-hover: 240 5% 96%;          /* row hover, button hover */
-    --surface-active: 240 6% 90%;         /* pressed state */
+    --popover:           240 8% 8%;
+    --popover-foreground:38 60% 90%;
 
-    /* ----- Brand (use sparingly — ≤3 surfaces per screen) ----- */
-    --primary: 271 70% 26%;               /* Richer purple #451470 */
-    --primary-foreground: 0 0% 100%;
-    --primary-deep: 271 69% 18%;
-    --primary-light: 271 37% 48%;
-    --primary-soft: 271 60% 96%;          /* selected row, focused chip */
+    /* Layered surfaces */
+    --surface-elevated:  240 8% 7%;
+    --surface-subtle:    240 8% 10%;
+    --surface-hover:     240 6% 13%;
+    --surface-active:    240 6% 18%;
 
-    /* ----- Neutrals ----- */
-    --secondary: 240 5% 96%;
+    /* PRIMARY = warm amber (the new accent). Brand purple stays
+       as a deep mark for the logo + secondary call-outs. */
+    --primary:           30 75% 64%;       /* #E8A85C — warm amber */
+    --primary-foreground:240 10% 4%;       /* dark text on amber */
+    --primary-deep:      271 69% 18%;      /* legacy brand purple — logo only */
+    --primary-light:     30 85% 76%;
+    --primary-soft:      30 50% 14%;       /* amber × dark wash */
+
+    /* Neutrals */
+    --secondary:         240 6% 14%;
+    --secondary-foreground: 38 60% 90%;
+
+    --muted:             240 6% 14%;
+    --muted-foreground:  38 12% 60%;       /* muted cream */
+
+    --accent:            30 50% 18%;       /* amber wash for hover */
+    --accent-foreground: 30 75% 78%;
+
+    /* Semantic — muted, never neon */
+    --destructive:       0 60% 55%;
+    --destructive-foreground: 0 0% 98%;
+
+    --success:           150 50% 50%;
+    --success-foreground:240 10% 4%;
+    --success-soft:      150 50% 14%;
+
+    --warning:           42 90% 60%;
+    --warning-foreground:240 10% 4%;
+    --warning-soft:      42 50% 16%;
+
+    --info:              200 70% 60%;
+
+    /* Borders — soft, almost the same as bg */
+    --border:            240 5% 14%;
+    --border-strong:     240 5% 20%;
+    --border-subtle:     240 8% 9%;
+
+    --input:             240 6% 14%;
+    --ring:              30 75% 64%;       /* focus = amber */
+
+    /* Geometry */
+    --radius:            0.375rem;         /* 6px */
+    --radius-sm:         0.25rem;
+    --radius-lg:         0.5rem;
+
+    /* Sidebar */
+    --sidebar-background: 240 9% 5%;       /* slightly darker than canvas */
+    --sidebar-foreground: 38 30% 75%;
+    --sidebar-primary:    30 75% 64%;
+    --sidebar-primary-foreground: 240 10% 4%;
+    --sidebar-accent:     30 50% 14%;
+    --sidebar-accent-foreground: 30 75% 78%;
+    --sidebar-border:     240 6% 11%;
+    --sidebar-ring:       30 75% 64%;
+
+    /* Shadows — used rarely, only on floating elements */
+    --shadow-sm:      0 1px 2px 0 hsl(0 0% 0% / 0.4);
+    --shadow-md:      0 4px 16px -2px hsl(0 0% 0% / 0.5);
+    --shadow-popover: 0 8px 32px -4px hsl(0 0% 0% / 0.55),
+                       0 2px 6px hsl(0 0% 0% / 0.4);
+
+    --gradient-brand: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary-light)) 100%);
+  }
+
+  /* ----- LIGHT mode — explicit opt-in via .light on <html> ----- */
+  .light {
+    color-scheme: light;
+
+    --background:        38 50% 97%;       /* cream off-white */
+    --foreground:        240 10% 10%;
+
+    --card:              0 0% 100%;
+    --card-foreground:   240 10% 10%;
+
+    --popover:           0 0% 100%;
+    --popover-foreground:240 10% 10%;
+
+    --surface-elevated:  0 0% 100%;
+    --surface-subtle:    38 40% 95%;
+    --surface-hover:     38 40% 93%;
+    --surface-active:    38 30% 88%;
+
+    --primary:           28 65% 50%;       /* slightly deeper amber for contrast on cream */
+    --primary-foreground:0 0% 100%;
+    --primary-deep:      271 69% 18%;
+    --primary-light:     30 80% 65%;
+    --primary-soft:      30 80% 94%;
+
+    --secondary:         38 30% 93%;
     --secondary-foreground: 240 10% 10%;
 
-    --muted: 240 5% 96%;
-    --muted-foreground: 240 4% 46%;       /* zinc-600 — secondary text */
+    --muted:             38 30% 93%;
+    --muted-foreground:  240 5% 40%;
 
-    --accent: 271 60% 96%;
-    --accent-foreground: 271 70% 26%;
+    --accent:            30 80% 94%;
+    --accent-foreground: 28 65% 40%;
 
-    /* ----- Semantic (muted; never neon) ----- */
-    --destructive: 0 72% 50%;             /* rose-600 */
+    --destructive:       0 70% 50%;
     --destructive-foreground: 0 0% 100%;
 
-    --success: 158 64% 38%;               /* emerald-600 */
+    --success:           150 65% 35%;
     --success-foreground: 0 0% 100%;
-    --success-soft: 152 81% 95%;          /* emerald-50 */
+    --success-soft:      150 70% 93%;
 
-    --warning: 32 95% 44%;                /* amber-600 */
+    --warning:           38 95% 45%;
     --warning-foreground: 0 0% 100%;
-    --warning-soft: 48 100% 95%;          /* amber-50 */
+    --warning-soft:      38 95% 93%;
 
-    --info: 200 90% 39%;                  /* sky-600 */
+    --info:              200 90% 40%;
 
-    /* ----- Borders ----- */
-    --border: 240 6% 90%;                 /* default — visible but quiet */
-    --border-strong: 240 5% 84%;          /* between major sections */
-    --border-subtle: 240 5% 96%;          /* between table rows */
+    --border:            38 20% 86%;
+    --border-strong:     38 20% 78%;
+    --border-subtle:     38 30% 93%;
 
-    --input: 240 6% 90%;
-    --ring: 271 70% 26%;                  /* focus ring = brand */
+    --input:             38 20% 86%;
+    --ring:              28 65% 50%;
 
-    /* ----- Geometry ----- */
-    --radius: 0.375rem;                   /* 6px — cards, default buttons */
-    --radius-sm: 0.25rem;                 /* 4px — inputs, chips */
-    --radius-lg: 0.5rem;                  /* 8px — modals */
-
-    /* ----- Sidebar tones ----- */
-    --sidebar-background: 0 0% 100%;
-    --sidebar-foreground: 240 6% 28%;
-    --sidebar-primary: 271 70% 26%;
+    --sidebar-background: 38 50% 97%;
+    --sidebar-foreground: 240 8% 30%;
+    --sidebar-primary:    28 65% 50%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 271 60% 96%;
-    --sidebar-accent-foreground: 271 70% 26%;
-    --sidebar-border: 240 6% 90%;
-    --sidebar-ring: 271 70% 26%;
+    --sidebar-accent:     30 80% 92%;
+    --sidebar-accent-foreground: 28 65% 40%;
+    --sidebar-border:     38 20% 86%;
+    --sidebar-ring:       28 65% 50%;
 
-    /* ----- Elevation (rare; only floating elements) ----- */
     --shadow-sm:      0 1px 2px 0 hsl(240 10% 10% / 0.04);
     --shadow-md:      0 4px 12px -2px hsl(240 10% 10% / 0.06);
     --shadow-popover: 0 8px 24px -4px hsl(240 10% 10% / 0.10),
                        0 2px 4px hsl(240 10% 10% / 0.04);
-
-    /* ----- Brand gradient (used VERY sparingly — cover sheets, login) ----- */
-    --gradient-brand: linear-gradient(135deg, hsl(var(--primary-deep)) 0%, hsl(var(--primary)) 60%, hsl(var(--primary-light)) 100%);
-  }
-
-  .dark {
-    --background: 240 10% 4%;             /* zinc-950 — pure dark, not navy */
-    --foreground: 0 0% 98%;
-
-    --card: 240 8% 8%;                    /* zinc-900 */
-    --card-foreground: 0 0% 98%;
-
-    --popover: 240 8% 8%;
-    --popover-foreground: 0 0% 98%;
-
-    --surface-elevated: 240 8% 8%;
-    --surface-subtle: 240 8% 10%;
-    --surface-hover: 240 6% 14%;          /* zinc-800 */
-    --surface-active: 240 5% 22%;         /* zinc-700 */
-
-    --primary: 271 60% 70%;               /* lighter purple on dark */
-    --primary-foreground: 240 10% 4%;
-    --primary-deep: 271 50% 50%;
-    --primary-light: 271 65% 80%;
-    --primary-soft: 271 50% 14%;
-
-    --secondary: 240 6% 14%;
-    --secondary-foreground: 0 0% 98%;
-
-    --muted: 240 6% 14%;
-    --muted-foreground: 240 5% 65%;
-
-    --accent: 271 50% 18%;
-    --accent-foreground: 271 60% 80%;
-
-    --destructive: 0 65% 55%;
-    --destructive-foreground: 0 0% 98%;
-
-    --success: 158 55% 50%;
-    --success-foreground: 0 0% 98%;
-    --success-soft: 158 50% 14%;
-
-    --warning: 38 80% 55%;
-    --warning-foreground: 240 10% 4%;
-    --warning-soft: 38 50% 14%;
-
-    --info: 200 80% 60%;
-
-    --border: 240 6% 16%;
-    --border-strong: 240 5% 22%;
-    --border-subtle: 240 8% 10%;
-
-    --input: 240 6% 16%;
-    --ring: 271 60% 70%;
-
-    --sidebar-background: 240 9% 6%;
-    --sidebar-foreground: 240 5% 75%;
-    --sidebar-primary: 271 60% 70%;
-    --sidebar-primary-foreground: 240 10% 4%;
-    --sidebar-accent: 271 50% 16%;
-    --sidebar-accent-foreground: 271 60% 80%;
-    --sidebar-border: 240 6% 16%;
-    --sidebar-ring: 271 60% 70%;
   }
 }
 
 @layer base {
-  * {
-    @apply border-border;
-  }
+  * { @apply border-border; }
 
-  /* Heebo for Hebrew, Inter for ASCII fragments (numbers, IDs, brands).
-     Hebrew comes first so Heebo wins; Inter catches everything outside
-     Hebrew Unicode block. The result: numerals look like Inter on the
-     page, but Hebrew runs render in Heebo. */
+  /* Heebo for Hebrew. Playfair Display fallback adds a serif character
+     to large headings even when Heebo handles the glyphs — gives an
+     editorial feel similar to kutai-prod-v2.
+     JetBrains Mono for IDs, codes, mono labels. */
   html {
-    font-family: 'Heebo', 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    font-family: 'Heebo', 'Playfair Display', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -170,60 +193,45 @@
 
   body {
     @apply bg-background text-foreground;
+    font-weight: 400;
     font-feature-settings: 'cv11', 'ss01', 'ss03';
-    /* Subtle dotted texture in the very corners — gives a feeling of
-       depth without using shadows. Almost invisible (alpha 0.02) but
-       breaks the "flat plastic" feel. */
-    background-image: radial-gradient(hsl(var(--foreground) / 0.025) 1px, transparent 1px);
-    background-size: 24px 24px;
-    background-position: 0 0;
   }
 
-  .dark body {
-    background-image: radial-gradient(hsl(0 0% 100% / 0.02) 1px, transparent 1px);
+  /* Editorial heading — heavier and tighter than usual. Brings the
+     "premium portfolio" energy into the dashboard without being garish. */
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-bold text-foreground;
+    letter-spacing: -0.015em;
+    font-family: 'Heebo', 'Playfair Display', serif;
   }
+  h1 { @apply text-2xl; font-weight: 800; }
+  h2 { @apply text-xl; font-weight: 700; }
+  h3 { @apply text-lg; font-weight: 700; }
 
-  /* Numeric content always uses tabular-nums so columns align. */
   .tabular, .num, [data-numeric] {
     font-variant-numeric: tabular-nums;
   }
 
-  /* Display monospace for IDs / hashes / code fragments. */
   code, kbd, samp, pre, .mono {
     font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
     font-feature-settings: 'zero', 'ss02';
   }
 
-  h1, h2, h3, h4, h5, h6 {
-    @apply font-semibold tracking-tight text-foreground;
-  }
-
-  /* h1 = page title — large but never centered, never with chrome. */
-  h1 { @apply text-2xl; letter-spacing: -0.015em; }
-  h2 { @apply text-xl; letter-spacing: -0.01em; }
-  h3 { @apply text-lg; }
-
-  /* Disable native browser focus ring everywhere — we render our own
-     so we get consistent 2px brand ring with offset, regardless of
-     element type. */
   *:focus-visible {
     @apply outline-none ring-2 ring-ring/40 ring-offset-2 ring-offset-background;
   }
 
-  /* Selection color matches brand. */
   ::selection {
-    background: hsl(var(--primary) / 0.18);
+    background: hsl(var(--primary) / 0.25);
     color: hsl(var(--foreground));
   }
 
-  /* Scrollbar — slim, brand-tinted, never garish. */
+  /* Slim warm scrollbar */
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
-  ::-webkit-scrollbar-track {
-    background: transparent;
-  }
+  ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb {
     background: hsl(var(--border-strong));
     border-radius: 999px;
@@ -234,47 +242,48 @@
   }
 }
 
-/* ----- Utility: subtle glow on primary CTAs (uses brand, never neon) ----- */
 @layer utilities {
-  .glow-primary {
-    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.10),
-                0 4px 12px -2px hsl(var(--primary) / 0.18);
-  }
-  .glow-primary-soft {
-    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.06),
-                0 2px 8px -2px hsl(var(--primary) / 0.10);
+  /* Soft amber bloom — for hero areas / empty states. Editorial. */
+  .bloom-amber-soft {
+    background-image:
+      radial-gradient(ellipse 60% 50% at 80% 0%, hsl(var(--primary) / 0.08), transparent 60%),
+      radial-gradient(ellipse 50% 40% at 20% 100%, hsl(var(--primary) / 0.06), transparent 60%);
   }
 
-  /* Layered surface depth — replaces shadows on cards. */
-  .surface-elevated {
-    background-color: hsl(var(--surface-elevated));
-    border: 1px solid hsl(var(--border));
-  }
-  .surface-subtle {
-    background-color: hsl(var(--surface-subtle));
+  /* Subtle inset top highlight — looks like soft top-light on glass.
+     Replaces "card with shadow". Use on cards that want hierarchy. */
+  .surface-hl {
+    background-image: linear-gradient(180deg, hsl(var(--foreground) / 0.03) 0%, transparent 8%);
   }
 
-  /* Sticky table header tone. */
-  .table-head {
-    background-color: hsl(var(--surface-subtle));
-    color: hsl(var(--muted-foreground));
+  /* Editorial uppercase mono label — used for section headers,
+     timestamps, IDs. Looks like premium SaaS chrome. */
+  .label-mono {
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
     font-size: 11px;
-    font-weight: 600;
+    font-weight: 500;
+    letter-spacing: 0.12em;
     text-transform: uppercase;
-    letter-spacing: 0.05em;
+    color: hsl(var(--muted-foreground));
   }
 
-  /* Status chip primitives (semantic colors at low saturation). */
+  /* Soft glow on the focus state of primary CTAs */
+  .glow-primary {
+    box-shadow: 0 0 0 1px hsl(var(--primary) / 0.20),
+                0 0 24px -4px hsl(var(--primary) / 0.30);
+  }
+
+  /* Status chips — semantic, muted */
   .chip {
     @apply inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[11px] font-medium;
   }
   .chip-success { background: hsl(var(--success-soft)); color: hsl(var(--success)); }
   .chip-warning { background: hsl(var(--warning-soft)); color: hsl(var(--warning)); }
-  .chip-error   { background: hsl(0 92% 96%); color: hsl(var(--destructive)); }
+  .chip-error   { background: hsl(var(--destructive) / 0.15); color: hsl(var(--destructive)); }
   .chip-info    { background: hsl(var(--primary-soft)); color: hsl(var(--primary)); }
   .chip-muted   { background: hsl(var(--muted)); color: hsl(var(--muted-foreground)); }
 
-  /* RTL-aware logical helpers for icons/digits inside Hebrew runs. */
+  /* LTR-embedded helper for numbers/dates in Hebrew paragraphs */
   .ltr-embed {
     direction: ltr;
     unicode-bidi: embed;
