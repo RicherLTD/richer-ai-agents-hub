@@ -513,6 +513,47 @@ async function sendAndRecordReply(
  * unhandled rejection there would just go to console.
  */
 async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
+  // Atomic per-conversation lock to prevent the duplicate-reply race that
+  // happens when a lead fires multiple messages within seconds. Meta
+  // delivers each as a separate webhook POST → without a DB-level lock
+  // we'd run two parallel agent loops and send two replies. The UPDATE
+  // is atomic: only one instance sees the lock as available; the others
+  // see rowCount=0 and bail. Lock auto-expires after 60s if a worker
+  // crashes mid-flight.
+  const lockTimeoutAt = new Date(Date.now() - 60_000).toISOString();
+  const { data: claim } = await ctx.admin
+    .from("conversations")
+    .update({ agent_lock_taken_at: new Date().toISOString() })
+    .eq("id", ctx.conversationId)
+    .or(`agent_lock_taken_at.is.null,agent_lock_taken_at.lt.${lockTimeoutAt}`)
+    .select("id");
+  if (!claim || claim.length === 0) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "duplicate_reply_skipped",
+      level: "info",
+      message: "agent lock held by another concurrent webhook delivery — skipping",
+      context: { lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return;
+  }
+
+  try {
+    await generateAndSendAgentResponseLocked(ctx);
+  } finally {
+    // Always release the lock — even on error — so the next inbound from
+    // this lead is not stuck waiting for the 60s expiry.
+    await ctx.admin
+      .from("conversations")
+      .update({ agent_lock_taken_at: null })
+      .eq("id", ctx.conversationId);
+  }
+}
+
+async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<void> {
   const turn = await loadAgentTurnContext(ctx);
   if (!turn) return;
 
