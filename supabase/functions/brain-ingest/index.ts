@@ -39,6 +39,13 @@ const PDF_BUCKET = "brain-uploads";
 // before upload.
 const MAX_INGEST_BYTES = 10 * 1024 * 1024;
 const SIZE_HINT = "10MB";
+// Supabase background tasks (EdgeRuntime.waitUntil) are capped at ~150s
+// wall clock. Cap the Claude call at 110s so storage + DB updates have
+// headroom. Without this, slow/hung extraction calls strand the row in
+// `pending` forever — the brain-sweep-stale cron is the safety net for
+// that edge case, but the explicit timeout catches the common case
+// cleanly via the existing `markFailed` branch.
+const ANTHROPIC_TIMEOUT_MS = 110_000;
 
 interface IngestRequestBody {
   agent_id?: unknown;
@@ -148,7 +155,7 @@ async function extractFromPdf(anthropic: Anthropic, base64Bytes: string): Promis
         { type: "text", text: "Extract the full text of this document." },
       ]},
     ],
-  } as any);
+  } as any, { timeout: ANTHROPIC_TIMEOUT_MS } as any);
   return firstTextBlock(raw as unknown as AnthropicMessageResponse);
 }
 
@@ -164,7 +171,7 @@ async function extractFromImage(anthropic: Anthropic, base64Bytes: string, media
         { type: "text", text: "Transcribe any text in this image." },
       ]},
     ],
-  } as any);
+  } as any, { timeout: ANTHROPIC_TIMEOUT_MS } as any);
   return firstTextBlock(raw as unknown as AnthropicMessageResponse);
 }
 
@@ -244,6 +251,19 @@ async function runExtraction(args: {
       // Anthropic 429 → suggest retry, not split.
       if (raw.includes("rate_limit") || raw.includes("429")) {
         await markFailed("עומס זמני על Claude. נסה שוב בעוד דקה.");
+        return;
+      }
+      // SDK timeout abort — surfaces as "Request timed out" or as an
+      // AbortError. Without this branch the row would stay `pending`
+      // until the brain-sweep-stale cron picks it up.
+      if (
+        raw.toLowerCase().includes("timed out") ||
+        raw.toLowerCase().includes("aborterror") ||
+        raw.toLowerCase().includes("request aborted")
+      ) {
+        await markFailed(
+          `החילוץ עבר את מגבלת הזמן (${Math.round(ANTHROPIC_TIMEOUT_MS / 1000)} שניות). פצל את הקובץ ל־PDFים קטנים יותר ונסה שוב.`,
+        );
         return;
       }
       await markFailed(`Claude extraction failed: ${raw}`);
