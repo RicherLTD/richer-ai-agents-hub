@@ -627,7 +627,13 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
       () =>
         ctx.anthropic.messages.create({
           model: CLAUDE_MODEL,
-          max_tokens: 1024,
+          // 1024 was too tight once v6/v7 + adaptive-thinking landed —
+          // adaptive thinking can use most of the budget on internal
+          // reasoning and return an empty visible reply (the Natan
+          // claude_invalid_reply / reply_is_null incident at 18:45). 2048
+          // gives the model headroom for thinking AND a 1-3 sentence
+          // visible response.
+          max_tokens: 2048,
           thinking: { type: "adaptive" },
           system: turn.promptContent,
           messages: turn.claudeMessages,
