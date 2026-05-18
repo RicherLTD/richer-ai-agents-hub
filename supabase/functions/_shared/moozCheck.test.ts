@@ -10,7 +10,7 @@ describe("normalizePhoneForMooz", () => {
     expect(normalizePhoneForMooz("972551234567")).toBe("551234567");
   });
 
-  it("strips Israeli leading zero", () => {
+  it("strips Israeli leading zero (10-digit local form)", () => {
     expect(normalizePhoneForMooz("0551234567")).toBe("551234567");
   });
 
@@ -23,14 +23,28 @@ describe("normalizePhoneForMooz", () => {
     expect(normalizePhoneForMooz("(055) 123 4567")).toBe("551234567");
   });
 
-  it("returns empty string when fewer than 9 digits", () => {
+  it("returns empty for too-short input", () => {
     expect(normalizePhoneForMooz("12345")).toBe("");
     expect(normalizePhoneForMooz("")).toBe("");
   });
 
-  it("treats 10-digit Israeli local form the same as +972 form", () => {
+  it("normalises +972 and 0XX forms to the same suffix", () => {
     expect(normalizePhoneForMooz("0551234567"))
       .toBe(normalizePhoneForMooz("+972551234567"));
+  });
+
+  it("REJECTS US number (+1) -- 11 digits, no Israeli prefix", () => {
+    expect(normalizePhoneForMooz("+12025551234")).toBe("");
+    expect(normalizePhoneForMooz("12025551234")).toBe("");
+  });
+
+  it("REJECTS Israeli landline (+972XYYYYYYY) -- only 8 digits after country code", () => {
+    expect(normalizePhoneForMooz("+97225551234")).toBe("");
+    expect(normalizePhoneForMooz("025551234")).toBe("");
+  });
+
+  it("REJECTS too-long inputs (avoid blind truncation)", () => {
+    expect(normalizePhoneForMooz("+9725512345678")).toBe("");
   });
 });
 
@@ -56,7 +70,20 @@ describe("checkMoozBooking", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("returns invalid_response when phone has <9 digits", async () => {
+  it("returns non_israeli_phone for an unrecognised number", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const result = await checkMoozBooking({
+      url: "https://mooz.example.com/api/bookings/lookup",
+      token: "t",
+      phone: "+12025551234",
+    });
+    expect(result.booked).toBe(false);
+    if (!result.booked) expect(result.reason).toBe("non_israeli_phone");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("returns non_israeli_phone for too-short input", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     const result = await checkMoozBooking({
@@ -65,6 +92,7 @@ describe("checkMoozBooking", () => {
       phone: "12345",
     });
     expect(result.booked).toBe(false);
+    if (!result.booked) expect(result.reason).toBe("non_israeli_phone");
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -149,9 +177,9 @@ describe("checkMoozBooking", () => {
     if (!result.booked) expect(result.reason).toBe("invalid_response");
   });
 
-  it("does NOT retry on 401 (non-retryable client error)", async () => {
+  it("returns http_error on 401 (NOT retryable) -- and DOES NOT include errorBody (token-leak guard)", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      new Response("unauthorized", { status: 401 }),
+      new Response("Bearer secret-leaked-in-body", { status: 401 }),
     );
     vi.stubGlobal("fetch", fetchMock);
     const result = await checkMoozBooking({
@@ -160,8 +188,12 @@ describe("checkMoozBooking", () => {
       phone: "+972551234567",
     });
     expect(result.booked).toBe(false);
-    if (!result.booked) {
-      expect(result.reason).toBe("http_error");
+    if (!result.booked && result.reason === "http_error") {
+      expect(result.status).toBe(401);
+      // Critical: outcome must NOT expose the response body since Mooz
+      // could echo the Authorization header value. The TS shape no
+      // longer has `errorBody`.
+      expect("errorBody" in result).toBe(false);
     }
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
@@ -225,7 +257,6 @@ describe("checkMoozBooking", () => {
       token: "secret",
       phone: "+972551234567",
     });
-    // First attempt times out at 5s, retry delay 500ms, second attempt times out at 5s more.
     await vi.advanceTimersByTimeAsync(11_000);
     const result = await promise;
     expect(result.booked).toBe(false);
