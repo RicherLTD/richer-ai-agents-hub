@@ -1136,8 +1136,12 @@ Deno.serve(async (req) => {
     const token = url.searchParams.get("hub.verify_token");
 
     if (challenge !== null) {
-      if (token !== null && token !== verifyToken) {
-        console.warn("whatsapp-webhook: GET challenge with bad verify_token");
+      // The token MUST be present AND match. Earlier version only checked
+      // the match when `token !== null`, leaving the door open for a
+      // tokenless caller to fish the endpoint and confirm arbitrary
+      // challenge values get echoed.
+      if (token === null || token !== verifyToken) {
+        console.warn("whatsapp-webhook: GET challenge rejected (missing or bad verify_token)");
         return new Response("Forbidden", { status: 403 });
       }
       return new Response(challenge, {
