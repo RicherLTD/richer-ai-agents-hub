@@ -424,15 +424,24 @@ interface CoachReply {
   text: string;
   /** When the model invoked propose_prompt_edit, this holds the proposal. */
   proposal: { newPromptContent: string; reason: string } | null;
+  /** Diagnostics surfaced to callers so they can decide whether to log a warning. */
+  diagnostics: {
+    stopReason: string | null;
+    blockCounts: { text: number; tool_use: number; thinking: number; other: number };
+    wasEmpty: boolean;
+  };
 }
 
 function parseCoachReply(response: AnthropicResponse): CoachReply {
   let text = "";
   let proposal: CoachReply["proposal"] = null;
+  const blockCounts = { text: 0, tool_use: 0, thinking: 0, other: 0 };
   for (const block of response.content) {
     if (block.type === "text") {
+      blockCounts.text += 1;
       text += (block as AnthropicTextBlock).text;
     } else if (block.type === "tool_use") {
+      blockCounts.tool_use += 1;
       const tool = block as AnthropicToolUseBlock;
       if (tool.name !== PROPOSE_EDIT_TOOL.name) continue;
       const input = tool.input;
@@ -441,6 +450,10 @@ function parseCoachReply(response: AnthropicResponse): CoachReply {
       if (typeof newPromptContent !== "string" || newPromptContent.trim().length === 0) continue;
       if (typeof reason !== "string" || reason.trim().length === 0) continue;
       proposal = { newPromptContent: newPromptContent.trim(), reason: reason.trim() };
+    } else if (block.type === "thinking") {
+      blockCounts.thinking += 1;
+    } else {
+      blockCounts.other += 1;
     }
   }
   // If the model used the tool but gave no narration, synthesise one
@@ -448,10 +461,33 @@ function parseCoachReply(response: AnthropicResponse): CoachReply {
   if (proposal && text.trim().length === 0) {
     text = `הצעתי שינוי ל־prompt — ${proposal.reason}`;
   }
-  if (text.trim().length === 0) {
-    text = "(תגובה ריקה — נסה לנסח מחדש)";
+  const wasEmpty = text.trim().length === 0;
+  if (wasEmpty) {
+    // Diagnose for the operator instead of the cryptic "try rephrasing".
+    // The most common cause is stop_reason='max_tokens' — adaptive thinking
+    // burned the entire token budget before emitting text. Surface that
+    // explicitly so the operator knows it's not a content issue.
+    if (response.stop_reason === "max_tokens") {
+      text =
+        "המאמן חרג מתקציב הטוקנים לפני שהספיק להשיב (חשב יותר מדי). נסה שאלה ממוקדת יותר, או צמצם את מספר המסמכים הפעילים ב־brain.";
+    } else if (response.stop_reason === "pause_turn") {
+      text =
+        "המאמן הפסיק את התור באמצע (pause_turn). לחץ שוב לאותה שאלה — המודל ימשיך מהמקום שעצר.";
+    } else if (response.stop_reason === "refusal") {
+      text = "המאמן סירב לענות על הבקשה הזאת. נסה לנסח אחרת.";
+    } else {
+      text = `(תגובה ריקה — stop_reason=${response.stop_reason ?? "unknown"}. נסה לנסח מחדש.)`;
+    }
   }
-  return { text, proposal };
+  return {
+    text,
+    proposal,
+    diagnostics: {
+      stopReason: response.stop_reason ?? null,
+      blockCounts,
+      wasEmpty,
+    },
+  };
 }
 
 interface ClaudeImageBlock {
@@ -500,7 +536,12 @@ async function callCoach(
   // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
     model: COACH_MODEL,
-    max_tokens: 4096,
+    // 16384 = generous enough that adaptive thinking can finish its
+    // reasoning AND still emit several paragraphs of text + an optional
+    // tool_use proposal. 4096 was too tight: complex turns spent the
+    // whole budget on `thinking` and returned 0 text blocks, surfacing
+    // as "(תגובה ריקה — נסה לנסח מחדש)" with no diagnostic.
+    max_tokens: 16384,
     thinking: { type: "adaptive" } as any,
     system: systemBlocks as any,
     tools: [PROPOSE_EDIT_TOOL] as any,
@@ -623,6 +664,32 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: "Claude error — try again in a moment" }, {
       status: 502,
       headers: corsHeaders,
+    });
+  }
+
+  // If Claude returned no text we want a structured trace so future
+  // empty-replies are debuggable from the dashboard, not just "the
+  // operator says it broke". The user-facing fallback is already in
+  // reply.text (parseCoachReply formats it per stop_reason).
+  if (reply.diagnostics.wasEmpty) {
+    await logError({
+      admin: ctx.admin,
+      level: "warn",
+      source: SOURCE,
+      errorType: "coach_empty_reply",
+      message:
+        `Claude returned no text. stop_reason=${reply.diagnostics.stopReason ?? "unknown"}, ` +
+        `blocks=${JSON.stringify(reply.diagnostics.blockCounts)}`,
+      context: {
+        model: COACH_MODEL,
+        agentId: body.agentId,
+        stopReason: reply.diagnostics.stopReason,
+        blockCounts: reply.diagnostics.blockCounts,
+        userMessageLen: body.userMessage.length,
+        brainDocCount: coachCtx.brain.length,
+        historyTurnCount: historyForClaude.length,
+      },
+      agentId: body.agentId,
     });
   }
 
