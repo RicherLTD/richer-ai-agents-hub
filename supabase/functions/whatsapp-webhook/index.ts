@@ -47,6 +47,7 @@ import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
 import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { isQuietHourNow } from "../_shared/quietHours.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
@@ -575,6 +576,47 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
 }
 
 async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<void> {
+  // Quiet-hours check. Operator-configured window in Asia/Jerusalem during
+  // which the agent stays silent. Inbound row is already persisted; we
+  // just don't generate or send a reply. Operator gets a WhatsApp alert
+  // so they can step in if they want — the lead is not forgotten.
+  const { data: agentCfg } = await ctx.admin
+    .from("agents")
+    .select("quiet_hours_start_il, quiet_hours_end_il")
+    .eq("id", ctx.agentId)
+    .maybeSingle();
+  const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
+  const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
+  if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "quiet_hours_skip",
+      level: "info",
+      message: `agent is in quiet hours (${quietStart}-${quietEnd} IL) — skipping reply, alerting operators`,
+      context: { quiet_start_il: quietStart, quiet_end_il: quietEnd, lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    try {
+      await alertOperators({
+        admin: ctx.admin,
+        apiUrl: ctx.hookmyapp.apiUrl,
+        accessToken: ctx.hookmyapp.accessToken,
+        phoneNumberId: ctx.hookmyapp.phoneNumberId,
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+        leadPhone: ctx.leadPhone,
+        failureType: "quiet_hours",
+        failureDetail: `שעות שקט (${quietStart}:00-${quietEnd}:00) — ליד שלח הודעה והבוט לא ענה. תוכל לקפוץ ולענות ידני בדשבורד.`,
+        dashboardBaseUrl: ctx.dashboardBaseUrl,
+      });
+    } catch (alertErr) {
+      console.error(`[quiet_hours] alertOperators threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
+    }
+    return;
+  }
+
   const turn = await loadAgentTurnContext(ctx);
   if (!turn) return;
 
