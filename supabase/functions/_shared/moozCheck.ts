@@ -2,7 +2,7 @@
 //
 // Pre-send guard for `dispatch-scheduled-templates`: asks the lead's
 // booking system (Mooz today) "is this phone already booked for a Zoom?".
-// If yes, we cancel the queued WhatsApp template — the lead already has
+// If yes, we cancel the queued WhatsApp template -- the lead already has
 // a meeting on the books and a follow-up would be noise at best,
 // confusing at worst.
 //
@@ -13,27 +13,39 @@
 //   and the check is unit-testable with a fetch mock.
 //
 // Phone normalisation:
-//   Our DB stores `+972XXXXXXXXX`. Mooz historically stores `0XXXXXXXXX`
-//   but could change. To stay format-agnostic we send the last 9 digits
-//   only and let Mooz match by suffix. This is documented in the Mooz
-//   endpoint contract.
+//   Our DB stores `+972XXXXXXXXX` (E.164). Mooz also stores Israeli
+//   numbers but may use the local `05X...` form. We collapse both ends
+//   to the canonical 9-digit Israeli mobile suffix. Numbers that do not
+//   look Israeli (no country code 972 and no leading 0 for a 10-digit
+//   number) are REFUSED rather than blindly truncated -- otherwise a
+//   foreign number could share its last 9 digits with an unrelated
+//   Israeli lead's Mooz booking and cause a false cancel.
 //
-// Failure model — fail-open:
-//   Any HTTP error, timeout, or malformed response → we report
-//   `{ booked: false, reason: ... }` so the dispatcher sends the
-//   template. Logic: a duplicate WhatsApp follow-up is recoverable
-//   (annoying, not damaging). NOT sending a template to a cold lead
-//   because Mooz had a 503 means losing the lead entirely. We prefer
-//   the recoverable failure mode and surface the Mooz outage via
-//   `error_logs` for the operator to diagnose.
+// Failure model -- fail-CLOSED:
+//   Any HTTP error, timeout, malformed response, or non-Israeli phone
+//   number returns `{ booked: false, reason: <specific> }` with
+//   reason != "not_booked". The dispatcher treats *only*
+//   `reason === "not_booked"` as "safe to send"; every other outcome
+//   holds the row pending so a retry can resolve cleanly. This is the
+//   opposite of the original fail-open design and was changed after the
+//   operator made it explicit: "no template is sent without a clean
+//   Mooz answer".
+//
+//   Trade-off accepted: if Mooz is degraded for >3 cron ticks, the row
+//   exhausts its retries and is marked `failed`. The lead does not
+//   receive a first-touch template. The operator can replay from the
+//   DLQ once Mooz is back.
+//
+//   The dispatcher does NOT need to know how Mooz fails -- it only
+//   asks "is reason === 'not_booked'?". Adding a new failure variant
+//   here is safe; the dispatcher will continue to treat it as "hold".
 
 const MAX_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 500;
 const FETCH_TIMEOUT_MS = 5000;
-const ERROR_BODY_MAX_CHARS = 500;
 
 export interface MoozCheckArgs {
-  /** Mooz endpoint URL — typically `https://mooz.example.com/api/bookings/lookup`. */
+  /** Mooz endpoint URL -- typically `https://mooz.example.com/api/bookings/lookup`. */
   url: string;
   /** Bearer token shared with Mooz. Stored in Supabase secret `MOOZ_API_TOKEN`. */
   token: string;
@@ -45,28 +57,37 @@ export type MoozCheckOutcome =
   | { booked: true; scheduledAt: string | null; meetingId: string | null }
   | { booked: false; reason: "not_booked" }
   | { booked: false; reason: "bad_url"; detail: string }
-  | { booked: false; reason: "http_error"; status: number; errorBody: string }
+  | { booked: false; reason: "non_israeli_phone"; detail: string }
+  | { booked: false; reason: "http_error"; status: number }
   | { booked: false; reason: "network_error"; detail: string }
   | { booked: false; reason: "timeout" }
   | { booked: false; reason: "invalid_response"; detail: string };
 
 /**
- * Reduce any plausible phone format to "last 9 digits" so the Mooz side
- * can match on suffix regardless of how it stores numbers. Pure.
+ * Reduce an Israeli phone to its canonical 9-digit mobile suffix.
+ * Returns "" if the number is not in a recognised Israeli format.
  *
- *   "+972551234567"  -> "551234567"
- *   "972551234567"   -> "551234567"
- *   "0551234567"     -> "551234567"
- *   "551234567"      -> "551234567"
- *   "+972-55-123-4567" -> "551234567"
+ * Accepted shapes (after stripping non-digit characters):
+ *   "+972551234567" -> "551234567"   (strip 972 prefix)
+ *   "972551234567"  -> "551234567"   (same)
+ *   "0551234567"    -> "551234567"   (strip leading 0)
+ *   "551234567"     -> "551234567"   (already canonical)
+ *   "+972-55-1234567", "(055) 123-4567" -> "551234567"
  *
- * Returns "" for inputs with fewer than 9 digits. The caller should treat
- * "" as a non-checkable input and skip the lookup.
+ * Rejected (returns ""):
+ *   "+12025551234"  (US number; last 9 digits could collide with an
+ *                    Israeli mobile, causing a false Mooz match)
+ *   "+97225551234"  (Israeli landline -- 8 digits after country code;
+ *                    we only support mobile because only mobile carries
+ *                    WhatsApp)
+ *   too short / too long / blank
  */
 export function normalizePhoneForMooz(phone: string): string {
-  const digits = phone.replace(/\D/g, "");
-  if (digits.length < 9) return "";
-  return digits.slice(-9);
+  let digits = phone.replace(/\D/g, "");
+  if (digits.startsWith("972")) digits = digits.slice(3);
+  else if (digits.startsWith("0")) digits = digits.slice(1);
+  if (digits.length !== 9) return "";
+  return digits;
 }
 
 function looksLikeHttpUrl(s: string): boolean {
@@ -76,12 +97,6 @@ function looksLikeHttpUrl(s: string): boolean {
   } catch {
     return false;
   }
-}
-
-function truncateForLog(s: string): string {
-  return s.length > ERROR_BODY_MAX_CHARS
-    ? s.slice(0, ERROR_BODY_MAX_CHARS - 14) + "…[truncated]"
-    : s;
 }
 
 function sleep(ms: number): Promise<void> {
@@ -115,11 +130,15 @@ function coerceMoozOutcome(raw: unknown): MoozCheckOutcome | null {
 /**
  * Check Mooz for an existing booking on this phone. Never throws.
  *
- * Returns a discriminated union so the dispatcher can:
- *   - `{ booked: true }`  → cancel the queued template, tag conversation
- *   - `{ booked: false, reason: "not_booked" }` → send as planned
- *   - any other `booked: false` → send as planned AND log a warning so
- *     the operator knows the safety check isn't running clean.
+ * The dispatcher treats `reason === "not_booked"` as the ONLY signal
+ * that it's safe to send. Every other outcome (booked=true OR any
+ * error variant) means "do not send right now". See the module
+ * comment above for the fail-closed rationale.
+ *
+ * Token safety: errorBody from Mooz is NOT returned in the outcome
+ * any more. A misconfigured Mooz that echoes the `Authorization`
+ * header in a 401 body would otherwise leak the bearer token into
+ * our logs. Only the HTTP status is surfaced; the body is dropped.
  */
 export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOutcome> {
   if (!looksLikeHttpUrl(args.url)) {
@@ -133,8 +152,8 @@ export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOu
   if (!normalised) {
     return {
       booked: false,
-      reason: "invalid_response",
-      detail: `phone "${args.phone.slice(0, 20)}" yielded <9 digits after normalisation`,
+      reason: "non_israeli_phone",
+      detail: `phone "${args.phone.slice(0, 20)}" did not normalise to an Israeli 9-digit suffix`,
     };
   }
 
@@ -150,7 +169,6 @@ export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOu
   target.searchParams.set("phone", normalised);
 
   let lastStatus = 0;
-  let lastBody = "";
 
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const controller = new AbortController();
@@ -190,16 +208,21 @@ export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOu
         return outcome;
       }
 
-      // Non-2xx.
+      // Non-2xx. We deliberately do NOT capture the response body here --
+      // some servers echo Authorization headers in 4xx responses, which
+      // would leak the bearer token into our error_logs. Drain the body
+      // so the connection can be pooled, but discard.
       lastStatus = res.status;
-      const raw = await res.text().catch(() => "");
-      lastBody = truncateForLog(raw);
-      if (!isRetryableStatus(res.status)) {
+      try {
+        await res.text();
+      } catch {
+        /* ignore */
+      }
+if (!isRetryableStatus(res.status)) {
         return {
           booked: false,
           reason: "http_error",
           status: res.status,
-          errorBody: lastBody,
         };
       }
     } catch (networkErr) {
@@ -215,7 +238,6 @@ export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOu
         };
       }
       lastStatus = 0;
-      lastBody = networkErr instanceof Error ? networkErr.message : String(networkErr);
     } finally {
       clearTimeout(timeoutId);
     }
@@ -227,6 +249,5 @@ export async function checkMoozBooking(args: MoozCheckArgs): Promise<MoozCheckOu
     booked: false,
     reason: "http_error",
     status: lastStatus,
-    errorBody: lastBody,
   };
 }

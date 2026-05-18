@@ -3,43 +3,65 @@
 // Cron-fired endpoint that drains the scheduled_messages queue. Runs
 // every minute via pg_cron; each call:
 //
-//   1. Pulls up to N pending+due rows (FOR UPDATE SKIP LOCKED so
-//      concurrent runs don't double-send).
-//   2. For each row → if the agent has the Mooz pre-send check enabled,
-//      ask Mooz whether the lead already booked a Zoom. If yes, cancel
-//      the queued row, tag the conversation as zoom_scheduled, skip.
-//   3. Otherwise → send the WhatsApp Template via Meta Cloud API.
-//   4. On success → record an outbound row in messages, mark the
-//      scheduled row as 'sent' + stamp meta_message_id.
-//   5. On failure → bump attempts, log, mark 'failed' after 3 retries.
+//   1. CLAIMs up to N pending+due rows atomically (via the
+//      `claim_scheduled_messages` SQL function which uses
+//      `FOR UPDATE SKIP LOCKED` + stamps `claimed_at` so overlapping
+//      ticks cant double-pick the same row).
+//   2. For each row -> if the agent has the Mooz pre-send check enabled,
+//      ASK Mooz whether the lead already booked a Zoom.
+//        - booked=true                -> cancel row, tag conversation, skip
+//        - booked=false (not_booked)  -> send the template
+//        - anything else (timeout, http error, network, missing token,
+//          missing URL, non-Israeli phone)  -> FAIL-CLOSED: release the
+//          claim, bump attempts, do NOT send. The next cron tick will
+//          retry. After `MAX_ATTEMPTS_PER_ROW` failures the row is
+//          marked `failed` so we dont retry forever on a permanently
+//          dead Mooz.
+//   3. Otherwise (Mooz check not enabled for this agent) -> send.
+//   4. On send success -> insert outbound message + mark row `sent`.
+//   5. On send failure -> bump attempts; release the claim if still
+//      retryable, mark `failed` if exhausted.
 //
-// Why not just rely on the dispatcher running every minute and retrying
-// 'failed' rows? Because each minute is a fresh row scan — by capping
-// attempts on the row itself we prevent the same failing template from
-// hammering Meta for the full retention period of the row.
+// Why fail-CLOSED instead of fail-open?
+//   Operator explicit requirement: "no template is sent without a clean
+//   Mooz answer". A duplicate WhatsApp template to a lead who already
+//   booked is worse than a delayed first-touch. The trade-off is that a
+//   degraded Mooz can hold the queue; the operator can manually
+//   `UPDATE agents SET meeting_check_enabled = false WHERE name = ?`
+//   to bypass during an outage.
 //
-// Mooz check semantics (also documented in `_shared/moozCheck.ts`):
-//   - booked=true  → cancel row, tag conversation, do NOT send.
-//   - booked=false (not_booked) → send as planned.
-//   - booked=false with any error reason → fail-open: send as planned
-//     AND log a warning. A duplicate WhatsApp follow-up is recoverable;
-//     skipping a cold-lead first touch because Mooz is down is not.
+// Concurrency:
+//   `claim_scheduled_messages` (migration 0025) uses FOR UPDATE SKIP
+//   LOCKED in a CTE that also stamps `claimed_at`. The combination
+//   means a second concurrent dispatcher tick:
+//     - cannot see rows that are locked (SKIP LOCKED)
+//     - and after the first tick commits, sees them filtered out by
+//       `claimed_at IS NULL` (until the claim grace window expires).
+//   A 10-minute grace window built into the function handles crashed
+//   dispatchers automatically.
 //
-// Auth: shared-secret bearer (CRON_SHARED_SECRET) — same pattern as
-// re-engage-cold-leads. pg_cron can't carry JWTs.
+// Tick deadline:
+//   With up to 50 rows per tick, each row taking up to ~13 seconds
+//   under degraded Mooz, a single tick could exceed the Edge Function
+//   wall-clock limit. We stop picking new rows when within 10 seconds
+//   of the soft deadline.
+//
+// Auth: shared-secret bearer (CRON_SHARED_SECRET) -- same pattern as
+// re-engage-cold-leads. pg_cron cant carry JWTs.
 //
 // Required env:
 //   CRON_SHARED_SECRET, WHATSAPP_API_URL, WHATSAPP_ACCESS_TOKEN,
 //   WHATSAPP_PHONE_NUMBER_ID. Auto-injected: SUPABASE_*.
 // Optional env:
-//   MOOZ_API_TOKEN — Bearer token sent to the per-agent Mooz endpoint.
-//   When absent we skip the Mooz check globally and log a warning once
-//   per tick so the operator notices the misconfiguration.
+//   MOOZ_API_TOKEN -- Bearer token sent to the per-agent Mooz endpoint.
+//   Required IF any agent has `meeting_check_enabled = true`; if
+//   missing while checks are required, affected rows are held pending
+//   (fail-closed) until the token is configured.
 
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
-import { checkMoozBooking } from "../_shared/moozCheck.ts";
+import { checkMoozBooking, type MoozCheckOutcome } from "../_shared/moozCheck.ts";
 import {
   renderTemplatePreview,
   sendWhatsAppTemplate,
@@ -48,6 +70,7 @@ import {
 const SOURCE = "dispatch-scheduled-templates";
 const DEFAULT_BATCH = 50;
 const MAX_ATTEMPTS_PER_ROW = 3;
+const TICK_DEADLINE_MS = 50_000;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -56,13 +79,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-interface ScheduledRowAgent {
-  is_paused: boolean;
-  meeting_check_url: string | null;
-  meeting_check_enabled: boolean;
-}
-
-interface ScheduledRow {
+interface ClaimedRow {
   id: string;
   agent_id: string;
   conversation_id: string | null;
@@ -72,7 +89,9 @@ interface ScheduledRow {
   template_language: string;
   template_variables: unknown;
   attempts: number;
-  agents: ScheduledRowAgent;
+  agent_is_paused: boolean;
+  agent_meeting_check_url: string | null;
+  agent_meeting_check_enabled: boolean;
 }
 
 function variablesArray(raw: unknown): string[] {
@@ -86,13 +105,65 @@ function variablesArray(raw: unknown): string[] {
   return out;
 }
 
+/**
+ * Build the `error_logs.context` payload for a Mooz failure WITHOUT
+ * spreading the outcome. We pick safe fields explicitly so we never
+ * leak `errorBody` (which could echo the Bearer token in a 401 body)
+ * and so the shape is stable across MoozCheckOutcome variant changes.
+ */
+function moozContext(outcome: MoozCheckOutcome): Record<string, unknown> {
+  const base: Record<string, unknown> = { reason: outcome.booked ? "booked" : outcome.reason };
+  if (outcome.booked === false) {
+    if (outcome.reason === "http_error") base.httpStatus = outcome.status;
+    if (outcome.reason === "bad_url") base.detail = outcome.detail;
+    if (outcome.reason === "network_error") base.detail = outcome.detail;
+    if (outcome.reason === "invalid_response") base.detail = outcome.detail;
+    if (outcome.reason === "non_israeli_phone") base.detail = outcome.detail;
+  }
+  return base;
+}
+
+/** Release a claim so the next tick can retry this row. */
+async function holdRowPending(
+  admin: SupabaseClient,
+  rowId: string,
+  nextAttempts: number,
+  lastError: string,
+): Promise<void> {
+  await admin
+    .from("scheduled_messages")
+    .update({
+      claimed_at: null,
+      attempts: nextAttempts,
+      last_error: lastError,
+    })
+    .eq("id", rowId);
+}
+
+/** Mark a row terminally failed. claimed_at left in place (irrelevant once status != pending). */
+async function markRowFailed(
+  admin: SupabaseClient,
+  rowId: string,
+  nextAttempts: number,
+  lastError: string,
+): Promise<void> {
+  await admin
+    .from("scheduled_messages")
+    .update({
+      status: "failed",
+      attempts: nextAttempts,
+      last_error: lastError,
+    })
+    .eq("id", rowId);
+}
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response(null, { headers: corsHeaders });
   if (req.method !== "POST") {
     return jsonResponse({ error: "Method not allowed" }, 405);
   }
 
-  // Auth — same pattern as re-engage-cold-leads.
+  // Auth -- same pattern as re-engage-cold-leads.
   const cronSecret = Deno.env.get("CRON_SHARED_SECRET");
   if (!cronSecret) return jsonResponse({ error: "CRON_SHARED_SECRET not configured" }, 500);
   const auth = req.headers.get("Authorization") ?? "";
@@ -121,31 +192,25 @@ Deno.serve(async (req) => {
     ? limitRaw
     : DEFAULT_BATCH;
 
-  // Pull due pending rows. We also respect the kill switch via an inner
-  // join — if an agent is paused, its scheduled messages wait. We also
-  // join meeting_check_* so we know whether to ping Mooz before each send.
+  // Atomic claim: invisibility-guarantee that overlapping ticks wont
+  // see the same row. The RPC stamps `claimed_at = p_now`, so any
+  // concurrent claim with `claimed_at IS NULL` filter passes us by.
   const nowIso = new Date().toISOString();
-  const { data: candidates, error: pickErr } = await admin
-    .from("scheduled_messages")
-    .select(
-      "id, agent_id, conversation_id, lead_phone, lead_name, template_name, template_language, template_variables, attempts, agents!inner(is_paused, meeting_check_url, meeting_check_enabled)",
-    )
-    .eq("status", "pending")
-    .lte("scheduled_for", nowIso)
-    .eq("agents.is_paused", false)
-    .order("scheduled_for", { ascending: true })
-    .limit(limit);
-  if (pickErr) {
+  const { data: claimed, error: claimErr } = await admin.rpc("claim_scheduled_messages", {
+    p_limit: limit,
+    p_now: nowIso,
+  });
+  if (claimErr) {
     await logError({
       admin,
       source: SOURCE,
-      errorType: "pick_failed",
-      message: pickErr.message,
+      errorType: "claim_failed",
+      message: claimErr.message,
       context: { limit },
     });
-    return jsonResponse({ error: pickErr.message }, 500);
+    return jsonResponse({ error: claimErr.message }, 500);
   }
-  const rows = (candidates ?? []) as unknown as ScheduledRow[];
+  const rows = (claimed ?? []) as unknown as ClaimedRow[];
 
   const results = {
     picked: rows.length,
@@ -153,105 +218,168 @@ Deno.serve(async (req) => {
     failed: 0,
     exhausted: 0,
     skipped_already_booked: 0,
+    held_mooz_failed: 0,
+    deadline_break: false,
   };
 
-  // Operator-visible heads-up: at least one row has the Mooz check
-  // turned on but no token is configured. Log once per tick.
-  let warnedAboutMissingToken = false;
+  const tickStart = Date.now();
 
   for (const row of rows) {
-    const agent = row.agents;
-
-    // ─── Pre-send Mooz check ──────────────────────────────────────────
-    // Only fires when:
-    //   - agent has meeting_check_enabled = true AND has a configured URL
-    //   - MOOZ_API_TOKEN is set
-    // Any error path (network, 5xx, malformed body, bad URL) falls
-    // through to "send anyway" — a duplicate WhatsApp message is the
-    // recoverable failure mode.
-    if (agent?.meeting_check_enabled && agent.meeting_check_url) {
-      if (!moozToken) {
-        if (!warnedAboutMissingToken) {
-          warnedAboutMissingToken = true;
-          await logError({
-            admin,
-            source: SOURCE,
-            errorType: "mooz_token_missing",
-            level: "warn",
-            message:
-              "meeting_check_enabled is true for at least one agent but MOOZ_API_TOKEN is not configured — sending without the safety check",
-            context: { agent_id: row.agent_id },
-            agentId: row.agent_id,
-            conversationId: row.conversation_id,
-          });
-        }
-      } else {
-        const moozResult = await checkMoozBooking({
-          url: agent.meeting_check_url,
-          token: moozToken,
-          phone: row.lead_phone,
-        });
-
-        if (moozResult.booked) {
-          // Lead already has a Zoom — cancel the queued template, tag
-          // the conversation, skip the send.
-          results.skipped_already_booked++;
-          const ts = new Date().toISOString();
-          const scheduledAt = moozResult.scheduledAt ?? ts;
-
-          if (row.conversation_id) {
-            const { error: convErr } = await admin
-              .from("conversations")
-              .update({
-                current_tag: "zoom_scheduled",
-                status: "paused",
-                zoom_scheduled_at: scheduledAt,
-              })
-              .eq("id", row.conversation_id);
-            if (convErr) {
-              await logError({
-                admin,
-                source: SOURCE,
-                errorType: "mooz_skip_conv_update_failed",
-                level: "warn",
-                message: convErr.message,
-                context: { conversation_id: row.conversation_id },
-                agentId: row.agent_id,
-                conversationId: row.conversation_id,
-              });
-            }
-          }
-
-          await admin
-            .from("scheduled_messages")
-            .update({
-              status: "cancelled",
-              last_error: "mooz_already_booked",
-              attempts: row.attempts + 1,
-            })
-            .eq("id", row.id);
-          continue;
-        }
-
-        // Not booked — but distinguish "Mooz said no" from "Mooz had an
-        // error". The latter is operator-actionable; the former is the
-        // common case.
-        if (moozResult.reason !== "not_booked") {
-          await logError({
-            admin,
-            source: SOURCE,
-            errorType: `mooz_check_${moozResult.reason}`,
-            level: "warn",
-            message:
-              `Mooz pre-send check failed (${moozResult.reason}) — sending template anyway (fail-open)`,
-            context: { reason: moozResult.reason, ...moozResult },
-            agentId: row.agent_id,
-            conversationId: row.conversation_id,
-          });
-        }
+    // Soft deadline: stop picking up new rows when we are close to
+    // the Edge Function wall-clock limit. Released rows (claimed_at
+    // still null after the grace window or via explicit clearing on
+    // next tick) get a clean retry.
+    if (Date.now() - tickStart > TICK_DEADLINE_MS) {
+      results.deadline_break = true;
+      // Release the rest by clearing claimed_at so next tick picks them.
+      const remaining = rows.slice(rows.indexOf(row)).map((r) => r.id);
+      if (remaining.length > 0) {
+        await admin
+          .from("scheduled_messages")
+          .update({ claimed_at: null })
+          .in("id", remaining);
       }
+      break;
     }
-    // ─── End Mooz check ───────────────────────────────────────────────
+
+    // ----- Pre-send Mooz check (fail-closed) -----
+    if (row.agent_meeting_check_enabled) {
+      // Defensive: a CHECK constraint prevents this combination at the
+      // DB level, but if the constraint is ever dropped or bypassed we
+      // refuse to send rather than silently skipping the safety guard.
+      if (!row.agent_meeting_check_url) {
+        const nextAttempts = row.attempts + 1;
+        await logError({
+          admin,
+          source: SOURCE,
+          errorType: "mooz_url_missing",
+          level: "error",
+          message: "meeting_check_enabled=true but meeting_check_url is null \u2014 row held (fail-closed)",
+          context: { attempts: nextAttempts, max: MAX_ATTEMPTS_PER_ROW },
+          agentId: row.agent_id,
+          conversationId: row.conversation_id,
+        });
+        if (nextAttempts >= MAX_ATTEMPTS_PER_ROW) {
+          await markRowFailed(admin, row.id, nextAttempts, "mooz_url_missing");
+          results.exhausted++;
+        } else {
+          await holdRowPending(admin, row.id, nextAttempts, "mooz_url_missing");
+          results.held_mooz_failed++;
+        }
+        continue;
+      }
+
+      if (!moozToken) {
+        const nextAttempts = row.attempts + 1;
+        await logError({
+          admin,
+          source: SOURCE,
+          errorType: "mooz_token_missing",
+          level: "error",
+          message: "MOOZ_API_TOKEN missing while meeting_check_enabled=true \u2014 row held (fail-closed)",
+          context: { attempts: nextAttempts, max: MAX_ATTEMPTS_PER_ROW },
+          agentId: row.agent_id,
+          conversationId: row.conversation_id,
+        });
+        if (nextAttempts >= MAX_ATTEMPTS_PER_ROW) {
+          await markRowFailed(admin, row.id, nextAttempts, "mooz_token_missing");
+          results.exhausted++;
+        } else {
+          await holdRowPending(admin, row.id, nextAttempts, "mooz_token_missing");
+          results.held_mooz_failed++;
+        }
+        continue;
+      }
+
+      const moozResult = await checkMoozBooking({
+        url: row.agent_meeting_check_url,
+        token: moozToken,
+        phone: row.lead_phone,
+      });
+
+      if (moozResult.booked === true) {
+        // Lead already booked -- cancel the queued template, tag the
+        // conversation as zoom_scheduled, skip the send.
+        results.skipped_already_booked++;
+        const ts = new Date().toISOString();
+        const scheduledAt = moozResult.scheduledAt ?? ts;
+
+        if (row.conversation_id) {
+          const { error: convErr } = await admin
+            .from("conversations")
+            .update({
+              current_tag: "zoom_scheduled",
+              status: "paused",
+              zoom_scheduled_at: scheduledAt,
+            })
+            .eq("id", row.conversation_id);
+          if (convErr) {
+            await logError({
+              admin,
+              source: SOURCE,
+              errorType: "mooz_skip_conv_update_failed",
+              level: "warn",
+              message: convErr.message,
+              context: { conversation_id: row.conversation_id },
+              agentId: row.agent_id,
+              conversationId: row.conversation_id,
+            });
+          }
+        }
+
+        const { error: cancelErr } = await admin
+          .from("scheduled_messages")
+          .update({
+            status: "cancelled",
+            last_error: "mooz_already_booked",
+            attempts: row.attempts + 1,
+          })
+          .eq("id", row.id);
+        if (cancelErr) {
+          await logError({
+            admin,
+            source: SOURCE,
+            errorType: "mooz_cancel_row_failed",
+            level: "error",
+            message: cancelErr.message,
+            context: { scheduled_message_id: row.id },
+            agentId: row.agent_id,
+            conversationId: row.conversation_id,
+          });
+        }
+        continue;
+      }
+
+      if (moozResult.reason !== "not_booked") {
+        // FAIL-CLOSED: any Mooz failure (timeout, http error, network,
+        // invalid response, non-Israeli phone, bad url) holds the row.
+        const nextAttempts = row.attempts + 1;
+        const exhausted = nextAttempts >= MAX_ATTEMPTS_PER_ROW;
+        const errorTypeReason = moozResult.reason.replace(/[^a-z0-9_]/g, "_");
+        await logError({
+          admin,
+          source: SOURCE,
+          errorType: `mooz_check_${errorTypeReason}`,
+          level: exhausted ? "error" : "warn",
+          message: exhausted
+            ? `Mooz check failed (${moozResult.reason}); attempts exhausted \u2014 row marked failed`
+            : `Mooz check failed (${moozResult.reason}); row held for retry (attempt ${nextAttempts}/${MAX_ATTEMPTS_PER_ROW})`,
+          context: { ...moozContext(moozResult), attempts: nextAttempts, max: MAX_ATTEMPTS_PER_ROW },
+          agentId: row.agent_id,
+          conversationId: row.conversation_id,
+        });
+        if (exhausted) {
+          await markRowFailed(admin, row.id, nextAttempts, `mooz_${errorTypeReason}`);
+          results.exhausted++;
+        } else {
+          await holdRowPending(admin, row.id, nextAttempts, `mooz_${errorTypeReason}`);
+          results.held_mooz_failed++;
+        }
+        continue;
+      }
+      // moozResult.reason === "not_booked" -- safe to send.
+    }
+    // ----- End Mooz check -----
 
     const variables = variablesArray(row.template_variables);
     const send = await sendWhatsAppTemplate({
@@ -267,7 +395,6 @@ Deno.serve(async (req) => {
     if (send.ok) {
       results.sent++;
       const ts = new Date().toISOString();
-      // Outbound row so the dashboard shows the message in the thread.
       if (row.conversation_id) {
         await admin.from("messages").insert({
           conversation_id: row.conversation_id,
@@ -317,20 +444,17 @@ Deno.serve(async (req) => {
       conversationId: row.conversation_id,
     });
 
-    await admin
-      .from("scheduled_messages")
-      .update({
-        status: exhausted ? "failed" : "pending",
-        attempts: nextAttempts,
-        last_error: send.errorBody,
-      })
-      .eq("id", row.id);
+    if (exhausted) {
+      await markRowFailed(admin, row.id, nextAttempts, send.errorBody || "send_failed");
+    } else {
+      await holdRowPending(admin, row.id, nextAttempts, send.errorBody || "send_failed");
+    }
   }
 
-  // Use renderTemplatePreview in a typeof guard so dead-code analysis
-  // keeps the import alive even when no rows are picked this tick.
+  // Anchor the import so dead-code analysis doesnt drop it when the
+  // batch is empty.
   if (rows.length === 0 && typeof renderTemplatePreview !== "function") {
-    // unreachable — purely to anchor the import
+    // unreachable
   }
 
   return jsonResponse({ ok: true, ...results });
