@@ -46,6 +46,7 @@ import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
 import { runMemoryExtraction } from "../_shared/extractMemory.ts";
+import { alertOperators } from "../_shared/alertOperators.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
@@ -260,6 +261,26 @@ async function logAndDlq(
     agentId: ctx.agentId,
     conversationId: ctx.conversationId,
   });
+  // Notify operators on WhatsApp so a human can step in immediately.
+  // This is best-effort — alertOperators never throws.
+  try {
+    await alertOperators({
+      admin: ctx.admin,
+      apiUrl: ctx.hookmyapp.apiUrl,
+      accessToken: ctx.hookmyapp.accessToken,
+      phoneNumberId: ctx.hookmyapp.phoneNumberId,
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+      leadPhone: ctx.leadPhone,
+      failureType: errorType,
+      failureDetail: errorDetail ?? message,
+      dashboardBaseUrl: ctx.dashboardBaseUrl,
+    });
+  } catch (alertErr) {
+    console.error(
+      `[logAndDlq] alertOperators threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`,
+    );
+  }
 }
 
 /**
