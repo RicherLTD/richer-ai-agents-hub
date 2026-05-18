@@ -588,32 +588,22 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
   const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
   if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
+    // Quiet hours = silent for everyone. The operator explicitly does
+    // NOT want WhatsApp alerts during the night — the whole point of
+    // quiet hours is the operator's off-time. The inbound is persisted
+    // (visible in the dashboard come morning) and the agent simply does
+    // not reply. Logged at info level so it shows in error_logs as an
+    // audit trail without paging anyone.
     await logError({
       admin: ctx.admin,
       source: AGENT_LOOP_SOURCE,
       errorType: "quiet_hours_skip",
       level: "info",
-      message: `agent is in quiet hours (${quietStart}-${quietEnd} IL) — skipping reply, alerting operators`,
+      message: `agent is in quiet hours (${quietStart}-${quietEnd} IL) — skipping reply (no alerts during quiet hours)`,
       context: { quiet_start_il: quietStart, quiet_end_il: quietEnd, lead_phone: ctx.leadPhone },
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
-    try {
-      await alertOperators({
-        admin: ctx.admin,
-        apiUrl: ctx.hookmyapp.apiUrl,
-        accessToken: ctx.hookmyapp.accessToken,
-        phoneNumberId: ctx.hookmyapp.phoneNumberId,
-        agentId: ctx.agentId,
-        conversationId: ctx.conversationId,
-        leadPhone: ctx.leadPhone,
-        failureType: "quiet_hours",
-        failureDetail: `שעות שקט (${quietStart}:00-${quietEnd}:00) — ליד שלח הודעה והבוט לא ענה. תוכל לקפוץ ולענות ידני בדשבורד.`,
-        dashboardBaseUrl: ctx.dashboardBaseUrl,
-      });
-    } catch (alertErr) {
-      console.error(`[quiet_hours] alertOperators threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`);
-    }
     return;
   }
 
