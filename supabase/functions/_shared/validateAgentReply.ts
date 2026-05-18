@@ -62,11 +62,14 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     pattern: /\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)/,
     reason: "currency_mention",
   },
-  // Income guarantees: classical forms (מובטח / מבטיח / ערבות) PLUS the
-  // sales-y "תרוויח/תכניס/תעשה X בחודש/בשנה" pattern which sneaks past
-  // the מובטח filter.
+  // Income guarantees — narrow set of legally-binding terms ONLY.
+  // "מובטח" (passive guarantee) and "ערבות" (warranty) are stop-words.
+  // Note: "מבטיח" (active verb "promise") was REMOVED from this list
+  // because the prompt teaches a nuanced "I can't promise X but I can
+  // promise Y if you do Z" pattern that legitimately needs the verb.
+  // Specific income amounts are still blocked by the currency rules above.
   {
-    pattern: /מובטח(?:ת|ים|ות)?|מבטיח(?:ה|ים|ות)?|ערבות/,
+    pattern: /מובטח(?:ת|ים|ות)?|ערבות/,
     reason: "income_guarantee",
   },
   {
