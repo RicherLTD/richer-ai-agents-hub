@@ -89,12 +89,26 @@ interface MetaMetadata {
   display_phone_number?: string;
   phone_number_id?: string;
 }
+interface MetaStatusError {
+  code?: number;
+  title?: string;
+  message?: string;
+  error_data?: { details?: string };
+}
+interface MetaStatus {
+  id?: string;
+  status?: string;
+  timestamp?: string;
+  recipient_id?: string;
+  errors?: ReadonlyArray<MetaStatusError>;
+}
 interface MetaChange {
   field?: string;
   value?: {
     messages?: MetaMessage[];
     contacts?: MetaContact[];
     metadata?: MetaMetadata;
+    statuses?: MetaStatus[];
   };
 }
 interface MetaEntry {
@@ -777,6 +791,71 @@ interface IngestEnv {
   openaiApiKey: string | undefined;
 }
 
+
+/**
+ * Process a delivery-status callback from Meta. Outbound messages we ship
+ * (template sends from the dispatcher, manual sends from the dashboard)
+ * get one of these for each transition: sent → delivered → read, or
+ * failed with a Meta error code.
+ *
+ * Without this handler the system was blind to the "Meta accepted my
+ * request but couldn't actually deliver" failure mode — the operator saw
+ * the outbound row in the dashboard and assumed it landed, even when Meta
+ * had silently rejected the recipient (wrong number, missing opt-in,
+ * template-quality throttling, etc).
+ */
+async function ingestDeliveryStatus(
+  admin: SupabaseClient,
+  agentId: string,
+  status: MetaStatus,
+): Promise<void> {
+  const wamid = status.id;
+  const recipient = status.recipient_id ?? null;
+  const statusName = status.status;
+  if (!wamid || !statusName) return;
+
+  // Look up our messages row so failures get tied to the right conversation.
+  const { data: row } = await admin
+    .from("messages")
+    .select("conversation_id")
+    .eq("meta_message_id", wamid)
+    .maybeSingle();
+  const conversationId = (row?.conversation_id as string | undefined) ?? null;
+
+  if (statusName === "failed") {
+    const firstError = status.errors?.[0];
+    await logError({
+      admin,
+      source: "whatsapp-status-callback",
+      errorType: "meta_delivery_failed",
+      message: `Meta delivery failed — code=${firstError?.code ?? "?"} title="${firstError?.title ?? ""}"`,
+      context: {
+        wamid,
+        recipient,
+        meta_error_code: firstError?.code,
+        meta_error_title: firstError?.title,
+        meta_error_message: firstError?.message,
+        meta_error_details: firstError?.error_data?.details,
+      },
+      agentId,
+      conversationId,
+    });
+    return;
+  }
+
+  // Non-failure status — log at info so we have an audit trail.
+  await logError({
+    admin,
+    source: "whatsapp-status-callback",
+    errorType: `meta_status_${statusName}`,
+    level: "info",
+    message: `Meta status: ${statusName} for ${recipient ?? "unknown"}`,
+    context: { wamid, recipient, status: statusName, ts: status.timestamp },
+    agentId,
+    conversationId,
+  });
+}
+
 async function ingestInboundMessage(
   admin: SupabaseClient,
   agentId: string,
@@ -1086,6 +1165,13 @@ Deno.serve(async (req) => {
   for (const entry of payload.entry ?? []) {
     for (const change of entry.changes ?? []) {
       if (change.field !== "messages") continue;
+      // Outbound delivery status callbacks from Meta — sent / delivered /
+      // read / failed. Must process BEFORE inbound messages because the
+      // same webhook payload can contain both, and a `failed` status
+      // resolves "why didn't this lead get my template" instantly.
+      for (const status of (change.value?.statuses ?? []) as ReadonlyArray<MetaStatus>) {
+        await ingestDeliveryStatus(admin, agentId, status);
+      }
       const contacts = change.value?.contacts ?? [];
       for (const message of change.value?.messages ?? []) {
         const outcome = await ingestInboundMessage(admin, agentId, contacts, message, ingestEnv);

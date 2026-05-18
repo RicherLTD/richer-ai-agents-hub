@@ -92,10 +92,17 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("תקבל 10,000 שקלים בחודש").ok).toBe(false);
   });
 
-  it("blocks income guarantee language", () => {
-    expect(validateAgentReply("אני מבטיח לך שתרוויח").ok).toBe(false);
+  it("blocks the legally-binding guarantee terms (מובטח / ערבות)", () => {
     expect(validateAgentReply("יש לנו ערבות מלאה").ok).toBe(false);
     expect(validateAgentReply("התוצאה מובטחת").ok).toBe(false);
+    expect(validateAgentReply("תרוויח 5000 בחודש").ok).toBe(false);
+  });
+
+  it("ALLOWS the verb 'להבטיח' when not paired with a concrete amount", () => {
+    expect(validateAgentReply("אני לא יכול להבטיח לך סכום מדויק").ok).toBe(true);
+    expect(
+      validateAgentReply("אני יכול להבטיח שאם תעשה את הצעדים אין סיבה שלא תצליח").ok,
+    ).toBe(true);
   });
 
   it("does not false-positive on legitimate Hebrew replies", () => {
