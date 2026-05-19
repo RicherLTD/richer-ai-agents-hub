@@ -47,6 +47,7 @@ import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
 import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { isQuietHourNow } from "../_shared/quietHours.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
@@ -643,6 +644,37 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
 }
 
 async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<void> {
+  // Quiet-hours check. Operator-configured window in Asia/Jerusalem during
+  // which the agent stays silent. Inbound row is already persisted; we
+  // just don't generate or send a reply. Operator gets a WhatsApp alert
+  // so they can step in if they want — the lead is not forgotten.
+  const { data: agentCfg } = await ctx.admin
+    .from("agents")
+    .select("quiet_hours_start_il, quiet_hours_end_il")
+    .eq("id", ctx.agentId)
+    .maybeSingle();
+  const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
+  const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
+  if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
+    // Quiet hours = silent for everyone. The operator explicitly does
+    // NOT want WhatsApp alerts during the night — the whole point of
+    // quiet hours is the operator's off-time. The inbound is persisted
+    // (visible in the dashboard come morning) and the agent simply does
+    // not reply. Logged at info level so it shows in error_logs as an
+    // audit trail without paging anyone.
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "quiet_hours_skip",
+      level: "info",
+      message: `agent is in quiet hours (${quietStart}-${quietEnd} IL) — skipping reply (no alerts during quiet hours)`,
+      context: { quiet_start_il: quietStart, quiet_end_il: quietEnd, lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return;
+  }
+
   const turn = await loadAgentTurnContext(ctx);
   if (!turn) return;
 
@@ -653,7 +685,13 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
       () =>
         ctx.anthropic.messages.create({
           model: CLAUDE_MODEL,
-          max_tokens: 1024,
+          // 1024 was too tight once v6/v7 + adaptive-thinking landed —
+          // adaptive thinking can use most of the budget on internal
+          // reasoning and return an empty visible reply (the Natan
+          // claude_invalid_reply / reply_is_null incident at 18:45). 2048
+          // gives the model headroom for thinking AND a 1-3 sentence
+          // visible response.
+          max_tokens: 2048,
           thinking: { type: "adaptive" },
           system: turn.promptContent,
           messages: turn.claudeMessages,
@@ -1220,8 +1258,12 @@ Deno.serve(async (req) => {
     const token = url.searchParams.get("hub.verify_token");
 
     if (challenge !== null) {
-      if (token !== null && token !== verifyToken) {
-        console.warn("whatsapp-webhook: GET challenge with bad verify_token");
+      // The token MUST be present AND match. Earlier version only checked
+      // the match when `token !== null`, leaving the door open for a
+      // tokenless caller to fish the endpoint and confirm arbitrary
+      // challenge values get echoed.
+      if (token === null || token !== verifyToken) {
+        console.warn("whatsapp-webhook: GET challenge rejected (missing or bad verify_token)");
         return new Response("Forbidden", { status: 403 });
       }
       return new Response(challenge, {

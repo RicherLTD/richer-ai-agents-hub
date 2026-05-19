@@ -260,6 +260,18 @@ Deno.serve(async (req) => {
   }
   const payload = coercePayload(raw);
   if (!payload) {
+    await logError({
+      admin,
+      source: SOURCE,
+      errorType: "lead_register_validation_failed",
+      level: "warn",
+      message: "rejected an inbound payload — required field missing or phone format invalid",
+      context: {
+        raw_keys: raw && typeof raw === "object"
+          ? Object.keys(raw as Record<string, unknown>)
+          : [],
+      },
+    });
     return jsonResponse(
       {
         error:

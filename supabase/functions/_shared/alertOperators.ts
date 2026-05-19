@@ -132,6 +132,19 @@ export async function alertOperators(input: AlertOperatorsInput): Promise<AlertR
   const ctx = await gatherAlertContext(input.admin, input.agentId, input.conversationId);
   if (ctx.phones.length === 0) return { attempted: 0, succeeded: 0, failed: 0 };
 
+  // Loop prevention: if the operator has misconfigured the bot's own
+  // WABA number into operator_alert_phones, every agent-loop failure
+  // would alert the bot itself — the alert lands as inbound, fires the
+  // agent loop, which may fail, which sends another alert. Filter the
+  // bot's own number out before sending.
+  const botSelf = Deno.env.get("WHATSAPP_BOT_PHONE") ??
+    Deno.env.get("WHATSAPP_PHONE_NUMBER_DISPLAY") ?? null;
+  const safePhones = botSelf
+    ? ctx.phones.filter((p) => p !== botSelf)
+    : ctx.phones;
+  if (safePhones.length === 0) return { attempted: 0, succeeded: 0, failed: 0 };
+  ctx.phones = safePhones;
+
   const body = buildAlertBody({
     leadName: ctx.leadName,
     leadPhone: input.leadPhone,
