@@ -534,29 +534,97 @@ async function sendAndRecordReply(
  * This function NEVER throws — it's called inside fireAndForget and an
  * unhandled rejection there would just go to console.
  */
+// Tags that mean "do not auto-reply to this conversation". Either the
+// lead has been handed off to a human, opted out, escalated, or is
+// underage. The agent loop must skip these even if status='active'.
+const BLOCKING_TAGS: ReadonlySet<string> = new Set([
+  "zoom_scheduled",
+  "opted_out",
+  "requires_human",
+  "underage",
+]);
+
 async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
-  // Atomic per-conversation lock to prevent the duplicate-reply race that
-  // happens when a lead fires multiple messages within seconds. Meta
-  // delivers each as a separate webhook POST → without a DB-level lock
-  // we'd run two parallel agent loops and send two replies. The UPDATE
-  // is atomic: only one instance sees the lock as available; the others
-  // see rowCount=0 and bail. Lock auto-expires after 60s if a worker
-  // crashes mid-flight.
+  // Atomic per-conversation lock + conversation-status gate. Two failure
+  // modes are folded into one UPDATE:
+  //
+  //   1. Duplicate-reply race: Meta delivers each user message as its own
+  //      webhook POST; when a lead fires multiple messages in seconds we
+  //      get parallel agent loops. The atomic UPDATE-WHERE means only one
+  //      instance claims the lock; the rest see rowCount=0 and bail.
+  //
+  //   2. Paused conversation: when a lead has been handed off
+  //      (current_tag in BLOCKING_TAGS) or the operator paused the row
+  //      (status != 'active'), the bot must not reply. Until 2026-05-19
+  //      we relied on `status='paused'` alone — but the ingest upsert
+  //      silently overwrote that back to 'active' on every inbound, so
+  //      pause never stuck. The upsert is fixed in the same PR; this gate
+  //      is the defense-in-depth half.
+  //
+  // We do not include the tag/status filter on the UPDATE itself because
+  // `NOT IN (...)` does not match NULL in Postgres — new leads (NULL tag)
+  // would be filtered out. Cheaper to claim the lock first, then check
+  // tag/status on the returned row, and release if blocked.
   const lockTimeoutAt = new Date(Date.now() - 60_000).toISOString();
   const { data: claim } = await ctx.admin
     .from("conversations")
     .update({ agent_lock_taken_at: new Date().toISOString() })
     .eq("id", ctx.conversationId)
+    .eq("status", "active")
     .or(`agent_lock_taken_at.is.null,agent_lock_taken_at.lt.${lockTimeoutAt}`)
-    .select("id");
+    .select("id, current_tag, status");
   if (!claim || claim.length === 0) {
+    // Distinguish "lock contention" from "conversation paused" so the
+    // operator sees the right reason in error_logs.
+    const { data: state } = await ctx.admin
+      .from("conversations")
+      .select("status, current_tag")
+      .eq("id", ctx.conversationId)
+      .maybeSingle();
+    const status = (state?.status as string | null | undefined) ?? null;
+    const tag = (state?.current_tag as string | null | undefined) ?? null;
+    if (status !== null && status !== "active") {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "conversation_paused_skip",
+        level: "info",
+        message: `conversation paused, agent loop skipped — status=${status} tag=${tag ?? "null"}`,
+        context: { status, current_tag: tag, lead_phone: ctx.leadPhone },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    } else {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "duplicate_reply_skipped",
+        level: "info",
+        message: "agent lock held by another concurrent webhook delivery — skipping",
+        context: { lead_phone: ctx.leadPhone },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    }
+    return;
+  }
+
+  const claimedTag = (claim[0] as { current_tag?: string | null }).current_tag ?? null;
+  if (claimedTag && BLOCKING_TAGS.has(claimedTag)) {
+    // Lock was claimed but the conversation is in a blocking tag — release
+    // the lock and log the skip. The lock-release path mirrors the finally
+    // block below.
+    await ctx.admin
+      .from("conversations")
+      .update({ agent_lock_taken_at: null })
+      .eq("id", ctx.conversationId);
     await logError({
       admin: ctx.admin,
       source: AGENT_LOOP_SOURCE,
-      errorType: "duplicate_reply_skipped",
+      errorType: "conversation_tag_blocked_skip",
       level: "info",
-      message: "agent lock held by another concurrent webhook delivery — skipping",
-      context: { lead_phone: ctx.leadPhone },
+      message: `current_tag=${claimedTag} is in BLOCKING_TAGS — agent loop skipped`,
+      context: { current_tag: claimedTag, lead_phone: ctx.leadPhone },
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
@@ -969,36 +1037,94 @@ async function ingestInboundMessage(
   const ts = metaTimestampToIso(message.timestamp);
   const leadName = contacts.find((c) => c.wa_id === phone)?.profile?.name ?? null;
 
-  // Race-safe conversation upsert. Concurrent webhook deliveries for the
-  // same new lead can both hit this — the unique index resolves the
-  // conflict and only one row is created.
-  const { data: upserted, error: upsertErr } = await admin
+  // Race-safe ensure-conversation. We used to `.upsert(...)` with
+  // status='active' + source_funnel='whatsapp_sandbox' in the same payload,
+  // but Supabase's upsert applies those fields on BOTH insert and update
+  // paths — which silently resurrected paused conversations and rewrote
+  // first-touch attribution on every inbound message. The handoff bug of
+  // 2026-05-19 (lead tagged zoom_scheduled but bot kept replying) traced
+  // back to that overwrite.
+  //
+  // Pattern now: UPDATE first (hot path — lead already exists), INSERT only
+  // if UPDATE matched zero rows. Concurrency on brand-new leads is handled
+  // by catching the unique-violation (23505) and falling back to UPDATE.
+  // On UPDATE we touch only `lead_name` and `last_interaction_at`; `status`
+  // and `source_funnel` are insert-once and never overwritten.
+  const safeUpdates: Record<string, unknown> = { last_interaction_at: ts };
+  if (leadName) safeUpdates.lead_name = leadName;
+  const { data: updatedRows, error: updErr } = await admin
     .from("conversations")
-    .upsert(
-      {
-        agent_id: agentId,
-        lead_phone: phone,
-        lead_name: leadName,
-        status: "active",
-        source_funnel: "whatsapp_sandbox",
-        last_interaction_at: ts,
-      },
-      { onConflict: "agent_id,lead_phone", ignoreDuplicates: false },
-    )
-    .select("id")
-    .single();
-  if (upsertErr || !upserted) {
+    .update(safeUpdates)
+    .eq("agent_id", agentId)
+    .eq("lead_phone", phone)
+    .select("id");
+  if (updErr) {
     await logError({
       admin,
       source: SOURCE,
-      errorType: "conversation_upsert_failed",
-      message: upsertErr?.message ?? "conversation upsert returned no row",
-      context: { phone, agentId, dbCode: upsertErr?.code ?? null },
+      errorType: "conversation_update_failed",
+      message: updErr.message,
+      context: { phone, agentId, dbCode: updErr.code ?? null },
       agentId,
     });
     return null;
   }
-  const conversationId = upserted.id as string;
+  let conversationId: string | null = updatedRows && updatedRows.length > 0
+    ? (updatedRows[0].id as string)
+    : null;
+  if (!conversationId) {
+    const { data: inserted, error: insErr } = await admin
+      .from("conversations")
+      .insert({
+        agent_id: agentId,
+        lead_phone: phone,
+        lead_name: leadName,
+        source_funnel: "whatsapp_sandbox",
+        last_interaction_at: ts,
+        // status omitted on purpose — column default ('active') applies.
+      })
+      .select("id")
+      .maybeSingle();
+    if (insErr?.code === "23505") {
+      // Concurrent webhook for the same brand-new lead inserted first.
+      // Re-run UPDATE so our last_interaction_at lands on the winning row.
+      const { data: raced, error: racedErr } = await admin
+        .from("conversations")
+        .update(safeUpdates)
+        .eq("agent_id", agentId)
+        .eq("lead_phone", phone)
+        .select("id")
+        .maybeSingle();
+      if (racedErr || !raced) {
+        await logError({
+          admin,
+          source: SOURCE,
+          errorType: "conversation_race_recovery_failed",
+          message: racedErr?.message ?? "conflict but no row visible on re-read",
+          context: { phone, agentId, dbCode: racedErr?.code ?? null },
+          agentId,
+        });
+        return null;
+      }
+      conversationId = raced.id as string;
+    } else if (insErr || !inserted) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "conversation_insert_failed",
+        message: insErr?.message ?? "insert returned no row",
+        context: { phone, agentId, dbCode: insErr?.code ?? null },
+        agentId,
+      });
+      return null;
+    } else {
+      conversationId = inserted.id as string;
+    }
+  }
+  if (!conversationId) {
+    // Defensive — every path above either sets conversationId or returns null.
+    return null;
+  }
 
   const rawType = normaliseType(message.type);
   let type: MessageType = rawType;

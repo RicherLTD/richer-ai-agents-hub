@@ -23,6 +23,7 @@ describe("coerceExtractedMemory", () => {
       q5_urgency: null,
       q6_investment: null,
       q7_email: null,
+      meeting_consented: false,
       conversation_summary: null,
       primary_objection: null,
       red_flags: [],
@@ -39,6 +40,7 @@ describe("coerceExtractedMemory", () => {
       q5_urgency: "תוך כמה חודשים",
       q6_investment: "עד 10,000 ש\"ח",
       q7_email: "israel@gmail.com",
+      meeting_consented: true,
       conversation_summary: "ליד צעיר עם רקע בבינה מלאכותית, מחפש הכנסה נוספת.",
       primary_objection: "timing",
       red_flags: [],
@@ -95,6 +97,17 @@ describe("coerceExtractedMemory", () => {
     expect(out?.q2_motivation).toBeNull();
     expect(out?.q3_dream_change).toBe("לעבוד מהבית");
   });
+
+  it("treats meeting_consented as strict boolean true — truthy values are NOT enough", () => {
+    // Defending against the model returning "true" / 1 / "yes" instead of true.
+    // Consent is sacred; only literal `true` flips the switch.
+    expect(coerceExtractedMemory({ meeting_consented: true })?.meeting_consented).toBe(true);
+    expect(coerceExtractedMemory({ meeting_consented: false })?.meeting_consented).toBe(false);
+    expect(coerceExtractedMemory({ meeting_consented: "true" })?.meeting_consented).toBe(false);
+    expect(coerceExtractedMemory({ meeting_consented: 1 })?.meeting_consented).toBe(false);
+    expect(coerceExtractedMemory({ meeting_consented: "yes" })?.meeting_consented).toBe(false);
+    expect(coerceExtractedMemory({})?.meeting_consented).toBe(false);
+  });
 });
 
 describe("decideConversationTag", () => {
@@ -106,6 +119,7 @@ describe("decideConversationTag", () => {
     q5_urgency: null,
     q6_investment: null,
     q7_email: null,
+    meeting_consented: false,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],
@@ -129,6 +143,12 @@ describe("decideConversationTag", () => {
   it("returns 'requires_human' for any other non-empty red_flag set", () => {
     expect(
       decideConversationTag({ ...baseMemory, red_flags: ["mental distress"] }, null),
+    ).toBe("requires_human");
+  });
+
+  it("returns 'requires_human' for the new vulnerable_financial red flag", () => {
+    expect(
+      decideConversationTag({ ...baseMemory, red_flags: ["vulnerable_financial"] }, null),
     ).toBe("requires_human");
   });
 
@@ -162,6 +182,7 @@ describe("decideFunnelStage", () => {
     q5_urgency: null,
     q6_investment: null,
     q7_email: null,
+    meeting_consented: false,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],
@@ -251,12 +272,17 @@ describe("shouldTriggerZoomHandoff", () => {
     q5_urgency: null,
     q6_investment: null,
     q7_email: null,
+    meeting_consented: false,
     conversation_summary: null,
     primary_objection: null,
     red_flags: [],
     notes_for_advisor: null,
   };
 
+  // A fully-qualified lead: q1-q5 answered AND email collected. The
+  // meeting_consented_at timestamp is supplied at the call site (not on
+  // ExtractedMemory) because the orchestrator resolves it from the DB-side
+  // first-observation timestamp.
   const fullyAnsweredMemory = {
     ...baseMemory,
     q1_age: 28,
@@ -264,28 +290,45 @@ describe("shouldTriggerZoomHandoff", () => {
     q3_dream_change: "חופש פיננסי",
     q4_blocker: "אין ניסיון",
     q5_urgency: "בחודש הקרוב",
+    q7_email: "lead@example.com",
   };
 
-  it("triggers on fresh cold → done transition for a clean lead", () => {
-    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "cold", "done")).toBe(true);
+  const CONSENT_TS = "2026-05-19T06:23:07.741Z";
+
+  it("triggers on fresh cold → done transition when consent + email + no flags", () => {
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "cold", "done", CONSENT_TS),
+    ).toBe(true);
   });
 
   it("triggers on fresh mid → done transition for a clean lead", () => {
-    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "mid", "done")).toBe(true);
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "mid", "done", CONSENT_TS),
+    ).toBe(true);
   });
 
   it("does NOT trigger when nextStage is null (no stage change)", () => {
-    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", null)).toBe(false);
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", null, CONSENT_TS),
+    ).toBe(false);
   });
 
   it("does NOT trigger when nextStage is mid", () => {
     expect(
-      shouldTriggerZoomHandoff({ ...baseMemory, q1_age: 25 }, null, "cold", "mid"),
+      shouldTriggerZoomHandoff(
+        { ...fullyAnsweredMemory, q5_urgency: null },
+        null,
+        "cold",
+        "mid",
+        CONSENT_TS,
+      ),
     ).toBe(false);
   });
 
   it("does NOT trigger when already done (re-extraction race)", () => {
-    expect(shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", "done")).toBe(false);
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "done", "done", CONSENT_TS),
+    ).toBe(false);
   });
 
   it("does NOT trigger when red_flags are present (escalate to human instead)", () => {
@@ -295,6 +338,7 @@ describe("shouldTriggerZoomHandoff", () => {
         null,
         "mid",
         "done",
+        CONSENT_TS,
       ),
     ).toBe(false);
   });
@@ -306,21 +350,76 @@ describe("shouldTriggerZoomHandoff", () => {
         "underage",
         "mid",
         "done",
+        CONSENT_TS,
       ),
     ).toBe(false);
   });
 
   it("does NOT trigger when conversation is already zoom_scheduled", () => {
     expect(
-      shouldTriggerZoomHandoff(fullyAnsweredMemory, "zoom_scheduled", "mid", "done"),
+      shouldTriggerZoomHandoff(
+        fullyAnsweredMemory,
+        "zoom_scheduled",
+        "mid",
+        "done",
+        CONSENT_TS,
+      ),
     ).toBe(false);
   });
 
   it("does NOT trigger for opted_out / ghosted / requires_human tags", () => {
     for (const tag of ["opted_out", "ghosted", "requires_human"]) {
       expect(
-        shouldTriggerZoomHandoff(fullyAnsweredMemory, tag, "mid", "done"),
+        shouldTriggerZoomHandoff(fullyAnsweredMemory, tag, "mid", "done", CONSENT_TS),
       ).toBe(false);
     }
+  });
+
+  it("does NOT trigger when meetingConsentedAt is null — consent is mandatory", () => {
+    expect(
+      shouldTriggerZoomHandoff(fullyAnsweredMemory, null, "mid", "done", null),
+    ).toBe(false);
+  });
+
+  it("does NOT trigger when q7_email is null — Mooz needs it", () => {
+    expect(
+      shouldTriggerZoomHandoff(
+        { ...fullyAnsweredMemory, q7_email: null },
+        null,
+        "mid",
+        "done",
+        CONSENT_TS,
+      ),
+    ).toBe(false);
+  });
+
+  // Regression test for the 2026-05-19 Hodaya case. The lead answered q1-q5
+  // (per the over-eager extractor), the funnel went to done, but the lead
+  // never agreed to a Zoom and had no email AND was vulnerable_financial.
+  // Under the new rules this MUST be a hard no on all three blockers.
+  it("regression: Hodaya 2026-05-19 — five answers without consent/email/safety must NOT trigger", () => {
+    const hodaya = {
+      ...baseMemory,
+      q1_age: 25,
+      q2_motivation: "הכנסה נוספת לשלם חשבונות ותמיכה במשפחה",
+      q3_dream_change: "שיפור המצב הכלכלי ויכולת לספק למשפחה",
+      q4_blocker: "המשכורת הנוכחית לא מספיקה לחשבונות ולדיור",
+      q5_urgency: "דחוף מאוד, כמה שיותר מהר",
+      q7_email: null,                       // never asked
+      meeting_consented: false,             // never said yes
+      red_flags: ["vulnerable_financial"],  // 2-month unemployed, kids, can't pay bills
+    };
+    // No matter which blocker we lift first, the others still kill it.
+    expect(shouldTriggerZoomHandoff(hodaya, null, "mid", "done", null)).toBe(false);
+    expect(shouldTriggerZoomHandoff(hodaya, null, "mid", "done", CONSENT_TS)).toBe(false);
+    expect(
+      shouldTriggerZoomHandoff(
+        { ...hodaya, q7_email: "hodaya@example.com" },
+        null,
+        "mid",
+        "done",
+        CONSENT_TS,
+      ),
+    ).toBe(false); // still blocked by vulnerable_financial red_flag
   });
 });

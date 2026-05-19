@@ -97,6 +97,12 @@ export interface ExtractedMemory {
    *  booking, Fireberry CRM) require it; if the lead refuses, the value
    *  stays null and Make.com falls back to phone-only lookup. */
   q7_email: string | null;
+  /** True iff the conversation contains an explicit "yes I want a meeting"
+   *  from the lead — accepting a proposed time, saying "כן בוא נקבע" /
+   *  "מתי?" / similar. Once true is observed for a conversation we lock
+   *  in a timestamp (`lead_memory.meeting_consented_at`); the bool can
+   *  flicker turn-to-turn but the timestamp never clears. */
+  meeting_consented: boolean;
   conversation_summary: string | null;
   primary_objection: string | null;
   red_flags: string[];
@@ -165,6 +171,7 @@ export function coerceExtractedMemory(parsed: unknown): ExtractedMemory | null {
     q5_urgency: asTrimmedString(o.q5_urgency),
     q6_investment: asTrimmedString(o.q6_investment),
     q7_email: asEmail(o.q7_email),
+    meeting_consented: o.meeting_consented === true,
     conversation_summary: asTrimmedString(o.conversation_summary),
     primary_objection: asObjection(o.primary_objection),
     red_flags: asStringArray(o.red_flags),
@@ -253,9 +260,24 @@ const NON_HANDOFF_TAGS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True iff this turn is the moment to escalate to an advisor: the lead
- * just answered the 5th core question, has no red flags, and isn't
- * already in a terminal/blocking tag.
+ * True iff this turn is the moment to escalate the lead to an advisor.
+ *
+ * Old rule (pre-2026-05-19): "all 5 core questions answered + no red flags
+ * + not in a blocking tag" was enough. That blew up on the Hodaya case —
+ * the extractor inferred answers from passing conversational signals, the
+ * funnel flipped to done, and a lead who never agreed to a meeting got
+ * shipped to Mooz (which then 400'd on the missing email).
+ *
+ * New rule: ALL of these must hold.
+ *   - nextStage === "done" (q1-q5 collected — gating signal)
+ *   - currentStage !== "done" (do not re-fire)
+ *   - memory.red_flags is empty (vulnerable / underage / hostile leads
+ *     never auto-route to a sales call)
+ *   - currentTag is not in NON_HANDOFF_TAGS (already handed off / opted
+ *     out / escalated)
+ *   - meetingConsentedAt is non-null (the lead actually said yes)
+ *   - memory.q7_email is non-null (Mooz needs it; phone-only fallback is
+ *     not implemented in the Make scenario today)
  *
  * Caller decides what to do with `true` — assign an advisor, pause the
  * conversation, set `current_tag = zoom_scheduled`. Kept pure so the
@@ -266,11 +288,14 @@ export function shouldTriggerZoomHandoff(
   currentTag: string | null,
   currentStage: string | null,
   nextStage: FunnelStage | null,
+  meetingConsentedAt: string | null,
 ): boolean {
   if (nextStage !== "done") return false;
   if (currentStage === "done") return false;
   if (memory.red_flags.length > 0) return false;
   if (currentTag && NON_HANDOFF_TAGS.has(currentTag)) return false;
+  if (!meetingConsentedAt) return false;
+  if (!memory.q7_email) return false;
   return true;
 }
 
@@ -421,7 +446,21 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
 
-  // 4. Upsert into lead_memory.
+  // 4. Resolve meeting_consented_at. Read the existing row's value first
+  //    so we can "lock in" the timestamp the FIRST time Claude observes
+  //    consent. Subsequent turns where the bool flickers back to false do
+  //    not clear the timestamp — consent observed is consent observed.
+  const { data: existingMemoryRow } = await input.admin
+    .from("lead_memory")
+    .select("meeting_consented_at")
+    .eq("conversation_id", input.conversationId)
+    .maybeSingle();
+  const existingConsentAt =
+    (existingMemoryRow?.meeting_consented_at as string | null | undefined) ?? null;
+  const meetingConsentedAt: string | null = existingConsentAt
+    ?? (memory.meeting_consented ? new Date().toISOString() : null);
+
+  // 5. Upsert into lead_memory.
   const { error: upsertErr } = await input.admin
     .from("lead_memory")
     .upsert(
@@ -434,6 +473,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         q5_urgency: memory.q5_urgency,
         q6_investment: memory.q6_investment,
         q7_email: memory.q7_email,
+        meeting_consented_at: meetingConsentedAt,
         conversation_summary: memory.conversation_summary,
         red_flags: memory.red_flags.length > 0 ? memory.red_flags : null,
         notes_for_advisor: memory.notes_for_advisor,
@@ -480,7 +520,13 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   const currentStage = (existing?.funnel_stage as string | null | undefined) ?? null;
   const nextTag = decideConversationTag(memory, currentTag);
   const nextStage = decideFunnelStage(memory, currentTag, currentStage);
-  const handoff = shouldTriggerZoomHandoff(memory, currentTag, currentStage, nextStage);
+  const handoff = shouldTriggerZoomHandoff(
+    memory,
+    currentTag,
+    currentStage,
+    nextStage,
+    meetingConsentedAt,
+  );
 
   const conversationUpdate: Record<string, unknown> = {};
   if (memory.primary_objection) {
@@ -586,6 +632,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         q5_urgency: memory.q5_urgency,
         q6_investment: memory.q6_investment,
         q7_email: memory.q7_email,
+        meeting_consented_at: meetingConsentedAt,
         conversation_summary: memory.conversation_summary,
         primary_objection: memory.primary_objection,
         red_flags: memory.red_flags,
