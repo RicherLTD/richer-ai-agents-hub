@@ -44,6 +44,12 @@ export interface HandoffLeadMemory {
   /** Email collected by the bot in q7. null when the lead refused to share
    *  it — Make.com should fall back to phone-only CRM matching in that case. */
   q7_email: string | null;
+  /** ISO-8601 timestamp of the moment the bot first observed explicit
+   *  meeting consent from the lead ("כן, בוא נקבע", "מתי?", or an
+   *  affirmative reply to a proposed time). Required to be non-null for
+   *  the handoff to fire — Mooz/Calendly need an actual consent signal,
+   *  not just "we collected 5 answers". */
+  meeting_consented_at: string | null;
   conversation_summary: string | null;
   primary_objection: string | null;
   red_flags: string[];
