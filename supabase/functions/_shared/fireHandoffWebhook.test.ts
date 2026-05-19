@@ -35,6 +35,7 @@ const baseMemory: HandoffLeadMemory = {
   q5_urgency: "בחודש הקרוב",
   q6_investment: "עד 10,000",
   q7_email: "israel@example.com",
+  meeting_consented_at: "2026-05-19T06:23:07.741Z",
   conversation_summary: "ליד בן 28 שמחפש הכנסה נוספת.",
   primary_objection: "timing",
   red_flags: [],
