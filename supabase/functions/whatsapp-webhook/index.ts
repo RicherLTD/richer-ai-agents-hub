@@ -1225,17 +1225,22 @@ async function ingestInboundMessage(
   // sort) and last_inbound_at (lead-only — used by the 5-status display
   // taxonomy to detect "טמפלייט נשלח" vs "שיחה נפתחה" and the 48h
   // auto-close rule for "שיחה סגורה").
-  const { error: updErr } = await admin
+  // NB: identifier intentionally NOT `updErr` — that name is already
+  // declared at the top of this function (line ~1055) for the conversations
+  // upsert; reusing it triggered an Identifier-already-declared SyntaxError
+  // under the Edge Runtime's newer Deno (caught the bot in BOOT_ERROR for
+  // ~20m on 2026-05-20). Use a distinct binding here.
+  const { error: lastInteractionUpdErr } = await admin
     .from("conversations")
     .update({ last_interaction_at: ts, last_inbound_at: ts })
     .eq("id", conversationId);
-  if (updErr) {
+  if (lastInteractionUpdErr) {
     await logError({
       admin,
       source: SOURCE,
       errorType: "conversation_update_failed",
-      message: updErr.message,
-      context: { dbCode: updErr.code ?? null, phone },
+      message: lastInteractionUpdErr.message,
+      context: { dbCode: lastInteractionUpdErr.code ?? null, phone },
       agentId,
       conversationId,
     });
