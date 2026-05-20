@@ -402,7 +402,6 @@ async function updateConversationOnBooking(args: {
       funnel_stage: "done",
       status: "paused",
       zoom_scheduled_at: args.scheduledAt,
-      meeting_consented_at: new Date().toISOString(),
       lead_name: args.leadName,
     })
     .eq("id", args.conversationId);
@@ -417,13 +416,17 @@ async function updateConversationOnBooking(args: {
       conversationId: args.conversationId,
     });
   }
-  // Also write the email into lead_memory so it appears in the dashboard
-  // panel + handoff payload. Best-effort upsert; not worth blocking the
-  // booking on this.
+  // Persist email + explicit consent signal in lead_memory. meeting_consented_at
+  // lives on lead_memory per migration 0027, not on conversations. Handoff
+  // pipeline reads from here. Best-effort upsert.
   await args.admin
     .from("lead_memory")
     .upsert(
-      { conversation_id: args.conversationId, q7_email: args.leadEmail },
+      {
+        conversation_id: args.conversationId,
+        q7_email: args.leadEmail,
+        meeting_consented_at: new Date().toISOString(),
+      },
       { onConflict: "conversation_id" },
     );
 }
