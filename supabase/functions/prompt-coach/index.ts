@@ -43,12 +43,20 @@ const MAX_CONVERSATION_MESSAGES = 30;
 const MAIN_PROMPT_TYPE = "main";
 // Claude can take well over the gateway's 150s sync-request timeout when
 // the brain section is large and adaptive thinking spends time reasoning.
-// We now run Claude inside EdgeRuntime.waitUntil (background task, capped
-// by the function's full walltime budget) and explicitly bound the SDK
-// call at 300s. If the SDK timeout fires, the catch path writes a
-// user-facing fallback assistant row + a structured error_log entry so
-// the UI never hangs silently.
-const ANTHROPIC_TIMEOUT_MS = 300_000;
+// We run Claude inside EdgeRuntime.waitUntil (background task) and bound
+// the SDK call explicitly.
+//
+// Tuning notes (verified in production, 2026-05-20):
+//   - Supabase Edge Functions waitUntil tasks are killed by the runtime
+//     at ~150s wall clock on Pro. An SDK timeout of 300s never fires —
+//     the runtime kills the task first, the catch block never runs, and
+//     we end up with a user row but NO assistant row and NO error_log
+//     entry (silent failure, UI stuck on "המאמן חושב..." forever).
+//   - 110s mirrors brain-ingest. It leaves ~40s headroom for the
+//     fallback assistant-row INSERT + error_log write inside the catch
+//     path, so timeouts surface as `coach_timeout` with FALLBACK_TIMEOUT_HE
+//     instead of an invisible kill.
+const ANTHROPIC_TIMEOUT_MS = 110_000;
 const FALLBACK_TIMEOUT_HE =
   "המאמן לקח יותר מדי זמן לחשוב על התשובה. נסה לקצר את ההודעה או להפחית מסמכים פעילים במוח, ושלח שוב.";
 const FALLBACK_GENERIC_HE =
