@@ -75,12 +75,41 @@ describe("buildBrainSection", () => {
     expect(result.text).toContain('tags="pricing,sales"');
   });
 
-  it("records every id it included in insertion order (notes then docs)", () => {
+  it("records every id it included: notes in order, then docs newest-first", () => {
     const result = buildBrainSection([
       row({ id: "1", source_kind: "note", extracted_text: "a" }),
       row({ id: "2", source_kind: "pdf", extracted_text: "b" }),
       row({ id: "3", source_kind: "image", extracted_text: "c" }),
     ]);
-    expect(result.usedIds).toEqual(["1", "2", "3"]);
+    // Docs are reversed (newest upload first) so the latest brain doc the
+    // operator added is prioritized when the total-chars budget binds.
+    expect(result.usedIds).toEqual(["1", "3", "2"]);
+  });
+
+  it("truncates a doc body past MAX_BRAIN_DOC_CHARS but keeps the doc", () => {
+    const big = "א".repeat(45_000);
+    const result = buildBrainSection([
+      row({ id: "huge", source_kind: "pdf", extracted_text: big }),
+    ]);
+    expect(result.text).toContain("קוצץ לחיסכון בזמן עיבוד");
+    expect(result.usedIds).toEqual(["huge"]);
+  });
+
+  it("omits docs that exceed the total-chars budget and surfaces a notice", () => {
+    // 7 docs at 40K each (post-truncation) = 280K, well past the 200K total
+    // budget. Newest-first order means d7, d6, d5, d4, d3 fit (5 × 40K =
+    // 200K, hits the budget) and d2, d1 (oldest) get omitted.
+    const chunk = "ב".repeat(40_000);
+    const result = buildBrainSection([
+      row({ id: "d1", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d2", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d3", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d4", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d5", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d6", source_kind: "pdf", extracted_text: chunk }),
+      row({ id: "d7", source_kind: "pdf", extracted_text: chunk }),
+    ]);
+    expect(result.usedIds.length).toBeLessThan(7);
+    expect(result.text).toContain("מסמכים נוספים הושמטו");
   });
 });
