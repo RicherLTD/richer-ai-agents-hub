@@ -30,13 +30,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useAgent } from "@/contexts/AgentContext";
+import { supabase } from "@/lib/supabase/client";
 import {
   applyCoachEdit,
   getCoachHistory,
   resignCoachAttachment,
   sendCoachMessage,
   uploadCoachAttachment,
-  type BrainDocUsed,
   type CoachMessageRow,
   type UploadCoachAttachmentResult,
 } from "@/lib/coach";
@@ -68,12 +68,34 @@ function CoachInner() {
     enabled: !!agentId,
   });
 
-  // Per-assistant-message transparency: which brain docs Coach saw on
-  // each reply. Populated on send success, keyed by assistant message id.
-  // Only the freshest few turns matter for the UX — older ones fade
-  // back to "no breadcrumb" after refresh. brain_usage_log keeps the
-  // permanent record for audit.
-  const [brainBreadcrumbs, setBrainBreadcrumbs] = useState<Record<string, BrainDocUsed[]>>({});
+  // The Coach edge function returns 202 immediately after persisting the
+  // user row, then inserts the assistant row from a background task.
+  // We subscribe to INSERTs on `coach_messages` so the reply lands in
+  // the UI as soon as the background task finishes — no polling, no
+  // sync-response timeout to fight.
+  useEffect(() => {
+    if (!agentId) return;
+    const channel = supabase
+      .channel(`coach_messages:${agentId}`)
+      .on(
+        "postgres_changes",
+        {
+          event: "INSERT",
+          schema: "public",
+          table: "coach_messages",
+          filter: `agent_id=eq.${agentId}`,
+        },
+        () => {
+          void queryClient.invalidateQueries({
+            queryKey: ["coach", "history", agentId],
+          });
+        },
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+  }, [agentId, queryClient]);
 
   const sendMutation = useMutation({
     mutationFn: async (text: string) => {
@@ -86,16 +108,12 @@ function CoachInner() {
         attachmentMediaType: attachment?.mediaType,
       });
     },
-    onSuccess: (result) => {
+    onSuccess: () => {
       setDraft("");
       setAttachment(null);
-      // Capture the brain docs used for the just-arrived assistant reply.
-      if (result.brainDocsUsed && result.brainDocsUsed.length > 0) {
-        setBrainBreadcrumbs((prev) => ({
-          ...prev,
-          [result.assistantMessage.id]: result.brainDocsUsed!,
-        }));
-      }
+      // The user row is already persisted server-side; Realtime will
+      // refresh history when the background task lands the assistant
+      // row. A manual invalidate here just shortens the visible lag.
       void queryClient.invalidateQueries({ queryKey: ["coach", "history", agentId] });
     },
     onError: (err: unknown) => {
@@ -164,6 +182,14 @@ function CoachInner() {
   };
 
   const messages = historyQuery.data ?? [];
+  // The Coach is "thinking" whenever (a) the send mutation is still
+  // in flight (rare — the function returns 202 in <1s) OR (b) the
+  // latest history row is a user turn awaiting a server-side reply.
+  // History-based detection means the indicator survives a page reload
+  // mid-turn instead of disappearing the moment the mutation resolves.
+  const lastMessage = messages[messages.length - 1];
+  const isAwaitingAssistant =
+    sendMutation.isPending || (!!lastMessage && lastMessage.role === "user");
 
   return (
     <Tabs
@@ -244,10 +270,9 @@ function CoachInner() {
               key={m.id}
               message={m}
               onReview={() => setReviewing(m)}
-              brainDocsUsed={brainBreadcrumbs[m.id]}
             />
           ))}
-          {sendMutation.isPending && (
+          {isAwaitingAssistant && (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
               המאמן חושב...
@@ -273,7 +298,7 @@ function CoachInner() {
                 variant="ghost"
                 size="icon"
                 onClick={() => setAttachment(null)}
-                disabled={sendMutation.isPending}
+                disabled={isAwaitingAssistant}
                 aria-label="הסר תמונה"
               >
                 <XIcon className="h-4 w-4" />
@@ -284,7 +309,7 @@ function CoachInner() {
             onSubmit={(e) => {
               e.preventDefault();
               const text = draft.trim();
-              if (!text || sendMutation.isPending) return;
+              if (!text || isAwaitingAssistant) return;
               sendMutation.mutate(text);
             }}
             className="flex items-end gap-2"
@@ -304,7 +329,7 @@ function CoachInner() {
               variant="outline"
               size="icon"
               onClick={() => fileInputRef.current?.click()}
-              disabled={!agentId || attachmentUploading || sendMutation.isPending || !!attachment}
+              disabled={!agentId || attachmentUploading || isAwaitingAssistant || !!attachment}
               aria-label="צרף תמונה"
               title="צרף תמונה"
             >
@@ -322,23 +347,23 @@ function CoachInner() {
                   ? "כתוב משוב או שאלה למאמן..."
                   : "בחר סוכן מהסיידבר תחילה"
               }
-              disabled={!agentId || sendMutation.isPending}
+              disabled={!agentId || isAwaitingAssistant}
               className="min-h-[60px] resize-none"
               onKeyDown={(e) => {
                 if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
                   e.preventDefault();
                   const text = draft.trim();
-                  if (text && !sendMutation.isPending) sendMutation.mutate(text);
+                  if (text && !isAwaitingAssistant) sendMutation.mutate(text);
                 }
               }}
             />
             <Button
               type="submit"
               size="icon"
-              disabled={!agentId || !draft.trim() || sendMutation.isPending}
+              disabled={!agentId || !draft.trim() || isAwaitingAssistant}
               aria-label="שלח"
             >
-              {sendMutation.isPending ? (
+              {isAwaitingAssistant ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
                 <ArrowUp className="h-4 w-4" />
@@ -373,13 +398,9 @@ function CoachInner() {
 function MessageBubble({
   message,
   onReview,
-  brainDocsUsed,
 }: {
   message: CoachMessageRow;
   onReview: () => void;
-  /** Brain docs that fed Coach for this assistant reply (post-send only;
-   *  not persisted to message history yet). Renders a "ראיתי:" breadcrumb. */
-  brainDocsUsed?: BrainDocUsed[];
 }) {
   const isUser = message.role === "user";
   const hasProposal = !!message.proposed_prompt_content;
@@ -431,13 +452,6 @@ function MessageBubble({
         >
           <div className="whitespace-pre-wrap">{message.content}</div>
         </div>
-        {!isUser && brainDocsUsed && brainDocsUsed.length > 0 && (
-          <p className="max-w-full text-[10px] leading-relaxed text-muted-foreground">
-            <span className="font-medium">ראיתי:</span>{" "}
-            {brainDocsUsed.slice(0, 4).map((d) => d.title).join(" · ")}
-            {brainDocsUsed.length > 4 && ` ועוד ${brainDocsUsed.length - 4}`}
-          </p>
-        )}
         {hasProposal && (
           <div className="flex items-center gap-2">
             {isApplied ? (

@@ -41,6 +41,18 @@ const COACH_MODEL = "claude-sonnet-4-6";
 const MAX_HISTORY_TURNS = 20;
 const MAX_CONVERSATION_MESSAGES = 30;
 const MAIN_PROMPT_TYPE = "main";
+// Claude can take well over the gateway's 150s sync-request timeout when
+// the brain section is large and adaptive thinking spends time reasoning.
+// We now run Claude inside EdgeRuntime.waitUntil (background task, capped
+// by the function's full walltime budget) and explicitly bound the SDK
+// call at 300s. If the SDK timeout fires, the catch path writes a
+// user-facing fallback assistant row + a structured error_log entry so
+// the UI never hangs silently.
+const ANTHROPIC_TIMEOUT_MS = 300_000;
+const FALLBACK_TIMEOUT_HE =
+  "המאמן לקח יותר מדי זמן לחשוב על התשובה. נסה לקצר את ההודעה או להפחית מסמכים פעילים במוח, ושלח שוב.";
+const FALLBACK_GENERIC_HE =
+  "אירעה שגיאה בעיבוד התגובה במאמן. נסה שוב בעוד רגע — אם זה חוזר, פנה לצוות הפיתוח.";
 
 // ---------- request body ----------
 
@@ -523,15 +535,59 @@ function buildUserContent(input: UserTurnInput): ClaudeUserContent {
   return blocks;
 }
 
+/**
+ * Anthropic's Messages API requires strict role alternation in `messages`.
+ * If a previous turn failed before we could persist the assistant row
+ * (e.g. a 504 from the gateway-timeout era prior to migration 0028),
+ * we end up with consecutive `user` rows in history — the next call
+ * would 400 with "messages: roles must alternate".
+ *
+ * Collapse adjacent same-role rows into one combined turn, separated by
+ * a blank line. This preserves the operator's intent (their stacked
+ * messages still reach Claude) and never throws on otherwise-valid
+ * history. Idempotent on already-alternating input.
+ */
+function sanitizeAlternation(
+  history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const out: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const turn of history) {
+    const last = out[out.length - 1];
+    if (last && last.role === turn.role) {
+      last.content = `${last.content}\n\n${turn.content}`;
+    } else {
+      out.push({ role: turn.role, content: turn.content });
+    }
+  }
+  return out;
+}
+
 async function callCoach(
   anthropic: Anthropic,
   systemBlocks: SystemBlock[],
   history: Array<{ role: "user" | "assistant"; content: string }>,
   userTurn: UserTurnInput,
 ): Promise<CoachReply> {
+  // Sanitize history so the API never sees consecutive same-role turns.
+  // If the sanitized history *still* ends with `user` — which happens
+  // when stuck user rows precede this turn — we fold that residue into
+  // the current user turn so the final message list strictly alternates
+  // and ends with the new user message.
+  const sanitized = sanitizeAlternation(history);
+  let prependedText = "";
+  while (sanitized.length > 0 && sanitized[sanitized.length - 1].role === "user") {
+    const tail = sanitized.pop()!;
+    prependedText = `${tail.content}\n\n${prependedText}`;
+  }
+  const baseContent = buildUserContent(userTurn);
+  const finalUserContent = prependedText
+    ? (typeof baseContent === "string"
+      ? `${prependedText}${baseContent}`
+      : [{ type: "text", text: prependedText.trimEnd() }, ...baseContent])
+    : baseContent;
   const messages = [
-    ...history.map((m) => ({ role: m.role, content: m.content })),
-    { role: "user" as const, content: buildUserContent(userTurn) },
+    ...sanitized.map((m) => ({ role: m.role, content: m.content })),
+    { role: "user" as const, content: finalUserContent },
   ];
   // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
@@ -546,7 +602,7 @@ async function callCoach(
     system: systemBlocks as any,
     tools: [PROPOSE_EDIT_TOOL] as any,
     messages: messages as any,
-  } as any);
+  } as any, { timeout: ANTHROPIC_TIMEOUT_MS } as any);
   return parseCoachReply(raw as unknown as AnthropicResponse);
 }
 
@@ -619,61 +675,98 @@ Deno.serve(async (req) => {
     });
   }
 
-  // 2. Build context.
+  // 2. Hand the rest off to a background task. Returning 202 immediately
+  //    lets the client release the HTTP connection — the assistant reply
+  //    arrives via Supabase Realtime on `coach_messages` (migration 0028)
+  //    once the background task inserts it. This avoids the gateway's
+  //    150s sync-response timeout that was killing heavy Coach turns
+  //    silently (no error_log, just a 504 the user couldn't see).
+  fireAndForget(
+    runCoachBackground({
+      admin: ctx.admin,
+      callerId: ctx.callerId,
+      body,
+      userMessageId: userRow.id,
+      anthropicApiKey,
+    }),
+  );
+
+  return jsonResponse(
+    { userMessageId: userRow.id, status: "pending" },
+    { status: 202, headers: corsHeaders },
+  );
+});
+
+// ---------- background pipeline ----------
+
+interface BackgroundParams {
+  admin: SupabaseClient;
+  callerId: string;
+  body: CoachRequest;
+  userMessageId: string;
+  anthropicApiKey: string;
+}
+
+async function runCoachBackground(params: BackgroundParams): Promise<void> {
+  const { admin, callerId, body, userMessageId, anthropicApiKey } = params;
   let coachCtx: CoachContext;
   try {
-    coachCtx = await loadCoachContext(ctx.admin, body.agentId, body.referencedConversationId);
+    coachCtx = await loadCoachContext(admin, body.agentId, body.referencedConversationId);
   } catch (err) {
-    const status = err instanceof HttpError ? err.status : 500;
     const message = err instanceof Error ? err.message : "Context load failed";
     await logError({
-      admin: ctx.admin,
+      admin,
       source: SOURCE,
       errorType: "context_load_failed",
       message,
-      context: { agentId: body.agentId },
+      context: { agentId: body.agentId, userMessageId },
       agentId: body.agentId,
     });
-    return jsonResponse({ error: message }, { status, headers: corsHeaders });
+    await insertFallbackAssistant(admin, body, callerId, FALLBACK_GENERIC_HE);
+    return;
   }
 
   // Drop the LATEST user row from history (it's `body.userMessage` we'll
   // pass separately) so Claude doesn't see the same message twice.
   const historyForClaude = coachCtx.history.slice(0, -1);
-
   const { blocks: systemBlocks, brainUsedIds } = buildCoachSystemPrompt(coachCtx);
-  const anthropic = new Anthropic({ apiKey: anthropicApiKey });
 
-  // 3. Call Claude.
   let reply: CoachReply;
   try {
+    const anthropic = new Anthropic({ apiKey: anthropicApiKey });
     reply = await callCoach(anthropic, systemBlocks, historyForClaude, {
       text: body.userMessage,
       attachmentBase64: body.attachmentBase64,
       attachmentMediaType: body.attachmentMediaType,
     });
   } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const isTimeout = /timeout|abort|timed out/i.test(message);
     await logError({
-      admin: ctx.admin,
+      admin,
       source: SOURCE,
-      errorType: "claude_api_error",
-      message: err instanceof Error ? err.message : String(err),
-      context: { model: COACH_MODEL, agentId: body.agentId },
+      errorType: isTimeout ? "coach_timeout" : "claude_api_error",
+      message,
+      context: {
+        model: COACH_MODEL,
+        agentId: body.agentId,
+        userMessageId,
+        timeoutMs: ANTHROPIC_TIMEOUT_MS,
+      },
       agentId: body.agentId,
     });
-    return jsonResponse({ error: "Claude error — try again in a moment" }, {
-      status: 502,
-      headers: corsHeaders,
-    });
+    await insertFallbackAssistant(
+      admin,
+      body,
+      callerId,
+      isTimeout ? FALLBACK_TIMEOUT_HE : FALLBACK_GENERIC_HE,
+    );
+    return;
   }
 
-  // If Claude returned no text we want a structured trace so future
-  // empty-replies are debuggable from the dashboard, not just "the
-  // operator says it broke". The user-facing fallback is already in
-  // reply.text (parseCoachReply formats it per stop_reason).
   if (reply.diagnostics.wasEmpty) {
     await logError({
-      admin: ctx.admin,
+      admin,
       level: "warn",
       source: SOURCE,
       errorType: "coach_empty_reply",
@@ -683,6 +776,7 @@ Deno.serve(async (req) => {
       context: {
         model: COACH_MODEL,
         agentId: body.agentId,
+        userMessageId,
         stopReason: reply.diagnostics.stopReason,
         blockCounts: reply.diagnostics.blockCounts,
         userMessageLen: body.userMessage.length,
@@ -693,38 +787,32 @@ Deno.serve(async (req) => {
     });
   }
 
-  // 4. Persist the assistant message.
-  const { data: assistantRow, error: assistantErr } = await ctx.admin
+  const { data: assistantRow, error: assistantErr } = await admin
     .from("coach_messages")
     .insert({
       agent_id: body.agentId,
       role: "assistant",
-      user_id: ctx.callerId,
+      user_id: callerId,
       content: reply.text,
       proposed_prompt_content: reply.proposal?.newPromptContent ?? null,
       referenced_conversation_id: body.referencedConversationId ?? null,
     })
-    .select("id, created_at, content, proposed_prompt_content")
+    .select("id")
     .single();
   if (assistantErr || !assistantRow) {
     await logError({
-      admin: ctx.admin,
+      admin,
       source: SOURCE,
       errorType: "assistant_message_insert_failed",
       message: assistantErr?.message ?? "no row returned",
-      context: { agentId: body.agentId },
+      context: { agentId: body.agentId, userMessageId },
       agentId: body.agentId,
     });
-    return jsonResponse({ error: "Failed to record Coach reply" }, {
-      status: 500,
-      headers: corsHeaders,
-    });
+    return;
   }
 
-  // 5. Log which brain rows were in context for transparency. Best-effort:
-  //    a logging failure here must NOT degrade the operator experience.
   if (brainUsedIds.length > 0) {
-    const { error: logErr } = await ctx.admin.from("brain_usage_log").insert({
+    const { error: logErr } = await admin.from("brain_usage_log").insert({
       coach_message_id: assistantRow.id,
       brain_document_ids: brainUsedIds,
     });
@@ -732,24 +820,51 @@ Deno.serve(async (req) => {
       console.warn(`[prompt-coach] brain_usage_log insert failed: ${logErr.message}`);
     }
   }
+}
 
-  // Lightweight titles for the "I saw: ..." transparency line in the UI.
-  const brainDocsUsed = coachCtx.brain
-    .filter((b) => brainUsedIds.includes(b.id))
-    .map((b) => ({ id: b.id, title: b.title, source_kind: b.source_kind }));
+async function insertFallbackAssistant(
+  admin: SupabaseClient,
+  body: CoachRequest,
+  callerId: string,
+  text: string,
+): Promise<void> {
+  // Best-effort: failing here would leave the UI stuck on "המאמן חושב..."
+  // forever. If even this insert fails we log it and give up — the user
+  // can retry by sending a new message.
+  const { error } = await admin.from("coach_messages").insert({
+    agent_id: body.agentId,
+    role: "assistant",
+    user_id: callerId,
+    content: text,
+    referenced_conversation_id: body.referencedConversationId ?? null,
+  });
+  if (error) {
+    await logError({
+      admin,
+      source: SOURCE,
+      errorType: "assistant_fallback_insert_failed",
+      message: error.message,
+      context: { agentId: body.agentId },
+      agentId: body.agentId,
+    });
+  }
+}
 
-  return jsonResponse(
-    {
-      userMessageId: userRow.id,
-      assistantMessage: {
-        id: assistantRow.id,
-        content: assistantRow.content,
-        proposedPromptContent: assistantRow.proposed_prompt_content,
-        proposalReason: reply.proposal?.reason ?? null,
-        createdAt: assistantRow.created_at,
-      },
-      brainDocsUsed,
-    },
-    { status: 200, headers: corsHeaders },
+// ---------- waitUntil helper ----------
+
+interface EdgeRuntimeShape {
+  waitUntil(p: Promise<unknown>): void;
+}
+
+function fireAndForget(promise: Promise<void>): void {
+  const wrapped = promise.catch((err) =>
+    console.error("background task crashed", err instanceof Error ? err.message : err)
   );
-});
+  const runtime = (globalThis as { EdgeRuntime?: EdgeRuntimeShape }).EdgeRuntime;
+  if (runtime && typeof runtime.waitUntil === "function") {
+    runtime.waitUntil(wrapped);
+  }
+  // Without waitUntil the promise still resolves on its own; we just
+  // don't extend the function's lifetime. Supabase Edge runtime exposes
+  // waitUntil today, so this branch is for local `supabase functions serve`.
+}
