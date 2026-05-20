@@ -46,6 +46,9 @@ import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText, type SendResult } from "../_shared/whatsappSend.ts";
 import { validateAgentReply } from "../_shared/validateAgentReply.ts";
 import { runMemoryExtraction } from "../_shared/extractMemory.ts";
+import { runAgentTurn } from "../_shared/agentTurn.ts";
+import { moozClientFromEnv } from "../_shared/mooz.ts";
+import { type MoozDispatchCtx } from "../_shared/moozTools.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 import {
@@ -650,11 +653,12 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   // so they can step in if they want — the lead is not forgotten.
   const { data: agentCfg } = await ctx.admin
     .from("agents")
-    .select("quiet_hours_start_il, quiet_hours_end_il")
+    .select("name, quiet_hours_start_il, quiet_hours_end_il, meeting_type_id")
     .eq("id", ctx.agentId)
     .maybeSingle();
   const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
   const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
+  const meetingTypeId = (agentCfg?.meeting_type_id as string | null | undefined) ?? null;
   if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
     // Quiet hours = silent for everyone. The operator explicitly does
     // NOT want WhatsApp alerts during the night — the whole point of
@@ -678,25 +682,39 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   const turn = await loadAgentTurnContext(ctx);
   if (!turn) return;
 
-  let response: AnthropicMessageResponse;
+  // Build the Mooz tool-use context only when the agent has a meeting
+  // type configured AND the env supplies an API key. Missing either →
+  // the bot runs in the legacy "no tools" mode and Claude is back to
+  // single-turn replies, which is still the safe fallback.
+  const moozClient = meetingTypeId
+    ? moozClientFromEnv({ admin: ctx.admin, agentId: ctx.agentId, conversationId: ctx.conversationId })
+    : null;
+  const moozCtx: MoozDispatchCtx | null = moozClient && meetingTypeId
+    ? {
+        admin: ctx.admin,
+        mooz: moozClient,
+        meetingTypeId,
+        conversationId: ctx.conversationId,
+        agentId: ctx.agentId,
+        leadPhone: ctx.leadPhone,
+      }
+    : null;
+
+  let turnResult;
   const startTime = new Date();
   try {
-    const raw = await callWithRetry(
-      () =>
-        ctx.anthropic.messages.create({
-          model: CLAUDE_MODEL,
-          // 1024 was too tight once v6/v7 + adaptive-thinking landed —
-          // adaptive thinking can use most of the budget on internal
-          // reasoning and return an empty visible reply (the Natan
-          // claude_invalid_reply / reply_is_null incident at 18:45). 2048
-          // gives the model headroom for thinking AND a 1-3 sentence
-          // visible response.
-          max_tokens: 2048,
-          thinking: { type: "adaptive" },
-          system: turn.promptContent,
-          messages: turn.claudeMessages,
-        }),
-      {
+    turnResult = await runAgentTurn({
+      anthropic: ctx.anthropic,
+      model: CLAUDE_MODEL,
+      // 1024 was too tight once v6/v7 + adaptive-thinking landed —
+      // adaptive thinking can use most of the budget on internal
+      // reasoning and return an empty visible reply. 2048 gives the
+      // model headroom for thinking AND a 1-3 sentence visible response.
+      maxTokens: 2048,
+      systemPrompt: turn.promptContent,
+      initialMessages: turn.claudeMessages,
+      moozCtx,
+      retry: {
         maxAttempts: 3,
         baseDelayMs: 1000,
         onRetry: ({ attempt, delayMs, status }) => {
@@ -712,8 +730,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
           });
         },
       },
-    );
-    response = raw as unknown as AnthropicMessageResponse;
+    });
   } catch (err) {
     await logAndDlq(
       ctx,
@@ -725,23 +742,30 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
         prompt_version: turn.promptVersion,
         prompt_version_id: turn.promptVersionId,
         lead_phone: ctx.leadPhone,
+        mooz_tools_enabled: moozCtx !== null,
       },
     );
     return;
   }
+  const response = turnResult.response as unknown as AnthropicMessageResponse;
   const endTime = new Date();
 
   const usage: AnthropicUsage = {
-    inputTokens: response.usage?.input_tokens,
-    outputTokens: response.usage?.output_tokens,
-    cacheReadTokens: response.usage?.cache_read_input_tokens,
-    cacheCreationTokens: response.usage?.cache_creation_input_tokens,
+    inputTokens: turnResult.totalUsage.inputTokens,
+    outputTokens: turnResult.totalUsage.outputTokens,
+    cacheReadTokens: turnResult.totalUsage.cacheReadTokens,
+    cacheCreationTokens: turnResult.totalUsage.cacheCreationTokens,
   };
   const costUsd = computeSonnet46Cost(usage);
   const latencyMs = endTime.getTime() - startTime.getTime();
 
   const rawReply = extractFirstTextBlock(response);
-  const validation = validateAgentReply(rawReply);
+  // When the model called a Mooz tool this turn, HH:MM time mentions are
+  // expected (and required — the model just received real slots). Skip
+  // the "invented_meeting_time" guard in that case only.
+  const validation = validateAgentReply(rawReply, {
+    hasMoozToolUseThisTurn: turnResult.hadToolUse,
+  });
 
   // Trace the turn regardless of validation outcome — failed turns are
   // exactly what we want to see in Langfuse so the operator can debug.

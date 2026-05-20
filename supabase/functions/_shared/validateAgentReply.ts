@@ -85,7 +85,24 @@ export function findHallucinationReason(text: string): string | null {
   return null;
 }
 
-export function validateAgentReply(raw: string | null | undefined): ValidationResult {
+/** HH:MM time pattern. Catches "12:45", "14:30", "9:00", "09:30", and the
+ *  most common forms an Israeli speaker would write. Bare time only — we
+ *  do NOT block day names ("מחר", "ראשון") because the bot legitimately
+ *  needs to ask "when is good?" without committing to a slot. */
+const TIME_HH_MM_RE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/;
+
+export interface ValidateOptions {
+  /** True when the assistant called a Mooz tool (list_available_slots or
+   *  book_meeting) in this turn. When false, mentions of specific HH:MM
+   *  times are blocked — the bot may not invent meeting times without
+   *  a tool call backing them. */
+  hasMoozToolUseThisTurn?: boolean;
+}
+
+export function validateAgentReply(
+  raw: string | null | undefined,
+  opts: ValidateOptions = {},
+): ValidationResult {
   if (raw == null) {
     return { ok: false, reason: "reply_is_null" };
   }
@@ -102,6 +119,9 @@ export function validateAgentReply(raw: string | null | undefined): ValidationRe
   const hallucination = findHallucinationReason(text);
   if (hallucination) {
     return { ok: false, reason: `hallucination_${hallucination}` };
+  }
+  if (!opts.hasMoozToolUseThisTurn && TIME_HH_MM_RE.test(text)) {
+    return { ok: false, reason: "invented_meeting_time" };
   }
   return { ok: true, text };
 }

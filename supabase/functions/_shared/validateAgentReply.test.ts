@@ -151,3 +151,34 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("היועץ ידבר איתך בזום").ok).toBe(true);
   });
 });
+
+describe("validateAgentReply — invented meeting time guard", () => {
+  it("blocks HH:MM mentions when no Mooz tool ran this turn", () => {
+    const r = validateAgentReply("מחר בשעה 12:45 היועץ יחזור אליך");
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invented_meeting_time");
+  });
+
+  it("blocks bare digital times like 14:30 / 9:00 too", () => {
+    expect(validateAgentReply("נדבר ב-14:30").ok).toBe(false);
+    expect(validateAgentReply("בשעה 9:00 בערב").ok).toBe(false);
+    expect(validateAgentReply("19:45 מתאים?").ok).toBe(false);
+  });
+
+  it("ALLOWS HH:MM when the assistant actually used a Mooz tool this turn", () => {
+    const opts = { hasMoozToolUseThisTurn: true };
+    expect(validateAgentReply("מחר בשעה 12:45 נקבע זום", opts).ok).toBe(true);
+    expect(validateAgentReply("מצאתי לך 10:30 ו-14:00 — מה עדיף?", opts).ok).toBe(true);
+  });
+
+  it("still ALLOWS day-name-only replies (no concrete time committed)", () => {
+    expect(validateAgentReply("מחר בערב נוח לך?").ok).toBe(true);
+    expect(validateAgentReply("ביום ראשון אפשר?").ok).toBe(true);
+    expect(validateAgentReply("שווה לקפוץ לזום בקרוב").ok).toBe(true);
+  });
+
+  it("does not false-positive on '24/7' / non-time digits", () => {
+    expect(validateAgentReply("היועצים זמינים 24/7 לפניות").ok).toBe(true);
+    expect(validateAgentReply("הקורס בנוי מ-3 מסלולים").ok).toBe(true);
+  });
+});
