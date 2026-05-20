@@ -1,8 +1,8 @@
 import { format, isSameDay, isYesterday } from "date-fns";
 import { he } from "date-fns/locale";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { ConversationStatusBadge } from "@/components/leads/ConversationStatusBadge";
-import { ConversationTagBadge } from "@/components/leads/ConversationTagBadge";
+import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
+import { deriveDisplayStatus } from "@/lib/conversation-status";
 import { cn } from "@/lib/utils";
 import type { Conversation } from "@/types/conversation";
 
@@ -63,7 +63,8 @@ interface Props {
 export function ConversationListItem({ conversation, isActive, onClick }: Props) {
   const name = conversation.lead_name?.trim() || "ליד ללא שם";
   const avatarSeed = conversation.lead_phone || conversation.id;
-  const isLive = conversation.status === "active";
+  const displayStatus = deriveDisplayStatus(conversation);
+  const isLive = displayStatus === "opened" || displayStatus === "zoom_scheduled";
   return (
     <button
       type="button"
@@ -104,10 +105,7 @@ export function ConversationListItem({ conversation, isActive, onClick }: Props)
           <p dir="ltr" className="flex-1 truncate text-right font-mono text-[11px] text-muted-foreground tabular-nums">
             {conversation.lead_phone}
           </p>
-          {conversation.status && conversation.status !== "active" && (
-            <ConversationStatusBadge status={conversation.status} />
-          )}
-          <ConversationTagBadge tag={conversation.current_tag} />
+          <DisplayStatusBadge status={deriveDisplayStatus(conversation)} />
         </div>
       </div>
     </button>

@@ -277,6 +277,7 @@ export type Database = {
           fireberry_lead_id: string | null
           funnel_stage: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id: string
+          last_inbound_at: string | null
           last_interaction_at: string | null
           lead_name: string | null
           lead_phone: string
@@ -312,6 +313,7 @@ export type Database = {
           fireberry_lead_id?: string | null
           funnel_stage?: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id?: string
+          last_inbound_at?: string | null
           last_interaction_at?: string | null
           lead_name?: string | null
           lead_phone: string
@@ -349,6 +351,7 @@ export type Database = {
           fireberry_lead_id?: string | null
           funnel_stage?: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id?: string
+          last_inbound_at?: string | null
           last_interaction_at?: string | null
           lead_name?: string | null
           lead_phone?: string

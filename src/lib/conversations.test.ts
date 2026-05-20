@@ -21,12 +21,14 @@ function makeChain(result: { data: unknown; error: unknown }, awaitable: "limit"
     calls,
     select: vi.fn(),
     eq: vi.fn(),
+    gte: vi.fn(),
+    lte: vi.fn(),
     order: vi.fn(),
     or: vi.fn(),
     limit: vi.fn(),
     maybeSingle: vi.fn(),
   };
-  for (const m of ["select", "eq", "order", "or"] as const) {
+  for (const m of ["select", "eq", "gte", "lte", "order", "or"] as const) {
     chain[m].mockImplementation((...args: unknown[]) => {
       calls.push({ method: m, args });
       return chain;
@@ -46,7 +48,7 @@ beforeEach(() => {
 });
 
 describe("getActiveConversations", () => {
-  it("filters by agent_id and status='active' by default", async () => {
+  it("filters by agent_id by default (no status restriction)", async () => {
     const chain = makeChain({ data: [], error: null }, "limit");
     fromMock.mockReturnValue(chain);
 
@@ -54,22 +56,33 @@ describe("getActiveConversations", () => {
 
     expect(fromMock).toHaveBeenCalledWith("conversations");
     const eqCalls = chain.calls.filter((c) => c.method === "eq");
-    expect(eqCalls).toEqual([
-      { method: "eq", args: ["agent_id", "agent-1"] },
-      { method: "eq", args: ["status", "active"] },
-    ]);
+    expect(eqCalls).toEqual([{ method: "eq", args: ["agent_id", "agent-1"] }]);
   });
 
-  it("skips status filter when includeInactive=true", async () => {
+  it("applies created_at lower and upper bounds when provided", async () => {
     const chain = makeChain({ data: [], error: null }, "limit");
     fromMock.mockReturnValue(chain);
 
-    await getActiveConversations({ agentId: "agent-1", includeInactive: true });
+    await getActiveConversations({
+      agentId: "agent-1",
+      fromCreatedAt: "2026-05-01T00:00:00Z",
+      toCreatedAt: "2026-05-20T23:59:59Z",
+    });
 
-    const statusEq = chain.calls.find(
-      (c) => c.method === "eq" && c.args[0] === "status",
-    );
-    expect(statusEq).toBeUndefined();
+    const gte = chain.calls.find((c) => c.method === "gte");
+    const lte = chain.calls.find((c) => c.method === "lte");
+    expect(gte?.args).toEqual(["created_at", "2026-05-01T00:00:00Z"]);
+    expect(lte?.args).toEqual(["created_at", "2026-05-20T23:59:59Z"]);
+  });
+
+  it("skips date bounds when not provided", async () => {
+    const chain = makeChain({ data: [], error: null }, "limit");
+    fromMock.mockReturnValue(chain);
+
+    await getActiveConversations({ agentId: "agent-1" });
+
+    expect(chain.calls.find((c) => c.method === "gte")).toBeUndefined();
+    expect(chain.calls.find((c) => c.method === "lte")).toBeUndefined();
   });
 
   it("adds the OR clause when search is provided", async () => {
@@ -91,7 +104,7 @@ describe("getActiveConversations", () => {
     const orderCall = chain.calls.find((c) => c.method === "order");
     expect(orderCall?.args[0]).toBe("last_interaction_at");
     const limitCall = chain.calls.find((c) => c.method === "limit");
-    expect(limitCall?.args[0]).toBe(200);
+    expect(limitCall?.args[0]).toBe(500);
   });
 
   it("throws a wrapped error", async () => {

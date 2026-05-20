@@ -1,31 +1,31 @@
 /**
  * Queries for the Leads screen.
  *
- * A "lead" in the dashboard is one row in the `conversations` table —
- * each unique lead_phone × agent_id pair gets one conversation. We expose
- * a single `getLeads()` query with optional filters; pagination/limits
- * will arrive once the dataset grows past a few hundred rows.
+ * A "lead" in the dashboard is one row in `conversations` — each unique
+ * lead_phone × agent_id pair gets one conversation. We ship date-range
+ * bounds (filtering by `created_at`) to the server; the unified 5-status
+ * filter (טמפלייט / שיחה נפתחה / זום / נציג / סגורה) and the funnel
+ * stage filter are applied client-side because they involve time-decay
+ * rules and computed values that have no stable SQL form.
  *
  * RLS (`authenticated_read_conversations`, migration 0002) lets every
- * authenticated user read all rows; agent scoping is enforced client-side
- * here via `agent_id = activeAgent.id`.
+ * authenticated user read all rows; agent scoping is enforced here via
+ * `agent_id = activeAgent.id`.
  */
 import { supabase } from "./supabase/client";
-import type {
-  Conversation,
-  ConversationStatus,
-  FunnelStage,
-} from "@/types/conversation";
+import type { Conversation } from "@/types/conversation";
 
 export interface LeadsFilters {
   agentId: string;
   search?: string;
-  funnelStage?: FunnelStage | "all";
-  status?: ConversationStatus | "all";
+  /** Lower bound on `created_at`, inclusive. null = unbounded. */
+  fromCreatedAt?: string | null;
+  /** Upper bound on `created_at`, inclusive. null = unbounded. */
+  toCreatedAt?: string | null;
   limit?: number;
 }
 
-const DEFAULT_LIMIT = 200;
+const DEFAULT_LIMIT = 500;
 
 export async function getLeads(filters: LeadsFilters): Promise<Conversation[]> {
   let query = supabase
@@ -33,15 +33,14 @@ export async function getLeads(filters: LeadsFilters): Promise<Conversation[]> {
     .select("*")
     .eq("agent_id", filters.agentId);
 
-  if (filters.funnelStage && filters.funnelStage !== "all") {
-    query = query.eq("funnel_stage", filters.funnelStage);
+  if (filters.fromCreatedAt) {
+    query = query.gte("created_at", filters.fromCreatedAt);
   }
-  if (filters.status && filters.status !== "all") {
-    query = query.eq("status", filters.status);
+  if (filters.toCreatedAt) {
+    query = query.lte("created_at", filters.toCreatedAt);
   }
   if (filters.search && filters.search.trim()) {
     const term = filters.search.trim().replace(/[%_]/g, "");
-    // Match either the phone number or the (case-insensitive) lead name.
     query = query.or(`lead_phone.ilike.%${term}%,lead_name.ilike.%${term}%`);
   }
 

@@ -1,10 +1,13 @@
 /**
  * Queries for the conversations list (chat-app style sidebar).
  *
- * Same `conversations` table that Leads uses, but a different shape:
- *   - Default to active rows only (paused / completed / opted_out hidden
- *     unless the user toggles "all").
- *   - Order by last_interaction_at desc so the freshest chat is on top.
+ * Reads from the `conversations` table — same source the Leads page uses
+ * but ordered by `last_interaction_at desc`. The 5-status display filter
+ * (טמפלייט נשלח / שיחה נפתחה / נקבע זום / דרוש נציג / שיחה סגורה) is
+ * computed client-side via `deriveDisplayStatus()` because the rules
+ * include a "48 hours since last reply" time-decay clause that has no
+ * stable SQL representation. We still ship the date-range bounds to the
+ * server so the trip cost stays linear in matches, not total rows.
  *
  * RLS (`authenticated_read_conversations`, migration 0002) lets every
  * authenticated user read all rows; agent scoping is `agent_id =
@@ -16,12 +19,14 @@ import type { Conversation } from "@/types/conversation";
 export interface ConversationsFilters {
   agentId: string;
   search?: string;
-  /** When false (default), only `status = 'active'` rows are returned. */
-  includeInactive?: boolean;
+  /** Lower bound on `created_at`, inclusive. null = unbounded. */
+  fromCreatedAt?: string | null;
+  /** Upper bound on `created_at`, inclusive. null = unbounded. */
+  toCreatedAt?: string | null;
   limit?: number;
 }
 
-const DEFAULT_LIMIT = 200;
+const DEFAULT_LIMIT = 500;
 
 export async function getActiveConversations(
   filters: ConversationsFilters,
@@ -31,8 +36,11 @@ export async function getActiveConversations(
     .select("*")
     .eq("agent_id", filters.agentId);
 
-  if (!filters.includeInactive) {
-    query = query.eq("status", "active");
+  if (filters.fromCreatedAt) {
+    query = query.gte("created_at", filters.fromCreatedAt);
+  }
+  if (filters.toCreatedAt) {
+    query = query.lte("created_at", filters.toCreatedAt);
   }
   if (filters.search && filters.search.trim()) {
     const term = filters.search.trim().replace(/[%_]/g, "");
