@@ -125,25 +125,21 @@ export interface SendCoachMessageInput {
   attachmentMediaType?: string;
 }
 
-export interface CoachReplyAssistant {
-  id: string;
-  content: string;
-  proposedPromptContent: string | null;
-  proposalReason: string | null;
-  createdAt: string;
-}
-
 export interface BrainDocUsed {
   id: string;
   title: string;
   source_kind: string;
 }
 
+/**
+ * The Coach edge function persists the user row synchronously, then runs
+ * Claude + the assistant-row insert in a background task. The client gets
+ * a 202 with this shape; the assistant row arrives later via Realtime on
+ * `public.coach_messages` (migration 0028).
+ */
 export interface SendCoachMessageResult {
   userMessageId: string;
-  assistantMessage: CoachReplyAssistant;
-  /** Brain rows that were injected as system context for this turn. */
-  brainDocsUsed?: BrainDocUsed[];
+  status: "pending";
 }
 
 export async function sendCoachMessage(

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const fromMock = vi.fn();
-vi.mock("./supabase/client", () => ({
+vi.mock("@/lib/supabase/client", () => ({
   supabase: {
     from: (...args: unknown[]) => fromMock(...args),
   },
