@@ -1197,17 +1197,27 @@ async function ingestInboundMessage(
     return null;
   }
 
-  const { error: updErr } = await admin
+  // Update both last_interaction_at (any message — used for chronological
+  // sort) and last_inbound_at (lead-only — used by the 5-status display
+  // taxonomy to detect "טמפלייט נשלח" vs "שיחה נפתחה" and the 48h
+  // auto-close rule for "שיחה סגורה").
+  //
+  // Note: variable name `inboundUpdErr` (not `updErr`) is deliberate —
+  // the same function declares `updErr` earlier (in the upsert path,
+  // line ~1055). Using `updErr` here again caused a redeclaration
+  // SyntaxError at boot, which took the whole webhook down and made
+  // HookMyApp reject all inbound deliveries.
+  const { error: inboundUpdErr } = await admin
     .from("conversations")
-    .update({ last_interaction_at: ts })
+    .update({ last_interaction_at: ts, last_inbound_at: ts })
     .eq("id", conversationId);
-  if (updErr) {
+  if (inboundUpdErr) {
     await logError({
       admin,
       source: SOURCE,
       errorType: "conversation_update_failed",
-      message: updErr.message,
-      context: { dbCode: updErr.code ?? null, phone },
+      message: inboundUpdErr.message,
+      context: { dbCode: inboundUpdErr.code ?? null, phone },
       agentId,
       conversationId,
     });
