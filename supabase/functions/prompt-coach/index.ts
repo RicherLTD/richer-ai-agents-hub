@@ -535,15 +535,59 @@ function buildUserContent(input: UserTurnInput): ClaudeUserContent {
   return blocks;
 }
 
+/**
+ * Anthropic's Messages API requires strict role alternation in `messages`.
+ * If a previous turn failed before we could persist the assistant row
+ * (e.g. a 504 from the gateway-timeout era prior to migration 0028),
+ * we end up with consecutive `user` rows in history — the next call
+ * would 400 with "messages: roles must alternate".
+ *
+ * Collapse adjacent same-role rows into one combined turn, separated by
+ * a blank line. This preserves the operator's intent (their stacked
+ * messages still reach Claude) and never throws on otherwise-valid
+ * history. Idempotent on already-alternating input.
+ */
+function sanitizeAlternation(
+  history: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  const out: Array<{ role: "user" | "assistant"; content: string }> = [];
+  for (const turn of history) {
+    const last = out[out.length - 1];
+    if (last && last.role === turn.role) {
+      last.content = `${last.content}\n\n${turn.content}`;
+    } else {
+      out.push({ role: turn.role, content: turn.content });
+    }
+  }
+  return out;
+}
+
 async function callCoach(
   anthropic: Anthropic,
   systemBlocks: SystemBlock[],
   history: Array<{ role: "user" | "assistant"; content: string }>,
   userTurn: UserTurnInput,
 ): Promise<CoachReply> {
+  // Sanitize history so the API never sees consecutive same-role turns.
+  // If the sanitized history *still* ends with `user` — which happens
+  // when stuck user rows precede this turn — we fold that residue into
+  // the current user turn so the final message list strictly alternates
+  // and ends with the new user message.
+  const sanitized = sanitizeAlternation(history);
+  let prependedText = "";
+  while (sanitized.length > 0 && sanitized[sanitized.length - 1].role === "user") {
+    const tail = sanitized.pop()!;
+    prependedText = `${tail.content}\n\n${prependedText}`;
+  }
+  const baseContent = buildUserContent(userTurn);
+  const finalUserContent = prependedText
+    ? (typeof baseContent === "string"
+      ? `${prependedText}${baseContent}`
+      : [{ type: "text", text: prependedText.trimEnd() }, ...baseContent])
+    : baseContent;
   const messages = [
-    ...history.map((m) => ({ role: m.role, content: m.content })),
-    { role: "user" as const, content: buildUserContent(userTurn) },
+    ...sanitized.map((m) => ({ role: m.role, content: m.content })),
+    { role: "user" as const, content: finalUserContent },
   ];
   // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
