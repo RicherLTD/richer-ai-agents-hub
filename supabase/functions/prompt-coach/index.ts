@@ -37,26 +37,28 @@ import { logError } from "../_shared/logError.ts";
 import { isUuid } from "../_shared/validation.ts";
 
 const SOURCE = "prompt-coach";
-const COACH_MODEL = "claude-sonnet-4-6";
+// Switched from Sonnet 4.6 to Haiku 4.5 on 2026-05-20 after Sonnet-based
+// turns kept dying silently in production. The Coach's job is "read the
+// current prompt + history + brain, propose an edit" — well within
+// Haiku 4.5's reasoning. Latency drop is ~3-5× which is the difference
+// between fitting inside the Supabase Edge runtime walltime for
+// waitUntil tasks and getting silently killed mid-call. If quality
+// degrades for nuanced edits we can flip back model-by-model.
+const COACH_MODEL = "claude-haiku-4-5-20251001";
 const MAX_HISTORY_TURNS = 20;
 const MAX_CONVERSATION_MESSAGES = 30;
 const MAIN_PROMPT_TYPE = "main";
-// Claude can take well over the gateway's 150s sync-request timeout when
-// the brain section is large and adaptive thinking spends time reasoning.
-// We run Claude inside EdgeRuntime.waitUntil (background task) and bound
-// the SDK call explicitly.
-//
-// Tuning notes (verified in production, 2026-05-20):
-//   - Supabase Edge Functions waitUntil tasks are killed by the runtime
-//     at ~150s wall clock on Pro. An SDK timeout of 300s never fires —
-//     the runtime kills the task first, the catch block never runs, and
-//     we end up with a user row but NO assistant row and NO error_log
-//     entry (silent failure, UI stuck on "המאמן חושב..." forever).
-//   - 110s mirrors brain-ingest. It leaves ~40s headroom for the
-//     fallback assistant-row INSERT + error_log write inside the catch
-//     path, so timeouts surface as `coach_timeout` with FALLBACK_TIMEOUT_HE
-//     instead of an invisible kill.
-const ANTHROPIC_TIMEOUT_MS = 110_000;
+// Empirically the Supabase waitUntil walltime cap on this project is
+// below 110s — the previous 110s/300s SDK timeouts never fired (catch
+// block never ran, no fallback row, no error_log). 60s leaves a real
+// headroom inside walltime for the SDK to actually abort + run the
+// catch path's DB writes (error_log + fallback assistant row).
+const ANTHROPIC_TIMEOUT_MS = 60_000;
+// Tighter output budget — Haiku 4.5 typically emits a Coach reply +
+// optional tool_use proposal well under 4K tokens. Smaller cap also
+// shortens generation time, which matters more than the long-form
+// quality we used to get from Sonnet's 16K budget.
+const COACH_MAX_TOKENS = 4096;
 const FALLBACK_TIMEOUT_HE =
   "המאמן לקח יותר מדי זמן לחשוב על התשובה. נסה לקצר את ההודעה או להפחית מסמכים פעילים במוח, ושלח שוב.";
 const FALLBACK_GENERIC_HE =
@@ -597,16 +599,13 @@ async function callCoach(
     ...sanitized.map((m) => ({ role: m.role, content: m.content })),
     { role: "user" as const, content: finalUserContent },
   ];
+  // No `thinking` block: Haiku 4.5 ships a reply directly without the
+  // adaptive-thinking cost we used to pay on Sonnet. This is the single
+  // biggest latency win in the 2026-05-20 hot-fix.
   // deno-lint-ignore no-explicit-any
   const raw = await anthropic.messages.create({
     model: COACH_MODEL,
-    // 16384 = generous enough that adaptive thinking can finish its
-    // reasoning AND still emit several paragraphs of text + an optional
-    // tool_use proposal. 4096 was too tight: complex turns spent the
-    // whole budget on `thinking` and returned 0 text blocks, surfacing
-    // as "(תגובה ריקה — נסה לנסח מחדש)" with no diagnostic.
-    max_tokens: 16384,
-    thinking: { type: "adaptive" } as any,
+    max_tokens: COACH_MAX_TOKENS,
     system: systemBlocks as any,
     tools: [PROPOSE_EDIT_TOOL] as any,
     messages: messages as any,
@@ -717,11 +716,22 @@ interface BackgroundParams {
 
 async function runCoachBackground(params: BackgroundParams): Promise<void> {
   const { admin, callerId, body, userMessageId, anthropicApiKey } = params;
+  const t0 = Date.now();
+  // Checkpoint logs live in Supabase `function_logs` (stdout). Pre-2026-05-20
+  // background failures were invisible because no DB writes landed and no
+  // catch block ran — these timestamps make it possible to see WHERE the
+  // runtime killed the task on the next failure.
+  console.info(`[coach][bg] start userMsgId=${userMessageId} agentId=${body.agentId}`);
   let coachCtx: CoachContext;
   try {
     coachCtx = await loadCoachContext(admin, body.agentId, body.referencedConversationId);
+    console.info(
+      `[coach][bg] context loaded +${Date.now() - t0}ms ` +
+        `history=${coachCtx.history.length} brain=${coachCtx.brain.length}`,
+    );
   } catch (err) {
     const message = err instanceof Error ? err.message : "Context load failed";
+    console.error(`[coach][bg] context_load_failed +${Date.now() - t0}ms ${message}`);
     await logError({
       admin,
       source: SOURCE,
@@ -738,6 +748,10 @@ async function runCoachBackground(params: BackgroundParams): Promise<void> {
   // pass separately) so Claude doesn't see the same message twice.
   const historyForClaude = coachCtx.history.slice(0, -1);
   const { blocks: systemBlocks, brainUsedIds } = buildCoachSystemPrompt(coachCtx);
+  console.info(
+    `[coach][bg] calling claude +${Date.now() - t0}ms model=${COACH_MODEL} ` +
+      `systemBlocks=${systemBlocks.length} brainUsed=${brainUsedIds.length}`,
+  );
 
   let reply: CoachReply;
   try {
@@ -747,9 +761,13 @@ async function runCoachBackground(params: BackgroundParams): Promise<void> {
       attachmentBase64: body.attachmentBase64,
       attachmentMediaType: body.attachmentMediaType,
     });
+    console.info(`[coach][bg] claude returned +${Date.now() - t0}ms`);
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     const isTimeout = /timeout|abort|timed out/i.test(message);
+    console.error(
+      `[coach][bg] claude_${isTimeout ? "timeout" : "error"} +${Date.now() - t0}ms ${message}`,
+    );
     await logError({
       admin,
       source: SOURCE,
@@ -808,6 +826,9 @@ async function runCoachBackground(params: BackgroundParams): Promise<void> {
     .select("id")
     .single();
   if (assistantErr || !assistantRow) {
+    console.error(
+      `[coach][bg] assistant_insert_failed +${Date.now() - t0}ms ${assistantErr?.message ?? "no row"}`,
+    );
     await logError({
       admin,
       source: SOURCE,
@@ -818,6 +839,7 @@ async function runCoachBackground(params: BackgroundParams): Promise<void> {
     });
     return;
   }
+  console.info(`[coach][bg] assistant row inserted +${Date.now() - t0}ms id=${assistantRow.id}`);
 
   if (brainUsedIds.length > 0) {
     const { error: logErr } = await admin.from("brain_usage_log").insert({
@@ -828,6 +850,7 @@ async function runCoachBackground(params: BackgroundParams): Promise<void> {
       console.warn(`[prompt-coach] brain_usage_log insert failed: ${logErr.message}`);
     }
   }
+  console.info(`[coach][bg] done +${Date.now() - t0}ms`);
 }
 
 async function insertFallbackAssistant(
