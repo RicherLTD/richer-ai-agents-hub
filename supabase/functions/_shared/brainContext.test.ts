@@ -95,6 +95,25 @@ describe("buildBrainSection", () => {
     expect(result.usedIds).toEqual(["huge"]);
   });
 
+  it("includes the cite-by-title instruction by default (Coach surface)", () => {
+    const result = buildBrainSection([row({ id: "n", extracted_text: "fact" })]);
+    expect(result.text).toContain("cite the document by title");
+    expect(result.text).not.toContain("do NOT mention the document");
+  });
+
+  it("emits the do-not-cite instruction when cite=false (WhatsApp surface)", () => {
+    // Lead-facing bot must not name internal doc titles to the user.
+    const result = buildBrainSection(
+      [row({ id: "n", title: "Internal Brochure 2025", extracted_text: "fact" })],
+      { cite: false },
+    );
+    expect(result.text).toContain("do NOT mention the document");
+    expect(result.text).not.toContain("cite the document by title");
+    // The brain content is still present — only the instruction differs.
+    expect(result.text).toContain("fact");
+    expect(result.text).toContain("Internal Brochure 2025");
+  });
+
   it("omits docs that exceed the total-chars budget and surfaces a notice", () => {
     // 7 docs at 40K each (post-truncation) = 280K, well past the 200K total
     // budget. Newest-first order means d7, d6, d5, d4, d3 fit (5 × 40K =

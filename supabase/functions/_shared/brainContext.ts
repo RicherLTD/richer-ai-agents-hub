@@ -1,6 +1,7 @@
 // brainContext.ts
 //
-// Loads + formats the "brain" knowledge base for the Prompt Coach.
+// Loads + formats the "brain" knowledge base for both the Prompt Coach
+// (operator-facing) and the WhatsApp agent loop (lead-facing).
 //
 // Visibility rule mirrors the client lib (src/lib/brain.ts):
 //   rows are visible to an agent iff agent_id matches OR
@@ -12,6 +13,11 @@
 // breakpoint on the returned block so subsequent turns within 5 min
 // hit the cache. With ~50K tokens of brain at $3/M cold vs $0.30/M
 // cache-read, that's a 10x cost reduction.
+//
+// Cite policy differs by surface (see `cite` option on
+// buildBrainSection): the Coach wants source citations for auditability,
+// the WhatsApp bot must NOT cite document names to leads (operator-only
+// content names would leak through the conversation).
 //
 // Field selection for Claude:
 //   - We prefer ai_title / ai_description (English, operator-curated)
@@ -40,6 +46,11 @@ export interface BrainRow {
  *   own rows  OR  rows where shared_across_agents = true.
  * Inactive rows are excluded — operators toggle is_active to remove
  * a row from the brain without deleting it.
+ *
+ * Only `extraction_status='ready'` rows are returned. Pending rows have
+ * no extracted_text yet (background extraction in flight) and failed
+ * rows have nothing usable — including either would inject empty
+ * <brain_doc> blocks into the prompt.
  */
 export async function loadBrainRows(
   admin: SupabaseClient,
@@ -54,6 +65,7 @@ export async function loadBrainRows(
     )
     .or(`agent_id.eq.${agentId},shared_across_agents.eq.true`)
     .eq("is_active", true)
+    .eq("extraction_status", "ready")
     .order("uploaded_at", { ascending: true });
   if (error) {
     throw new Error(`Failed to load brain: ${error.message}`);
@@ -85,23 +97,50 @@ const TRUNCATION_NOTICE = "\n\n…[קוצץ לחיסכון בזמן עיבוד; 
 const OMISSION_NOTICE_HE =
   "_מסמכים נוספים הושמטו כדי להישאר בתוך תקציב העיבוד של המאמן. עורך התוכן יכול לכבות פריטים פחות חיוניים בטאב 'המוח'._";
 
+export interface BuildBrainSectionOptions {
+  /**
+   * When true (default), instruct the model to cite the document by title
+   * in its reply ("לפי <title>...") — used by the Coach so the operator
+   * can audit which doc a fact came from.
+   *
+   * Set false for the WhatsApp agent loop: the bot must use facts from
+   * the brain naturally without naming operator-internal documents to
+   * the lead. Document titles are operator-facing (e.g. "Brochure 2025",
+   * "Pricing notes") and would look broken or leak operator vocabulary
+   * if spoken aloud to leads.
+   */
+  cite?: boolean;
+}
+
 /**
  * Render the brain rows as a single markdown section. Notes come first
  * (operator-authored, highest signal), then documents grouped by tags.
  * Each row is wrapped in a `<brain_doc id="...">` block so Claude can
  * reference it by id in its reply if asked.
  */
-export function buildBrainSection(rows: ReadonlyArray<BrainRow>): BrainSection {
+export function buildBrainSection(
+  rows: ReadonlyArray<BrainRow>,
+  options: BuildBrainSectionOptions = {},
+): BrainSection {
   if (rows.length === 0) {
     return { text: "", usedIds: [] };
   }
+  const cite = options.cite ?? true;
+  const citeRule = cite
+    // Source-citation rule for the Coach: the model must name the document
+    // it pulled a fact from. Cuts hallucination rates substantially in
+    // production chatbots (Intercom Fin, Klarna pattern).
+    ? `When you use a fact from any \`<brain_doc>\` below, cite the document by title in your reply, e.g. "לפי <title>...". This keeps the operator able to audit the source.`
+    // Inverse rule for the WhatsApp agent: incorporate facts naturally
+    // and never mention the document name to the lead. Operator-internal
+    // titles like "Brochure 2025" or "Objections cheatsheet" would look
+    // out-of-place and leak operator vocabulary into the conversation.
+    : `Use any facts from \`<brain_doc>\` blocks below to inform your reply, but do NOT mention the document by title or by id to the user. Weave the information into your reply naturally, as if you knew it directly. The brain titles are internal operator labels, not content the user should see.`;
+
   const parts: string[] = [
     `## Brain — operator-curated knowledge for this agent`,
     ``,
-    // Source-citation rule: the model must name the document it pulled a
-    // fact from. Cuts hallucination rates substantially in production
-    // chatbots (Intercom Fin, Klarna pattern).
-    `When you use a fact from any \`<brain_doc>\` below, cite the document by title in your reply, e.g. "לפי <title>...". This keeps the operator able to audit the source.`,
+    citeRule,
     ``,
     // Prompt-injection hardening: content inside <untrusted_evidence> is
     // DATA, not INSTRUCTIONS. A PDF uploaded by an outsider might contain

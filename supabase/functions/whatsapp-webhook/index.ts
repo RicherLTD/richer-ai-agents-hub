@@ -48,6 +48,7 @@ import { validateAgentReply } from "../_shared/validateAgentReply.ts";
 import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
+import { buildBrainSection, loadBrainRows, type BrainRow } from "../_shared/brainContext.ts";
 import {
   type AnthropicUsage,
   computeSonnet46Cost,
@@ -223,12 +224,36 @@ interface AgentLoopCtx {
   dashboardBaseUrl: string | null;
 }
 
+/**
+ * Anthropic structured `system` block. Used so the brain section can
+ * carry an `ephemeral` cache breakpoint — subsequent turns within 5 min
+ * pay $0.30/M cache reads instead of $3/M full input.
+ */
+interface SystemBlock {
+  type: "text";
+  text: string;
+  cache_control?: { type: "ephemeral" };
+}
+
 interface AgentTurnContext {
   promptContent: string;
   promptVersion: string;
   /** UUID `prompts.id` — saved on the outbound row for replay/diff. */
   promptVersionId: string;
   claudeMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  /**
+   * Structured `system` argument for anthropic.messages.create. Last
+   * block is the brain section with cache_control when brain rows
+   * exist; otherwise just the single prompt block.
+   */
+  systemBlocks: SystemBlock[];
+  /** Flattened rendering of systemBlocks — emitted to Langfuse for trace
+   *  visibility (the Langfuse trace input is a single string). */
+  systemPromptForTrace: string;
+  /** brain_documents.id values folded into the prompt this turn. Persisted
+   *  in the Langfuse trace context so the operator can audit which docs
+   *  the bot saw. */
+  brainUsedIds: string[];
 }
 
 /**
@@ -398,11 +423,55 @@ async function loadAgentTurnContext(
     }
   }
 
+  // Brain — operator-curated knowledge base shared with the Coach. Loaded
+  // every turn (no in-memory cache here; the DB is the single source of
+  // truth so toggles / uploads / deletes in the dashboard take effect on
+  // the very next reply). Prompt-caching happens at the Anthropic layer
+  // via the cache_control breakpoint on the brain block.
+  //
+  // Failure to load brain must NOT block a reply — the bot should still
+  // respond using just the prompt + history. We log and continue with an
+  // empty brain.
+  let brainRows: BrainRow[] = [];
+  try {
+    brainRows = await loadBrainRows(ctx.admin, ctx.agentId);
+  } catch (err) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "brain_load_failed",
+      level: "warn",
+      message: err instanceof Error ? err.message : String(err),
+      context: { lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+  }
+  // cite=false — the WhatsApp bot must NOT name operator-internal
+  // document titles to leads. See buildBrainSection BuildBrainSectionOptions.
+  const brainSection = buildBrainSection(brainRows, { cite: false });
+  const systemBlocks: SystemBlock[] = [{ type: "text", text: prompt.content }];
+  if (brainSection.text.length > 0) {
+    // Cache the brain block so repeat turns within 5 min pay the cached
+    // read rate. Anthropic requires cache_control on the LAST block of
+    // the cached prefix — anything stable that should also be cached
+    // must precede this block (the main prompt does).
+    systemBlocks.push({
+      type: "text",
+      text: brainSection.text,
+      cache_control: { type: "ephemeral" },
+    });
+  }
+  const systemPromptForTrace = systemBlocks.map((b) => b.text).join("\n\n");
+
   return {
     promptContent: prompt.content,
     promptVersion: prompt.version,
     promptVersionId: prompt.id,
     claudeMessages: finalMessages,
+    systemBlocks,
+    systemPromptForTrace,
+    brainUsedIds: brainSection.usedIds,
   };
 }
 
@@ -683,6 +752,12 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   try {
     const raw = await callWithRetry(
       () =>
+        // Anthropic accepts `system` as either a string or an array of
+        // text blocks. We pass the array form so the brain block can
+        // carry `cache_control: ephemeral` — subsequent turns within the
+        // 5-min cache TTL pay $0.30/M instead of $3/M for the (large)
+        // brain content. Without the array form, no caching is possible.
+        // deno-lint-ignore no-explicit-any
         ctx.anthropic.messages.create({
           model: CLAUDE_MODEL,
           // 1024 was too tight once v6/v7 + adaptive-thinking landed —
@@ -693,9 +768,10 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
           // visible response.
           max_tokens: 2048,
           thinking: { type: "adaptive" },
-          system: turn.promptContent,
+          system: turn.systemBlocks,
           messages: turn.claudeMessages,
-        }),
+          // deno-lint-ignore no-explicit-any
+        } as any),
       {
         maxAttempts: 3,
         baseDelayMs: 1000,
@@ -755,7 +831,10 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
         promptVersion: turn.promptVersion,
         promptVersionId: turn.promptVersionId,
         model: CLAUDE_MODEL,
-        systemPrompt: turn.promptContent,
+        // Include the brain block so the Langfuse trace shows exactly
+        // what Claude saw this turn — operator can audit which brain
+        // docs informed the reply.
+        systemPrompt: turn.systemPromptForTrace,
         claudeMessages: turn.claudeMessages,
         startTime,
         endTime,
@@ -1197,17 +1276,21 @@ async function ingestInboundMessage(
     return null;
   }
 
-  const { error: updErr } = await admin
+  // Update both last_interaction_at (any message — used for chronological
+  // sort) and last_inbound_at (lead-only — used by the 5-status display
+  // taxonomy to detect "טמפלייט נשלח" vs "שיחה נפתחה" and the 48h
+  // auto-close rule for "שיחה סגורה").
+  const { error: inboundUpdErr } = await admin
     .from("conversations")
-    .update({ last_interaction_at: ts })
+    .update({ last_interaction_at: ts, last_inbound_at: ts })
     .eq("id", conversationId);
-  if (updErr) {
+  if (inboundUpdErr) {
     await logError({
       admin,
       source: SOURCE,
       errorType: "conversation_update_failed",
-      message: updErr.message,
-      context: { dbCode: updErr.code ?? null, phone },
+      message: inboundUpdErr.message,
+      context: { dbCode: inboundUpdErr.code ?? null, phone },
       agentId,
       conversationId,
     });
