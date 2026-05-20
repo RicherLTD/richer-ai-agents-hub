@@ -4,7 +4,8 @@ import { ChevronLeft } from "lucide-react";
 import { Link } from "react-router-dom";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ConversationTagBadge } from "@/components/leads/ConversationTagBadge";
+import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
+import { deriveDisplayStatus } from "@/lib/conversation-status";
 import type { Conversation } from "@/types/conversation";
 
 function formatRelative(value: string | null): string {
@@ -51,7 +52,7 @@ export function RecentLeadsList({ leads, isLoading }: Props) {
                     </p>
                   </div>
                   <div className="shrink-0">
-                    <ConversationTagBadge tag={lead.current_tag} />
+                    <DisplayStatusBadge status={deriveDisplayStatus(lead)} />
                   </div>
                   <div className="shrink-0 text-[11px] text-muted-foreground">
                     {formatRelative(lead.last_interaction_at)}

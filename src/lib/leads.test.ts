@@ -21,14 +21,13 @@ function makeChain(result: { data: unknown; error: unknown }) {
     calls,
     select: vi.fn(),
     eq: vi.fn(),
+    gte: vi.fn(),
+    lte: vi.fn(),
     order: vi.fn(),
     limit: vi.fn(),
     or: vi.fn(),
   };
-  // Each method records its call and returns the same chain so the next
-  // method can be invoked. `limit` is awaitable — it must resolve to the
-  // result. We do that with a `then` so `await chain.limit(...)` works.
-  for (const method of ["select", "eq", "order", "or"] as const) {
+  for (const method of ["select", "eq", "gte", "lte", "order", "or"] as const) {
     chain[method].mockImplementation((...args: unknown[]) => {
       calls.push({ method, args });
       return chain;
@@ -59,24 +58,30 @@ describe("getLeads", () => {
     expect(orderCall?.args[0]).toBe("last_interaction_at");
   });
 
-  it("does NOT add funnel_stage filter when 'all'", async () => {
+  it("applies created_at lower and upper bounds when provided", async () => {
     const chain = makeChain({ data: [], error: null });
     fromMock.mockReturnValue(chain);
 
-    await getLeads({ agentId: "agent-1", funnelStage: "all" });
+    await getLeads({
+      agentId: "agent-1",
+      fromCreatedAt: "2026-05-01T00:00:00Z",
+      toCreatedAt: "2026-05-20T23:59:59Z",
+    });
 
-    const stageCall = chain.calls.find((c) => c.method === "eq" && c.args[0] === "funnel_stage");
-    expect(stageCall).toBeUndefined();
+    const gte = chain.calls.find((c) => c.method === "gte");
+    const lte = chain.calls.find((c) => c.method === "lte");
+    expect(gte?.args).toEqual(["created_at", "2026-05-01T00:00:00Z"]);
+    expect(lte?.args).toEqual(["created_at", "2026-05-20T23:59:59Z"]);
   });
 
-  it("adds funnel_stage filter when set to a real stage", async () => {
+  it("skips date bounds when not provided", async () => {
     const chain = makeChain({ data: [], error: null });
     fromMock.mockReturnValue(chain);
 
-    await getLeads({ agentId: "agent-1", funnelStage: "mid" });
+    await getLeads({ agentId: "agent-1" });
 
-    const stageCall = chain.calls.find((c) => c.method === "eq" && c.args[0] === "funnel_stage");
-    expect(stageCall?.args).toEqual(["funnel_stage", "mid"]);
+    expect(chain.calls.find((c) => c.method === "gte")).toBeUndefined();
+    expect(chain.calls.find((c) => c.method === "lte")).toBeUndefined();
   });
 
   it("adds an OR clause when search is provided", async () => {

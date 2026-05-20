@@ -4,14 +4,16 @@ import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ConversationDetail } from "@/components/conversations/ConversationDetail";
 import { ConversationListItem } from "@/components/conversations/ConversationListItem";
+import { DateRangeFilter, type DatePreset, type DateRange } from "@/components/leads/DateRangeFilter";
+import { StatusFilterChips, type StatusFilter } from "@/components/leads/StatusFilterChips";
 import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
 import { useAgent } from "@/contexts/AgentContext";
 import { getActiveConversations } from "@/lib/conversations";
+import { deriveDisplayStatus, statusBreakdown } from "@/lib/conversation-status";
 import type { Conversation } from "@/types/conversation";
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -28,12 +30,21 @@ const Conversations = () => {
   const { id: activeConversationId } = useParams();
   const { activeAgent, isLoading: isAgentLoading } = useAgent();
   const [search, setSearch] = useState("");
-  const [includeInactive, setIncludeInactive] = useState(false);
+  const [status, setStatus] = useState<StatusFilter>("all");
+  const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  const [dateRange, setDateRange] = useState<DateRange>({ from: null, to: null });
   const debouncedSearch = useDebounced(search, 300);
 
   const queryKey = useMemo(
-    () => ["conversations", activeAgent?.id, debouncedSearch, includeInactive] as const,
-    [activeAgent?.id, debouncedSearch, includeInactive],
+    () =>
+      [
+        "conversations",
+        activeAgent?.id,
+        debouncedSearch,
+        dateRange.from,
+        dateRange.to,
+      ] as const,
+    [activeAgent?.id, debouncedSearch, dateRange.from, dateRange.to],
   );
 
   const { data, isLoading, error } = useQuery({
@@ -42,10 +53,18 @@ const Conversations = () => {
       getActiveConversations({
         agentId: activeAgent!.id,
         search: debouncedSearch || undefined,
-        includeInactive,
+        fromCreatedAt: dateRange.from,
+        toCreatedAt: dateRange.to,
       }),
     enabled: Boolean(activeAgent?.id),
   });
+
+  const rows = useMemo(() => data ?? [], [data]);
+  const counts = useMemo(() => statusBreakdown(rows), [rows]);
+  const filtered = useMemo(() => {
+    if (status === "all") return rows;
+    return rows.filter((r) => deriveDisplayStatus(r) === status);
+  }, [rows, status]);
 
   if (isAgentLoading) {
     return (
@@ -60,8 +79,6 @@ const Conversations = () => {
     return <EmptyState icon={MessageCircle} title="לא נבחר סוכן" />;
   }
 
-  const list = data ?? [];
-
   const handleSelect = (c: Conversation) => {
     navigate(`/conversations/${c.id}`);
   };
@@ -70,22 +87,28 @@ const Conversations = () => {
 
   return (
     <div className="flex h-[calc(100vh-7rem)] flex-col gap-3">
-      <header className="flex items-end justify-between gap-4">
+      <header className="space-y-3">
         <div className="space-y-2">
           <p className="label-mono" dir="ltr">Conversations · {activeAgent.name}</p>
-          <h1 className="font-display text-3xl font-medium tracking-tight">שיחות פעילות</h1>
+          <h1 className="font-display text-3xl font-medium tracking-tight">שיחות</h1>
           <p className="text-sm text-muted-foreground">
-            <span className="tabular-nums font-medium text-foreground">{list.length}</span> שיחות{includeInactive ? " (כולל לא פעילות)" : ""}
+            <span className="tabular-nums font-medium text-foreground">{filtered.length}</span> שיחות
+            {status !== "all" ? " מסוננות" : ""}
+            {dateRange.from || dateRange.to ? " (לפי תאריך)" : ""}
           </p>
         </div>
-        <label className="flex cursor-pointer items-center gap-2 text-sm text-muted-foreground">
-          <Switch checked={includeInactive} onCheckedChange={setIncludeInactive} />
-          <span>הצג גם לא פעילות</span>
-        </label>
+        <StatusFilterChips value={status} onChange={setStatus} counts={counts} />
+        <DateRangeFilter
+          preset={datePreset}
+          range={dateRange}
+          onChange={({ preset, range }) => {
+            setDatePreset(preset);
+            setDateRange(range);
+          }}
+        />
       </header>
 
       <div className="flex flex-1 gap-3 overflow-hidden rounded-lg border border-border bg-card/40">
-        {/* Right side: list */}
         <div
           className={cn(
             "flex w-full flex-col lg:w-[360px] lg:shrink-0",
@@ -114,16 +137,14 @@ const Conversations = () => {
                 </>
               ) : error ? (
                 <p className="p-4 text-sm text-destructive">שגיאה: {error.message}</p>
-              ) : list.length === 0 ? (
+              ) : filtered.length === 0 ? (
                 <p className="py-12 text-center text-sm text-muted-foreground">
-                  {debouncedSearch
-                    ? "אין שיחות שתואמות לחיפוש."
-                    : includeInactive
-                      ? "עדיין אין שיחות לסוכן הזה."
-                      : "אין שיחות פעילות. הפעל את המתג שלמעלה כדי לראות גם שיחות לא פעילות."}
+                  {debouncedSearch || status !== "all" || dateRange.from || dateRange.to
+                    ? "אין שיחות שתואמות לסינון."
+                    : "עדיין אין שיחות לסוכן הזה."}
                 </p>
               ) : (
-                list.map((c) => (
+                filtered.map((c) => (
                   <ConversationListItem
                     key={c.id}
                     conversation={c}
@@ -136,7 +157,6 @@ const Conversations = () => {
           </ScrollArea>
         </div>
 
-        {/* Left side: detail panel */}
         <div
           className={cn(
             "flex flex-1 flex-col overflow-hidden border-l",

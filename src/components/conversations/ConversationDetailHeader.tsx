@@ -2,8 +2,8 @@ import { formatDistanceToNow } from "date-fns";
 import { he } from "date-fns/locale";
 import { ArrowRight, Info } from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { ConversationStatusBadge } from "@/components/leads/ConversationStatusBadge";
-import { ConversationTagBadge } from "@/components/leads/ConversationTagBadge";
+import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
+import { deriveDisplayStatus } from "@/lib/conversation-status";
 import { FunnelStageBadge } from "@/components/leads/FunnelStageBadge";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
@@ -91,9 +91,8 @@ export function ConversationDetailHeader({ conversation, onOpenDetails }: Props)
       </div>
       <div className="flex items-center gap-2">
         <div className="hidden flex-wrap items-center gap-1.5 sm:flex">
+          <DisplayStatusBadge status={deriveDisplayStatus(conversation)} />
           <FunnelStageBadge stage={conversation.funnel_stage} />
-          <ConversationTagBadge tag={conversation.current_tag} />
-          <ConversationStatusBadge status={conversation.status} />
         </div>
         <Button
           type="button"

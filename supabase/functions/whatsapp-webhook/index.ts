@@ -1197,9 +1197,13 @@ async function ingestInboundMessage(
     return null;
   }
 
+  // Update both last_interaction_at (any message — used for chronological
+  // sort) and last_inbound_at (lead-only — used by the 5-status display
+  // taxonomy to detect "טמפלייט נשלח" vs "שיחה נפתחה" and the 48h
+  // auto-close rule for "שיחה סגורה").
   const { error: updErr } = await admin
     .from("conversations")
-    .update({ last_interaction_at: ts })
+    .update({ last_interaction_at: ts, last_inbound_at: ts })
     .eq("id", conversationId);
   if (updErr) {
     await logError({

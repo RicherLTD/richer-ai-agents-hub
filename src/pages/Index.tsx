@@ -134,7 +134,10 @@ function OverviewTab({ kpiQuery }: { kpiQuery: KpiQuery }) {
           breakdown={k?.funnelBreakdown ?? { cold: 0, mid: 0, done: 0 }}
           isLoading={isLoading}
         />
-        <TagBreakdownList breakdown={k?.tagBreakdown ?? {}} isLoading={isLoading} />
+        <TagBreakdownList
+          breakdown={k?.statusBreakdown ?? { template_sent: 0, opened: 0, zoom_scheduled: 0, requires_human: 0, closed: 0 }}
+          isLoading={isLoading}
+        />
       </div>
 
       <RecentLeadsList leads={k?.recentLeads ?? []} isLoading={isLoading} />
