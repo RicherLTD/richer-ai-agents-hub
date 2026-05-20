@@ -68,6 +68,23 @@ export interface BrainSection {
   usedIds: string[];
 }
 
+// Per-doc truncation cap. brain-ingest extracts up to 200K chars per
+// PDF; passing all of that verbatim to Claude on every Coach turn pushed
+// total input past 100K tokens, which combined with adaptive thinking
+// blew past the function runtime's ~150s wall clock for waitUntil tasks
+// (turns died silently before the SDK timeout could fire). 40K chars ≈
+// 10K tokens per doc keeps the heaviest part of the prompt under
+// control while preserving the most important content.
+const MAX_BRAIN_DOC_CHARS = 40_000;
+// Hard ceiling across all docs combined. If a single agent has many
+// large PDFs, we'd still exceed the latency budget even at 40K each.
+// 200K chars ≈ 50K tokens — leaves headroom for system + history +
+// reasoning within the 110s Anthropic timeout.
+const MAX_TOTAL_BRAIN_CHARS = 200_000;
+const TRUNCATION_NOTICE = "\n\n…[קוצץ לחיסכון בזמן עיבוד; ראה את המסמך המלא ב'המוח']";
+const OMISSION_NOTICE_HE =
+  "_מסמכים נוספים הושמטו כדי להישאר בתוך תקציב העיבוד של המאמן. עורך התוכן יכול לכבות פריטים פחות חיוניים בטאב 'המוח'._";
+
 /**
  * Render the brain rows as a single markdown section. Notes come first
  * (operator-authored, highest signal), then documents grouped by tags.
@@ -98,20 +115,26 @@ export function buildBrainSection(rows: ReadonlyArray<BrainRow>): BrainSection {
   ];
 
   const notes = rows.filter((r) => r.source_kind === "note");
-  const docs = rows.filter((r) => r.source_kind !== "note");
+  // Newer docs first when budgets bind — most recent uploads are usually
+  // the operator's current focus, so they belong in context over older
+  // ones. Rows arrive in ascending upload order from loadBrainRows.
+  const docs = rows.filter((r) => r.source_kind !== "note").slice().reverse();
   const usedIds: string[] = [];
+  let charsUsed = 0;
+  let docsOmitted = 0;
 
   if (notes.length > 0) {
     parts.push(`### Notes (operator-written facts)`);
     for (const n of notes) {
       const title = n.ai_title?.trim() || n.title;
-      const body = n.extracted_text?.trim() ?? "";
+      const body = clampDocBody(n.extracted_text?.trim() ?? "");
       parts.push(
         `<brain_doc id="${n.id}" kind="note" title="${escapeAttr(title)}">`,
         body,
         `</brain_doc>`,
         ``,
       );
+      charsUsed += body.length;
       usedIds.push(n.id);
     }
   }
@@ -119,9 +142,13 @@ export function buildBrainSection(rows: ReadonlyArray<BrainRow>): BrainSection {
   if (docs.length > 0) {
     parts.push(`### Documents (uploaded by the operator)`);
     for (const d of docs) {
+      if (charsUsed >= MAX_TOTAL_BRAIN_CHARS) {
+        docsOmitted += 1;
+        continue;
+      }
       const title = d.ai_title?.trim() || d.title;
       const desc = (d.ai_description ?? d.description)?.trim() ?? "";
-      const body = d.extracted_text?.trim() ?? "";
+      const body = clampDocBody(d.extracted_text?.trim() ?? "");
       const tagsLine = d.tags.length > 0 ? `tags="${escapeAttr(d.tags.join(","))}" ` : "";
       parts.push(
         `<brain_doc id="${d.id}" kind="${d.source_kind}" ${tagsLine}title="${escapeAttr(title)}">`,
@@ -130,12 +157,21 @@ export function buildBrainSection(rows: ReadonlyArray<BrainRow>): BrainSection {
         `</brain_doc>`,
         ``,
       );
+      charsUsed += body.length;
       usedIds.push(d.id);
+    }
+    if (docsOmitted > 0) {
+      parts.push(`${OMISSION_NOTICE_HE} (${docsOmitted})`, ``);
     }
   }
 
   parts.push(`</untrusted_evidence>`);
   return { text: parts.join("\n"), usedIds };
+}
+
+function clampDocBody(body: string): string {
+  if (body.length <= MAX_BRAIN_DOC_CHARS) return body;
+  return body.slice(0, MAX_BRAIN_DOC_CHARS) + TRUNCATION_NOTICE;
 }
 
 function escapeAttr(s: string): string {
