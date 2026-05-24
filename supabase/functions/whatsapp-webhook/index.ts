@@ -702,6 +702,23 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
 
   let turnResult;
   const startTime = new Date();
+  // Inject today's date in Asia/Jerusalem so the model resolves
+  // "מחר"/"היום"/"יום ראשון" relative to NOW, not to its training cutoff.
+  // Without this, the bot was sending 2025 dates to Mooz's list_available_slots
+  // and getting [] back because the dates were in the past.
+  const todayIL = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    weekday: "long",
+  }).formatToParts(startTime);
+  const todayDate = `${todayIL.find((p) => p.type === "year")?.value}-${todayIL.find((p) => p.type === "month")?.value}-${todayIL.find((p) => p.type === "day")?.value}`;
+  const todayWeekday = todayIL.find((p) => p.type === "weekday")?.value ?? "";
+  const dateHeader =
+    `# Current date context\n` +
+    `Today is ${todayDate} (${todayWeekday}, Asia/Jerusalem).\n` +
+    `When a lead says "היום" use ${todayDate}. ` +
+    `When they say "מחר" compute it as the next calendar day in YYYY-MM-DD. ` +
+    `Always pass dates to list_available_slots in YYYY-MM-DD format using THIS reference, not your training cutoff.\n\n`;
   try {
     turnResult = await runAgentTurn({
       anthropic: ctx.anthropic,
@@ -711,7 +728,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
       // reasoning and return an empty visible reply. 2048 gives the
       // model headroom for thinking AND a 1-3 sentence visible response.
       maxTokens: 2048,
-      systemPrompt: turn.promptContent,
+      systemPrompt: dateHeader + turn.promptContent,
       initialMessages: turn.claudeMessages,
       moozCtx,
       retry: {
