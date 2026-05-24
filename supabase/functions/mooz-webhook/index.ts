@@ -87,6 +87,66 @@ function normalizeIsraeliPhone(input: string): string {
   return digits;
 }
 
+/**
+ * Mooz ships `data.start_time` / `data.end_time` in two flavors depending on
+ * how the booking was created:
+ *   - ISO 8601 UTC: "2026-05-24T09:00:00.000Z"  (bot-side `book_meeting`)
+ *   - IL-local DD/MM/YYYY HH:MM: "24/05/2026 12:00"  (Mooz hosted booking page)
+ * Both must land in our `timestamptz` columns as proper UTC ISO strings —
+ * otherwise Postgres throws "date/time field value out of range" and the
+ * conversation never flips to zoom_scheduled (see error_logs 2026-05-21..24).
+ *
+ * Returns null only when the input is unrecognizable, so the caller can
+ * fall back to `new Date().toISOString()` and still proceed.
+ */
+export function normalizeMoozTimestamp(input: string | null | undefined): string | null {
+  if (!input) return null;
+  const trimmed = input.trim();
+  // Already valid ISO 8601 — let Date parse it and re-emit canonical form.
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(trimmed)) {
+    const d = new Date(trimmed);
+    return Number.isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  // Mooz's IL-local format: DD/MM/YYYY HH:MM (Asia/Jerusalem, no tz suffix).
+  const m = trimmed.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})$/);
+  if (!m) return null;
+  const [, dd, mm, yyyy, hh, min] = m;
+  // Convert IL-local → UTC by leveraging Intl's IANA tz database. We construct
+  // a "naive UTC" timestamp from the IL parts, then check what IL time that
+  // naive UTC actually represents — the delta IS the IL offset at that
+  // instant (DST-aware, no hardcoding +02:00/+03:00).
+  const naiveUtc = Date.UTC(
+    Number(yyyy),
+    Number(mm) - 1,
+    Number(dd),
+    Number(hh),
+    Number(min),
+    0,
+  );
+  const ilParts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jerusalem",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(new Date(naiveUtc));
+  const get = (t: string): number =>
+    Number(ilParts.find((p) => p.type === t)?.value ?? "0");
+  const ilOfNaive = Date.UTC(
+    get("year"),
+    get("month") - 1,
+    get("day"),
+    get("hour") === 24 ? 0 : get("hour"),
+    get("minute"),
+    get("second"),
+  );
+  const offsetMs = ilOfNaive - naiveUtc;
+  return new Date(naiveUtc - offsetMs).toISOString();
+}
+
 Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
@@ -282,7 +342,22 @@ async function handleCreatedOrRescheduled(args: {
   dashboardBaseUrl: string | null;
 }): Promise<void> {
   const { admin, conversation, booking, event, handoffWebhookUrl, handoffWebhookSecret, dashboardBaseUrl } = args;
-  const scheduledAt = booking.start_time ?? new Date().toISOString();
+  const scheduledAt =
+    normalizeMoozTimestamp(booking.start_time) ?? new Date().toISOString();
+  if (booking.start_time && !normalizeMoozTimestamp(booking.start_time)) {
+    await logError({
+      admin,
+      source: SOURCE,
+      errorType: "mooz_start_time_unrecognized",
+      level: "warn",
+      message:
+        `unrecognized booking.start_time format: ${booking.start_time}` +
+        " — falling back to now()",
+      context: { booking_id: booking.id, raw: booking.start_time },
+      conversationId: conversation.id,
+      agentId: conversation.agent_id ?? undefined,
+    });
+  }
   const wasAlreadyScheduled = conversation.current_tag === "zoom_scheduled";
 
   // Always reflect the latest scheduled_at — handles reschedule case.
