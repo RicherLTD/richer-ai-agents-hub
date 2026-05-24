@@ -131,7 +131,7 @@ describe("aggregateKpis", () => {
     expect(k.funnelBreakdown).toEqual({ cold: 2, mid: 1, done: 1 });
   });
 
-  it("statusBreakdown maps the old 10-tag world onto the new 5 buckets", () => {
+  it("statusBreakdown maps the old 10-tag world onto the new 6 buckets", () => {
     const k = aggregateKpis(
       [
         row({ id: "1", current_tag: "zoom_scheduled" }),
@@ -148,7 +148,8 @@ describe("aggregateKpis", () => {
     expect(k.statusBreakdown).toEqual({
       zoom_scheduled: 1,
       requires_human: 2,
-      closed: 3,
+      opted_out: 1,
+      closed: 2,
       opened: 1,
       template_sent: 1,
     });

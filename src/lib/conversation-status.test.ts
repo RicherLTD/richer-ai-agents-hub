@@ -41,15 +41,26 @@ describe("deriveDisplayStatus", () => {
     );
   });
 
-  it("returns 'closed' for opted_out / underage / ghosted tags", () => {
-    for (const tag of ["opted_out", "underage", "ghosted"] as const) {
+  it("returns 'opted_out' for the opted_out tag (own bucket)", () => {
+    expect(deriveDisplayStatus(row({ current_tag: "opted_out" }), NOW)).toBe(
+      "opted_out",
+    );
+  });
+
+  it("returns 'opted_out' when status is opted_out (own bucket)", () => {
+    expect(deriveDisplayStatus(row({ status: "opted_out" }), NOW)).toBe(
+      "opted_out",
+    );
+  });
+
+  it("returns 'closed' for underage / ghosted tags", () => {
+    for (const tag of ["underage", "ghosted"] as const) {
       expect(deriveDisplayStatus(row({ current_tag: tag }), NOW)).toBe("closed");
     }
   });
 
-  it("returns 'closed' when status is completed or opted_out", () => {
+  it("returns 'closed' when status is completed", () => {
     expect(deriveDisplayStatus(row({ status: "completed" }), NOW)).toBe("closed");
-    expect(deriveDisplayStatus(row({ status: "opted_out" }), NOW)).toBe("closed");
   });
 
   it("returns 'template_sent' when lead has not replied and conversation is fresh (<48h)", () => {
@@ -143,7 +154,8 @@ describe("statusBreakdown", () => {
     expect(out).toEqual({
       zoom_scheduled: 2,
       requires_human: 2,
-      closed: 3,
+      opted_out: 1,
+      closed: 2,
       opened: 1,
       template_sent: 2,
     });
@@ -157,6 +169,7 @@ describe("statusBreakdown", () => {
       opened: 0,
       zoom_scheduled: 0,
       requires_human: 0,
+      opted_out: 0,
       closed: 0,
     });
   });

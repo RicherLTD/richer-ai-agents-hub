@@ -50,6 +50,7 @@ import { runAgentTurn } from "../_shared/agentTurn.ts";
 import { moozClientFromEnv } from "../_shared/mooz.ts";
 import { type MoozDispatchCtx } from "../_shared/moozTools.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { isOptOutMessage } from "../_shared/optOut.ts";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 import {
   type AnthropicUsage,
@@ -1261,6 +1262,46 @@ async function ingestInboundMessage(
       agentId,
       conversationId,
     });
+  }
+
+  // Auto opt-out: if the inbound text is an explicit removal request
+  // (Israeli regulation requires honoring this immediately), tag the
+  // conversation, pause it, and skip the agent loop. No reply is sent —
+  // the lead asked for silence, we give silence. The dashboard "הסר"
+  // filter surfaces these so operators can audit.
+  if (type === "text" && isOptOutMessage(content)) {
+    const { error: optOutErr } = await admin
+      .from("conversations")
+      .update({ current_tag: "opted_out", status: "paused" })
+      .eq("id", conversationId);
+    if (optOutErr) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "auto_opt_out_update_failed",
+        message: optOutErr.message,
+        context: { phone, dbCode: optOutErr.code ?? null },
+        agentId,
+        conversationId,
+      });
+    } else {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "auto_opt_out",
+        level: "info",
+        message: `auto opt-out triggered by inbound text`,
+        context: { phone, content_preview: content.slice(0, 200) },
+        agentId,
+        conversationId,
+      });
+    }
+    return {
+      needsAgentReply: false,
+      needsCannedNonTextReply: false,
+      conversationId,
+      leadPhone: phone,
+    };
   }
 
   // Only text triggers the full agent loop. For non-text we'll send a
