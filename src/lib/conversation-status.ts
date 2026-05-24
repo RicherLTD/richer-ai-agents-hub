@@ -25,6 +25,7 @@ export const DISPLAY_STATUSES = [
   "opened",
   "zoom_scheduled",
   "requires_human",
+  "opted_out",
   "closed",
 ] as const;
 
@@ -35,6 +36,7 @@ export const DISPLAY_STATUS_LABEL: Record<DisplayStatus, string> = {
   opened: "שיחה נפתחה",
   zoom_scheduled: "נקבע זום",
   requires_human: "דרוש נציג",
+  opted_out: "הסר",
   closed: "שיחה סגורה",
 };
 
@@ -47,14 +49,15 @@ export const DISPLAY_STATUS_VARIANT: Record<
   opened: "default",
   zoom_scheduled: "default",
   requires_human: "destructive",
+  opted_out: "destructive",
   closed: "secondary",
 };
 
 export const FORTY_EIGHT_HOURS_MS = 48 * 60 * 60 * 1000;
 
-/** Tags that fold into "שיחה סגורה". */
+/** Tags that fold into "שיחה סגורה". opted_out is intentionally NOT here —
+ *  it gets its own bucket so the operator can audit removal requests. */
 const CLOSED_TAGS: ReadonlySet<ConversationTag> = new Set<ConversationTag>([
-  "opted_out",
   "underage",
   "ghosted",
 ]);
@@ -92,12 +95,13 @@ export function deriveDisplayStatus(
   // 2. Bot can't continue.
   if (tag && HUMAN_TAGS.has(tag)) return "requires_human";
 
-  // 3. Explicit DB-level closure or tag-driven closure.
-  if (
-    conv.status === "completed" ||
-    conv.status === "opted_out" ||
-    (tag && CLOSED_TAGS.has(tag))
-  ) {
+  // 3. Explicit removal request — its own bucket so the operator can
+  //    audit who asked to be removed, separately from leads who just
+  //    timed out / aged into "closed".
+  if (tag === "opted_out" || conv.status === "opted_out") return "opted_out";
+
+  // 4. Other explicit DB-level closures (completed / underage / ghosted).
+  if (conv.status === "completed" || (tag && CLOSED_TAGS.has(tag))) {
     return "closed";
   }
 
@@ -136,6 +140,7 @@ export function statusBreakdown(
     opened: 0,
     zoom_scheduled: 0,
     requires_human: 0,
+    opted_out: 0,
     closed: 0,
   };
   for (const row of rows) {

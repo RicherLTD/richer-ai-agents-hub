@@ -53,8 +53,17 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   // Numeric prices without a currency symbol. Catches "5000", "5K", "5,000"
   // etc when they appear near price-related verbs/nouns. Common bypass: the
   // model says "התוכנית עולה 5000" — no ₪, but it IS pricing.
+  //
+  // The negative lookbehind `(?<![א-ת])` is REQUIRED because Hebrew does not
+  // support \b in JS regex. Without it, "מעולה" (excellent) matches the
+  // substring "עולה" and false-positives every "מעולה, 11:30..." reply
+  // (incident: Kfir's test 2026-05-24 13:20 — bot got stuck because the
+  // booking confirmation message was DLQ'd). Same trap for "תעלה" inside
+  // "מתעלה" / "התעלה". The lookbehind says: only match these tokens when
+  // they are NOT preceded by another Hebrew letter (i.e. they stand as
+  // their own word).
   {
-    pattern: /(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}\d{2,}[\s]*(?:אלף|אלפים|K|k)?/,
+    pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}\d{2,}[\s]*(?:אלף|אלפים|K|k)?/,
     reason: "currency_mention",
   },
   // Standalone large numbers paired with money words (אלף / K / אלפים).

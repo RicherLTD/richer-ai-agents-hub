@@ -395,11 +395,25 @@ async function handleCreatedOrRescheduled(args: {
     });
   }
 
-  // Fire handoff ONCE per conversation. If it was already zoom_scheduled
-  // we skip — either the bot's book_meeting flow already announced this
-  // booking, or we already processed an earlier Mooz event for the
-  // same lead. Either way, no double-announce to Make.com / advisors.
-  if (wasAlreadyScheduled || event === "booking.rescheduled") {
+  // Fire handoff webhook on every booking.created from Mooz — this IS the
+  // canonical "Mooz confirmed the booking" trigger Kfir asked for on
+  // 2026-05-24: only fire to Make.com AFTER Mooz has actually persisted
+  // the booking, never on the bot's optimistic pre-tag.
+  //
+  // We do NOT skip on `wasAlreadyScheduled` even when the bot already set
+  // current_tag='zoom_scheduled' via the book_meeting tool: the bot's
+  // tool only updates our DB, it does NOT fire any webhook. If we skipped
+  // here, bot-initiated bookings would silently never reach Make.com /
+  // Fireberry / advisor notifications.
+  //
+  // Dedup against Mooz retries is handled upstream by the
+  // `mooz_webhook_events` idempotency table (insert with same
+  // X-Idempotency-Key short-circuits before we ever reach this point).
+  //
+  // booking.rescheduled is intentionally NOT a handoff trigger — the
+  // advisor was already announced on the original booking.created; the
+  // reschedule just adjusts zoom_scheduled_at in our DB.
+  if (event === "booking.rescheduled") {
     return;
   }
   if (!handoffWebhookUrl) {

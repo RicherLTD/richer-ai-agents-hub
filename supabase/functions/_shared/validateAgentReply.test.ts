@@ -150,6 +150,20 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("תוכל לעלות לי שאלה?").ok).toBe(true);
     expect(validateAgentReply("היועץ ידבר איתך בזום").ok).toBe(true);
   });
+
+  it("does NOT confuse 'מעולה' (excellent) for 'עולה' (costs)", () => {
+    // Regression for the 2026-05-24 incident — Kfir's booking-confirmation
+    // reply ("מעולה, 11:30 מחר פנוי! 🙌 ... שם מלא ... כתובת מייל") got
+    // DLQ'd because the prefix-attached "עולה" inside "מעולה" tripped the
+    // currency-mention guard.
+    const opts = { hasMoozToolUseThisTurn: true };
+    expect(
+      validateAgentReply("מעולה, 11:30 מחר פנוי! מה השם המלא והמייל?", opts).ok,
+    ).toBe(true);
+    expect(validateAgentReply("מעולה 13").ok).toBe(true);
+    // And the original intent — "X עולה 5000" — must STILL be blocked.
+    expect(validateAgentReply("התוכנית עולה 5000").ok).toBe(false);
+  });
 });
 
 describe("validateAgentReply — invented meeting time guard", () => {
