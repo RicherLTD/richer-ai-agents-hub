@@ -1,6 +1,8 @@
 # CLAUDE.md
 
 > מסמך זה הוא ה-source of truth לכל שיחת Claude Code על הפרויקט. כל החלטה ארכיטקטונית, הסבר מצב, וכלל עבודה — כתובים פה. עדכן אותו כשמשתנה משהו מבני.
+>
+> **עודכן לאחרונה**: 2026-05-20 (migrations עד 0028, 14 edge functions בייצור).
 
 ## סקירת הפרויקט
 
@@ -13,51 +15,286 @@
 
 הריפו הזה כולל גם את **דשבורד הניהול** וגם את **ה־AI agent loop עצמו** (Supabase Edge Functions ב־`supabase/functions/`). הכל בריפו אחד — אין n8n, אין מערכת חיצונית.
 
-## ארכיטקטורה כללית
+---
+
+## ארכיטקטורה כללית — תמונת על
 
 ```
-WhatsApp lead (real)                            Dashboard (Lovable)
-       ↕                                                ↕
-Meta Cloud API ──HookMyApp Cloud API channel    Supabase Realtime
-       ↕  POST (X-Hub-Signature-256)                    ↕
-       ▼                                                │
-┌─ Supabase Edge Functions ────────────────────────┐    │
-│  whatsapp-webhook  (inbound + agent loop)         │    │
-│  whatsapp-send     (dashboard ReplyBox)           │    │
-│  prompt-replay     (admin A/B testing)            │    │
-│  invite-user / delete-user (admin user mgmt)      │    │
-└─────┬────────────────────────┬───────────────────┘    │
-      │ service_role            │ Anthropic SDK          │
-      ▼                         ▼                        │
-  Supabase Postgres ◄──► Claude Sonnet 4.6 (agent)       │
-  conversations · messages · lead_memory · prompts ·     │
-  error_logs · failed_messages · agents · advisors       │
-      │                         │                        │
-      │                         ▼                        │
-      │                  Claude Haiku 4.5                │
-      │                  (memory extractor JSON)         │
-      └─────────────────────────┘                        │
-                       │                                 │
-                       ▼                                 │
-                Langfuse Cloud ◄─ traces per turn ───────┘
+                    ┌─────────────────────────────────────────────────────┐
+                    │                  PEOPLE & SYSTEMS                    │
+                    └─────────────────────────────────────────────────────┘
+                                          │
+        ┌─────────────────┬───────────────┴──────────────┬──────────────────┐
+        ▼                 ▼                              ▼                  ▼
+   ┌─────────┐      ┌──────────┐                  ┌───────────┐      ┌─────────┐
+   │  Lead   │      │  Admin   │                  │ Landing   │      │  Cron   │
+   │WhatsApp │      │Dashboard │                  │   Page    │      │(supabase│
+   │         │      │(Lovable) │                  │ (Make.com)│      │ schedule)│
+   └────┬────┘      └─────┬────┘                  └─────┬─────┘      └────┬────┘
+        │                 │                             │                 │
+        ▼                 ▼                             ▼                 ▼
+ ┌──────────┐      ┌──────────────┐              ┌────────────┐    ┌──────────────┐
+ │ Meta     │      │ Supabase     │              │ lead-      │    │ dispatch-    │
+ │ Cloud    │      │ Auth + JWT   │              │ register   │    │ scheduled-   │
+ │ → Hook   │      │ → Edge fns:  │              │ edge fn    │    │ templates    │
+ │ MyApp    │      │   • send     │              │            │    │ brain-sweep  │
+ │          │      │   • replay   │              │            │    │ re-engage    │
+ │          │      │   • coach    │              │            │    │              │
+ │          │      │   • brain    │              │            │    │              │
+ └────┬─────┘      └──────┬───────┘              └─────┬──────┘    └──────┬───────┘
+      │                   │                            │                  │
+      ▼                   │                            │                  │
+ ╔══════════════════════════════════════════════════════════════════════════════╗
+ ║              whatsapp-webhook  (PUBLIC, HMAC-verified, no-jwt)                ║
+ ║              ────────────────────────────────────────────────                 ║
+ ║   1. אימות חתימה  →  2. upsert conversation  →  3. insert inbound             ║
+ ║   4. kill-switch?  →  5. return 200 (≈100ms)  →  6. EdgeRuntime.waitUntil    ║
+ ║                                                                                ║
+ ║   ┌──────────────────────  background agent loop  ──────────────────────┐    ║
+ ║   │ 7. agent_lock (atomic)  8. quiet_hours?                              │    ║
+ ║   │ 9. load: prompt + 30 msgs + brain_documents + compression           │    ║
+ ║   │ 10. Claude Sonnet 4.6 (adaptive thinking, retry, 110s cap)          │    ║
+ ║   │ 11. validateAgentReply (regex)   12. judgeReply (Haiku 4.5)         │    ║
+ ║   │ 13. whatsappSend (HookMyApp)     14. insert outbound + provenance   │    ║
+ ║   │ 15. Langfuse trace               16. extractMemory (Haiku 4.5)      │    ║
+ ║   │ 17. updateTag + funnelStage      18. fireHandoffWebhook (Make.com)  │    ║
+ ║   └──────────────────────────────────────────────────────────────────────┘    ║
+ ╚══════════════════════════════════════════════════════════════════════════════╝
+      │                  │                  │                 │
+      ▼                  ▼                  ▼                 ▼
+ ┌──────────┐    ┌───────────────┐   ┌─────────────┐   ┌────────────┐
+ │ Supabase │    │  Anthropic    │   │  Langfuse   │   │  Make.com  │
+ │ Postgres │    │  Sonnet 4.6   │   │   Cloud     │   │  scenario  │
+ │   + RLS  │    │  + Haiku 4.5  │   │  (traces)   │   │  → Mooz    │
+ │ + Real-  │    │               │   │             │   │  → Firebrry│
+ │   time   │    │               │   │             │   │  → Alerts  │
+ └──────────┘    └───────────────┘   └─────────────┘   └────────────┘
 ```
 
-**WhatsApp pipeline (current production setup — Cloud API via HookMyApp):**
+---
 
-ה־`whatsapp-webhook` ([supabase/functions/whatsapp-webhook/index.ts](./supabase/functions/whatsapp-webhook/index.ts)) מקבל POST מ־HookMyApp עם חתימה ב־header (גם `X-Hub-Signature-256` של Meta וגם `X-HookMyApp-Signature-256` של הסנדבוקס נתמכים). אם החתימה חסרה / לא תקינה → 200 ללא עיבוד (fail-open) כדי לעבור את verification ping של HookMyApp. אם תקינה → upsert ל־conversation (UNIQUE על `(agent_id, lead_phone)` מ־migration 0010 מונע race), insert ל־`messages` inbound (UNIQUE על `meta_message_id` מ־migration 0007 מונע double-reply ב־retry), ואז ברקע (`EdgeRuntime.waitUntil`):
+## תרשים זרימה מלא — מהודעה נכנסת ועד handoff
 
-1. טוען `prompts.is_active=true AND prompt_type='main'`
-2. טוען 30 הודעות אחרונות (descending → reverse → chronological)
-3. קורא ל־Claude Sonnet 4.6 עם adaptive thinking
-4. מאמת ב־`validateAgentReply` (אורך, placeholders, hallucination guards — מחירים/AI-disclosure/ערבויות)
-5. שולח ל־HookMyApp דרך `sendWhatsAppText` עם retry (3 ניסיונות, backoff 1s/2s, AbortController timeout 8s, Bearer redaction)
-6. כותב outbound row עם `langfuse_trace_id` + `prompt_version_id` + tokens + cost + latency
-7. שולח trace ל־Langfuse Cloud
-8. קורא ל־Claude Haiku 4.5 ב־JSON mode (prefill `{`) לחילוץ זיכרון → upsert `lead_memory` + עדכון `conversations.primary_objection` ו־`current_tag` (red_flags → `requires_human`, underage → `underage`)
+```
+                              ┌────────────────────────┐
+                              │  Lead שולח הודעה ב־WA  │
+                              └───────────┬────────────┘
+                                          ▼
+                              ┌────────────────────────┐
+                              │   HookMyApp Cloud API   │
+                              │   POST → webhook URL    │
+                              └───────────┬────────────┘
+                                          ▼
+        ╔═════════════════════════════════════════════════════════════╗
+        ║   whatsapp-webhook/index.ts  (FOREGROUND ≈ 100ms)            ║
+        ╠═════════════════════════════════════════════════════════════╣
+        ║                                                               ║
+        ║   ① HMAC-SHA256 (constant-time, X-Hub-Signature-256)         ║
+        ║      └─ חתימה לא תקינה → log + 200 (fail-open ל־handshake)   ║
+        ║                                                               ║
+        ║   ② Upsert conversation (UPDATE-first, INSERT-fallback)      ║
+        ║      └─ UNIQUE(agent_id, lead_phone)  /  לא דורס status      ║
+        ║                                                               ║
+        ║   ③ Insert inbound message                                    ║
+        ║      └─ UNIQUE על meta_message_id (אידמפוטנטי)               ║
+        ║      └─ audio?  →  transcribeVoice (OpenAI Whisper, he)      ║
+        ║                                                               ║
+        ║   ④ agents.is_paused?  →  Kill-switch (יוצא ב־200, אין AI)   ║
+        ║                                                               ║
+        ║   ⑤ ✅ return 200 ל־HookMyApp                                 ║
+        ║                                                               ║
+        ║   ⑥ EdgeRuntime.waitUntil(...)  ←  הכל מכאן ברקע            ║
+        ╚═════════════════════════════════════════════════════════════╝
+                                          │
+                                  (ברקע — הליד כבר קיבל 200)
+                                          ▼
+        ╔═════════════════════════════════════════════════════════════╗
+        ║   AGENT LOOP  (generateAndSendAgentResponse)                  ║
+        ╠═════════════════════════════════════════════════════════════╣
+        ║                                                               ║
+        ║   ⑦ Atomic per-conversation lock                              ║
+        ║      └─ UPDATE conversations SET agent_lock_taken_at=now()    ║
+        ║         WHERE status='active' AND (lock is null OR <60s ago)  ║
+        ║      └─ rowCount=0  →  webhook מקביל לקח, יוצאים בשקט        ║
+        ║                                                               ║
+        ║   ⑧ isQuietHourNow(agent, Asia/Jerusalem)?  →  לא שולחים      ║
+        ║                                                               ║
+        ║   ⑨ loadAgentTurnContext:                                     ║
+        ║      • prompts WHERE is_active AND type='main'                ║
+        ║      • 30 הודעות אחרונות (chronological)                       ║
+        ║      • brain_documents (PDFs/images שאופרטור העלה)             ║
+        ║      • compression: >20 תורות  →  summary + 10 אחרונות         ║
+        ║      • guard: last message חייב להיות inbound                  ║
+        ║                                                               ║
+        ║   ⑩ Anthropic.messages.create()                                ║
+        ║      model=claude-sonnet-4-6                                  ║
+        ║      thinking={ type: "adaptive" }                            ║
+        ║      max_tokens=2048                                          ║
+        ║      └─ anthropicRetry: 3 ניסיונות, exp backoff + jitter       ║
+        ║      └─ SDK timeout cap 110s (PR #65, נמוך מ־150s edge fn)    ║
+        ║                                                               ║
+        ║   ⑪ validateAgentReply (regex, דטרמיניסטי):                   ║
+        ║      ❌ אורך >1500 / null / placeholders                       ║
+        ║      ❌ מטבעות (₪/$/€/שקלים/דולר)                              ║
+        ║      ❌ AI brand leak (Claude/ChatGPT/OpenAI/Gemini/LLM)       ║
+        ║      ❌ Hebrew self-disclosure (אני AI/בוט/מודל)               ║
+        ║      ❌ הבטחות הכנסה (מובטח/ערבות/תרוויח X בחודש)              ║
+        ║      └─ נכשל → DLQ + error_log + alertOperators                ║
+        ║                                                               ║
+        ║   ⑫ judgeReply (Claude Haiku 4.5, JSON prefill `{`):           ║
+        ║      ✓ price_leak ✓ income_promise ✓ ai_disclosure             ║
+        ║      ✓ invented_fact ✓ off_topic                               ║
+        ║      └─ Haiku down → degrade-open (מאפשרים, מתעדים warn)       ║
+        ║                                                               ║
+        ║   ⑬ whatsappSend → HookMyApp                                  ║
+        ║      └─ 3 retries (1s/2s), 8s timeout, Bearer redaction       ║
+        ║      └─ כשל סופי → DLQ + alertOperators                        ║
+        ║                                                               ║
+        ║   ⑭ Insert outbound message + עדכון conversation              ║
+        ║      • langfuse_trace_id, prompt_version_id, model            ║
+        ║      • tokens_input/output, cost_usd, latency_ms              ║
+        ║      • conversations.last_interaction_at = now()              ║
+        ║                                                               ║
+        ║   ⑮ Langfuse trace (fire-and-forget, never blocks)            ║
+        ╚═════════════════════════════════════════════════════════════╝
+                                          │
+                              (התגובה כבר אצל הליד)
+                                          ▼
+        ╔═════════════════════════════════════════════════════════════╗
+        ║   MEMORY + FUNNEL + HANDOFF  (extractMemory.ts)               ║
+        ╠═════════════════════════════════════════════════════════════╣
+        ║                                                               ║
+        ║   ⑯ Claude Haiku 4.5 (JSON mode, prefill `{`):                ║
+        ║      מחלץ: q1_age, q2_motivation, q3_dream_change,            ║
+        ║      q4_blocker, q5_urgency, q6_investment, q7_email,         ║
+        ║      meeting_consented_at, summary, primary_objection,        ║
+        ║      red_flags[], notes_for_advisor                           ║
+        ║                                                               ║
+        ║   ⑰ Upsert lead_memory                                        ║
+        ║                                                               ║
+        ║   ⑱ decideConversationTag:                                    ║
+        ║      • underage in red_flags  →  current_tag='underage'       ║
+        ║      • אחר red_flag  →  'requires_human'                       ║
+        ║      • תגיות סופיות (zoom/opted_out/ghosted) דביקות            ║
+        ║                                                               ║
+        ║   ⑲ decideFunnelStage  (sticky 'done'):                       ║
+        ║      • 5/5 שאלות (q1-q5)  →  'done'                            ║
+        ║      • 1-4 שאלות  →  'mid'                                     ║
+        ║      • 0 שאלות   →  'cold'                                     ║
+        ║                                                               ║
+        ║   ⑳ shouldTriggerZoomHandoff?  (כל התנאים ביחד):              ║
+        ║      ✓ next_stage = 'done'                                    ║
+        ║      ✓ current_stage ≠ 'done' (אל תירה שוב)                   ║
+        ║      ✓ אין red_flags                                           ║
+        ║      ✓ אין תג חוסם                                             ║
+        ║      ✓ meeting_consented_at ≠ null                            ║
+        ║      ✓ q7_email ≠ null                                        ║
+        ║      └─ כן  →  tag='zoom_scheduled', status='paused'           ║
+        ║                                                               ║
+        ║   ㉑ fireHandoffWebhook → HANDOFF_WEBHOOK_URL (Make.com):     ║
+        ║      • HMAC-SHA256 signed (HANDOFF_WEBHOOK_SECRET)            ║
+        ║      • payload: agent, conversation, lead_memory snapshot     ║
+        ║      • 3 retries, retry על 5xx/429, non-retry על 4xx          ║
+        ║      • כשל סופי → DLQ + error_log                              ║
+        ╚═════════════════════════════════════════════════════════════╝
+                                          │
+                                          ▼
+        ┌──────────────────────────────────────────────────────────────┐
+        │  Make.com scenario מפזר:                                       │
+        │    • Mooz  — קביעת זום עם יועץ                                 │
+        │    • Fireberry CRM  — יצירת/עדכון רשומה                        │
+        │    • התראת WhatsApp ליועץ הרלוונטי                              │
+        └──────────────────────────────────────────────────────────────┘
+```
 
-כל כשל בשלב כלשהו → `error_logs` + (אם רלוונטי) `failed_messages` (DLQ).
+---
 
-ה־`whatsapp-send` ([supabase/functions/whatsapp-send/index.ts](./supabase/functions/whatsapp-send/index.ts)) — שליחה ידנית מהדשבורד ב־ReplyBox דרך אותו `sendWhatsAppText`. ה־`prompt-replay` ([supabase/functions/prompt-replay/index.ts](./supabase/functions/prompt-replay/index.ts)) — כלי A/B לאדמינים, מריץ prompt מועמד מול שיחה היסטורית ומחזיר side-by-side.
+## תהליכים שרצים ברקע (מחוץ ל־loop הראשי)
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│   CRON & ASYNC  (Supabase scheduled functions)                             │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  📅 dispatch-scheduled-templates           pg_cron כל דקה                 │
+│     • שולף scheduled_messages פנדינג שזמנם הגיע                            │
+│     • atomic claim (claimed_by_cron_id) — אין race בין ticks                │
+│     • quiet hours check + Mooz check (fail-closed)                         │
+│     • שולח template דרך whatsappTemplateSend → HookMyApp                   │
+│     • mark sent_at, על כשל → DLQ                                            │
+│                                                                            │
+│  🧊 re-engage-cold-leads                   pg_cron (לפי configuration)     │
+│     • שולף conversations עם funnel_stage='cold' שלא ענו N ימים             │
+│     • שולח template re-engagement, סופר re-engaged_at                       │
+│                                                                            │
+│  🧹 brain-sweep-stale                       pg_cron כל 10 דקות             │
+│     • brain_documents שתקועים ב־extraction_status='pending' > 20 דק׳        │
+│     • מסמן כ־'failed' עם error message                                      │
+│                                                                            │
+├──────────────────────────────────────────────────────────────────────────┤
+│   ADMIN-TRIGGERED  (HTTP POST + JWT)                                       │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                            │
+│  🧠 brain-ingest                            POST מהדשבורד                  │
+│     • PDF/תמונה → Storage → Insert row pending → return 200                │
+│     • EdgeRuntime.waitUntil: Sonnet 4.6 מחלץ טקסט                          │
+│     • injectionScan → חוסם prompt-injection (ignore instructions וכו׳)     │
+│     • update extraction_status='ready' + extracted_text                    │
+│                                                                            │
+│  🆕 lead-register                           Make.com webhook               │
+│     • Landing-page lead → upsert conversation + lead_memory                │
+│     • q7_email נשמר מההרשמה                                                 │
+│     • enqueue scheduled_messages (first-touch template, +40 דק׳ default)   │
+│                                                                            │
+│  🎓 prompt-coach                            Admin chat                     │
+│     • Sonnet 4.6 + tool-use (propose_prompt_edit)                          │
+│     • קורא: active prompt + שיחות אחרונות + brain                          │
+│     • שיחה נשמרת ב־coach_messages (Realtime → UI חי)                       │
+│                                                                            │
+│  ✅ prompt-coach-apply                      Admin approve                  │
+│     • הדרך היחידה (חוץ מ־rollback) לעדכן is_active ב־prompts                │
+│     • אטומי: ישן → false, חדש → true                                        │
+│                                                                            │
+│  🔁 dlq-replay                              Admin button                   │
+│     • retry של failed_messages                                              │
+│     • סוגים: hookmyapp_send / handoff_webhook                               │
+│     • max 3 retries לכל שורה                                                │
+│                                                                            │
+│  ⚡ whatsapp-send                            ReplyBox מהדשבורד              │
+│     • שליחה ידנית של אופרטור — עוקפת agent loop                            │
+│     • RLS מבטיח שרק admin יכול                                              │
+│                                                                            │
+│  ⚖️ prompt-replay                           Admin A/B                      │
+│     • טוען prompt מועמד + שיחה היסטורית                                     │
+│     • מריץ את ה־prompt תור אחר תור, מציג side-by-side                       │
+│                                                                            │
+│  👤 invite-user / delete-user               Admin user mgmt                │
+│     • הוספה/הסרה של מנהלים/אופרטורים                                        │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## שכבות הגנה — מי תופס מה
+
+| איפה | מנגנון | מה זה תופס |
+|---|---|---|
+| כניסה | HMAC-SHA256 חתימה | זריקות זדוניות, replay attacks |
+| DB | UNIQUE על `meta_message_id` | תגובות כפולות מ־retry של Meta |
+| DB | UNIQUE על `(agent_id, lead_phone)` | race ב־upsert של שיחה |
+| Loop | `agent_lock_taken_at` (60s TTL) | webhooks מקבילים → double reply |
+| Loop | `agents.is_paused` (kill switch) | סוכן שמתקלקל → עוצרים הכל ב־קליק |
+| Loop | `agents.quiet_hours_start/end_il` | שליחה ב־00:00 |
+| תגובה | `validateAgentReply` (regex) | מחירים / AI leak / placeholders / הבטחות |
+| תגובה | `judgeReply` (Haiku 4.5) | סטיות סמנטיות שרגקס פספס |
+| שליחה | retry + timeout + DLQ | רעש רשת / HookMyApp 5xx |
+| Handoff | `meeting_consented_at` + `q7_email` חובה | handoff מוקדם לפני שהליד הסכים |
+| Dispatcher | Mooz pre-check (fail-closed) | קביעת זום כפולה / מספר לא ישראלי |
+| Dispatcher | `claimed_by_cron_id` atomic claim | race בין ticks אם tick גולש מעל 60s |
+| Brain | `injectionScan` | prompt injection ב־PDF שאופרטור מעלה |
+| RLS | מ־migration 0018: admin-only reads | אופרטור רגיל לא רואה נתוני לידים |
+
+---
 
 ## ההחלטות הארכיטקטוניות (10)
 
@@ -68,29 +305,85 @@ Meta Cloud API ──HookMyApp Cloud API channel    Supabase Realtime
 | 3 | זרימת קוד | **Feature branches → PR → merge ל-main.** Preview מקומי עם `bun dev`. |
 | 4 | סכמת Supabase | **Migrations בריפו** (`supabase/migrations/`). אין עריכה ידנית ב-Studio. |
 | 5 | Prompts | **קבצים בריפו → סנכרון אוטומטי** לטבלת `prompts` ב-Supabase. |
-| 6 | Orchestration / AI loop | **Supabase Edge Functions** (Deno + Anthropic SDK). הלולאה לקריאת Claude, חילוץ זיכרון, ותיוג חיים בקוד שב־`supabase/functions/`, לא ב־n8n. n8n נשאר אופציה ל־visual workflows אם נצטרך. |
-| 7 | Auth | **מוקדם, email/password, ניהול משתמשים מהמסך.** מתחילים במשתמש ראשי אחד. |
+| 6 | Orchestration / AI loop | **Supabase Edge Functions** (Deno + Anthropic SDK). הלולאה לקריאת Claude, חילוץ זיכרון, ותיוג חיים בקוד שב־`supabase/functions/`, לא ב־n8n. |
+| 7 | Auth | **email/password, ניהול משתמשים מהמסך.** מ־migration 0018: ה־reads של לידים נעולים ל־admin בלבד. |
 | 8 | TypeScript | **Strict mode.** אסור `any`. |
 | 9 | CI | **typecheck + lint + build על כל PR.** Branch protection ב-main. |
-| 10 | Testing | **רק על הגרעין הקריטי**: queries, contexts, auth, חישובי KPIs. לא UI. |
+| 10 | Testing | **רק על הגרעין הקריטי**: queries, contexts, auth, חישובי KPIs, edge fn shared utils. |
+
+---
 
 ## Tech Stack
 
 - **Frontend**: Vite + React 18 + TypeScript (strict)
 - **UI**: shadcn/ui + Tailwind CSS, RTL מלא, פונט Heebo
 - **Routing**: react-router-dom v6
-- **State**: React Context + `@tanstack/react-query` + Supabase Realtime (channel על `messages` ל־live updates בדף Conversations)
+- **State**: React Context + `@tanstack/react-query` + Supabase Realtime
+  - Realtime channels פעילים: `public.messages` (migration 0013), `public.coach_messages` (migration 0028)
 - **Forms**: react-hook-form + zod
-- **DB / Auth**: Supabase (Postgres + Auth + Storage + Realtime publication על `public.messages` מ־migration 0013)
+- **DB / Auth / Storage**: Supabase (Postgres + Auth + Storage + Realtime)
 - **AI**:
-  - Claude Sonnet 4.6 (agent reply, adaptive thinking)
-  - Claude Haiku 4.5 (memory extractor, JSON mode via assistant prefill)
-- **Orchestration / AI loop**: Supabase Edge Functions (Deno) — `whatsapp-webhook` (agent loop) · `whatsapp-send` (manual takeover) · `prompt-replay` (admin A/B) · `invite-user` · `delete-user`
-- **Observability**: Langfuse Cloud — כל קריאת Claude נשמרת כ־trace (system + messages + output + tokens + cost + latency). `error_logs` + `failed_messages` ב־Postgres לכשלים ולתור שחזור.
-- **WhatsApp BSP**: HookMyApp Cloud API — production WABA `1001103162575975` (`+972 55-991-7038`, "מכללת ריצ׳ר ליזמות דיגיטלית"). webhook ישיר מ־HookMyApp לפונקציה הפרוסה — אין tunnel/proxy מקומי בייצור.
+  - **Claude Sonnet 4.6** — agent reply (`claude-sonnet-4-6` ב־`whatsapp-webhook`), prompt-coach, brain extraction
+  - **Claude Haiku 4.5** — memory extractor (`extractMemory.ts`), semantic judge (`judgeReply.ts`)
+  - **OpenAI Whisper** — voice note transcription (he) ב־`transcribeVoice.ts`
+- **Orchestration / AI loop**: Supabase Edge Functions (Deno) — 14 פונקציות, ראה הסעיף הבא.
+- **Observability**: Langfuse Cloud — כל קריאת Claude נשמרת כ־trace. `error_logs` + `failed_messages` ב־Postgres לכשלים ולתור שחזור.
+- **WhatsApp BSP**: HookMyApp Cloud API — production WABA `1001103162575975` (`+972 55-991-7038`, "מכללת ריצ׳ר ליזמות דיגיטלית").
+- **External integrations**: Make.com (handoff fan-out → Mooz, Fireberry CRM, alerts), Mooz (booking pre-check).
 - **Hosting**: Lovable (`*.lovable.app`) — auto-deploy מ־`main`
-- **Package Manager**: bun (`~/.bun/bin/bun`) — לא חובה, `npx` / `npm` עובדים על כל ה־CI scripts (test/lint/build/typecheck)
-- **Testing**: vitest + @testing-library/react (127 טסטים נכון להיום)
+- **Package Manager**: bun (`~/.bun/bin/bun`)
+- **Testing**: vitest + @testing-library/react + Deno tests ב־`_shared/*.test.ts`
+
+---
+
+## Edge Functions בפרוד (14)
+
+| Function | טריגר | תפקיד |
+|---|---|---|
+| **whatsapp-webhook** | HookMyApp POST | inbound + agent loop + memory + handoff (no-jwt, HMAC) |
+| **whatsapp-send** | Dashboard ReplyBox | שליחה ידנית של אופרטור (admin) |
+| **lead-register** | Make.com (landing page) | קליטת ליד + enqueue first-touch template |
+| **dispatch-scheduled-templates** | pg_cron כל דקה | שליחת templates מתוזמנים (Mooz check + quiet hours) |
+| **re-engage-cold-leads** | pg_cron | התראה ללידים cold ששתקו |
+| **brain-ingest** | Admin upload | חילוץ טקסט מ־PDF/תמונה (Sonnet) + injection scan |
+| **brain-sweep-stale** | pg_cron כל 10 דק׳ | מסמן brain documents תקועים כ־failed |
+| **prompt-coach** | Admin chat | Claude מציע שיפורי prompt (tool-use) |
+| **prompt-coach-apply** | Admin approve | מחיל הצעה — מעדכן is_active ב־prompts |
+| **prompt-replay** | Admin A/B | בודק prompt מועמד מול שיחה היסטורית |
+| **dlq-replay** | Admin button | retry של failed_messages |
+| **invite-user** | Admin | הזמנת משתמש חדש |
+| **delete-user** | Admin | מחיקת משתמש |
+
+ראה [supabase/functions/README.md](./supabase/functions/README.md) לפירוט deploy/secrets.
+
+---
+
+## Shared utilities (`supabase/functions/_shared/`)
+
+| קובץ | תפקיד |
+|---|---|
+| `auth.ts` | `requireUser` / `requireAdmin` (JWT verify) |
+| `cors.ts` | CORS headers |
+| `logError.ts` | insert ל־error_logs (non-blocking) |
+| `dlq.ts` | insert ל־failed_messages |
+| `truncate.ts` | חיתוך טקסט בטוח ל־DB columns |
+| `validation.ts` | schema validation helpers |
+| `whatsappSend.ts` | שליחת טקסט ב־HookMyApp + retry/timeout |
+| `whatsappTemplateSend.ts` | שליחת template message (לקליטה ולא־engagement) |
+| `transcribeVoice.ts` | OpenAI Whisper, hebrew hint |
+| `anthropicRetry.ts` | wrap לקריאות Anthropic — retry על 429/5xx, exp backoff |
+| `validateAgentReply.ts` | regex hallucination guards |
+| `judgeReply.ts` | Haiku 4.5 semantic judge |
+| `extractMemory.ts` | חילוץ זיכרון + funnel stage + handoff decision |
+| `brainContext.ts` | טעינה + פירמוט של brain_documents לתוך system prompt |
+| `injectionScan.ts` | זיהוי prompt injection ב־brain uploads |
+| `moozCheck.ts` | בדיקה מול Mooz אם הליד כבר חתום (fail-closed) |
+| `quietHours.ts` | חישוב חלון שתיקה פר־סוכן (Asia/Jerusalem, wrap-midnight) |
+| `alertOperators.ts` | WhatsApp alert לטלפוני אופרטור על כשל קריטי |
+| `fireHandoffWebhook.ts` | POST חתום ל־Make.com handoff |
+| `langfuse.ts` | HTTP client + pricing + cost compute |
+
+---
 
 ## מבנה תיקיות
 
@@ -102,47 +395,132 @@ Meta Cloud API ──HookMyApp Cloud API channel    Supabase Realtime
 │   ├── components/
 │   │   ├── layout/         # AppLayout, AppSidebar, AppHeader, AgentSelector
 │   │   ├── ui/             # shadcn primitives
-│   │   ├── analytics/      # CostLatencyDashboard + ObjectionBreakdown + AiProviderBreakdown + ExperimentCard
-│   │   ├── conversations/  # ConversationDetail · MessageThread · MessageBubble · MessageDebugPopover · ReplyBox · LeadMemoryPanel
+│   │   ├── dashboard/      # KPI cards + funnel/tag breakdown
+│   │   ├── leads/          # Leads table + filters
+│   │   ├── analytics/      # CostLatency + Objections + AiProviders + ExperimentCard
+│   │   ├── conversations/  # MessageThread · ReplyBox · LeadMemoryPanel · MessageDebugPopover
 │   │   ├── prompts/        # PromptViewDialog · PromptReplayDialog
-│   │   ├── settings/       # AgentsTab · UsersTab · InviteUserDialog · UserRoleBadge
-│   │   ├── auth/           # AdminOnly
-│   │   ├── EmptyState.tsx
-│   │   └── NavLink.tsx
+│   │   ├── coach/          # CoachChat · CoachMessage · ProposedPromptDiff (Phase F)
+│   │   ├── settings/       # AgentsTab · UsersTab · BrainTab · KillSwitch · QuietHours
+│   │   ├── auth/           # AdminOnly · ProtectedRoute
+│   │   ├── effects/
+│   │   └── EmptyState.tsx
 │   ├── contexts/
-│   │   ├── AgentContext.tsx
-│   │   └── AuthContext.tsx
 │   ├── hooks/
-│   ├── lib/
-│   │   ├── supabase/       # client.ts
-│   │   ├── agents.ts · agents-admin.ts · analytics.ts · conversations.ts
-│   │   ├── kpis.ts · lead-memory.ts · leads.ts · messages.ts
-│   │   ├── operations.ts   # cost/latency aggregates for Analytics (Phase B)
-│   │   ├── prompts.ts      # getPrompts · getDistinctPromptTypes · setActivePromptVersion (Phase D-mini)
-│   │   ├── prompt-replay.ts # client wrapper for prompt-replay edge fn (Phase D-full)
-│   │   ├── users.ts · users-admin.ts
-│   │   └── utils.ts
-│   ├── pages/              # 6 דפים (Index/Leads/Conversations/Analytics/Prompts/Settings)
-│   ├── types/              # database.ts מיוצר אוטומטית מ־Supabase + טיפוסים ייעודיים
+│   ├── lib/                # supabase client + queries (analytics, conversations, kpis, brain, coach, ...)
+│   ├── pages/              # 8 דפים: Index/Leads/Conversations/Analytics/Prompts/Coach/Settings/Login
+│   ├── types/              # database.ts (auto-generated)
 │   └── test/               # vitest setup
 ├── supabase/
-│   ├── migrations/         # 0001-0014 (RLS · admin · idempotency · DLQ · error_logs · langfuse · realtime · prompt rollback)
+│   ├── migrations/         # 0001-0028 (ראה הסעיף הבא)
 │   ├── functions/
-│   │   ├── _shared/        # cors · auth · logError · dlq · whatsappSend · validateAgentReply · langfuse · truncate · extractMemory
-│   │   ├── invite-user/    # admin: invite by email
-│   │   ├── delete-user/    # admin: hard-delete auth user
-│   │   ├── whatsapp-webhook/  # public (no-jwt): HookMyApp inbound + agent loop + memory extractor + Langfuse trace
-│   │   ├── whatsapp-send/  # auth: dashboard ReplyBox manual send
-│   │   └── prompt-replay/  # admin-only (Phase D-full): A/B test a prompt against past conversations
-│   └── README.md           # supabase project ref + migration workflow
-├── scripts/                # bun/npx scripts: db:apply · prompts:sync · seed:test · wa-tunnel-proxy
-├── prompts/                # files in repo → DB (prompts:sync)
+│   │   ├── _shared/        # 20+ utilities
+│   │   ├── whatsapp-webhook/
+│   │   ├── whatsapp-send/
+│   │   ├── lead-register/
+│   │   ├── dispatch-scheduled-templates/
+│   │   ├── re-engage-cold-leads/
+│   │   ├── brain-ingest/
+│   │   ├── brain-sweep-stale/
+│   │   ├── prompt-coach/
+│   │   ├── prompt-coach-apply/
+│   │   ├── prompt-replay/
+│   │   ├── dlq-replay/
+│   │   ├── invite-user/
+│   │   └── delete-user/
+│   └── README.md
+├── scripts/                # db:apply · prompts:sync · seed:test · wa-tunnel-proxy
+├── prompts/
 │   └── affiliate_marketing/
-│       ├── _active.json    # { "main": "v1", "memory_extractor": "v1" }
-│       ├── main/v1.md      # agent reply prompt (Sonnet 4.6)
-│       └── memory_extractor/v1.md  # JSON extraction prompt (Haiku 4.5)
-└── CLAUDE.md               # זה הקובץ שאתה קורא
+│       ├── _active.json    # { "main": "v8", "memory_extractor": "v2" }
+│       ├── main/           # v1..v8.md
+│       └── memory_extractor/ # v1..v3.md
+└── CLAUDE.md
 ```
+
+---
+
+## Migrations — 0001 עד 0028
+
+### Phase 0-1: יסודות (0001-0006)
+| # | מה |
+|---|---|
+| 0001 | RLS policies בסיסיות |
+| 0002 | מ־`anon, authenticated` ל־`authenticated` בלבד |
+| 0003 | `app_users` + `role` enum + `is_admin()` function |
+| 0004 | admin-only mutations |
+| 0005 | messages outbound INSERT policy |
+| 0006 | UNIQUE על `prompts` (agent_id, type, version) |
+
+### Phase A: Reliability (0007-0011)
+| # | מה |
+|---|---|
+| 0007 | UNIQUE על `messages.meta_message_id` (idempotency) |
+| 0008 | `failed_messages` table (DLQ) |
+| 0009 | `error_logs` table + `error_type` enum |
+| 0010 | UNIQUE על `conversations(agent_id, lead_phone)` |
+| 0011 | drop SECURITY DEFINER views (security) |
+
+### Phase B: Observability (0012-0013)
+| # | מה |
+|---|---|
+| 0012 | `messages` provenance columns: langfuse_trace_id, prompt_version_id, tokens, cost, latency, model |
+| 0013 | `public.messages` ב־`supabase_realtime` publication |
+
+### Phase D-mini: Prompt Rollback (0014)
+| # | מה |
+|---|---|
+| 0014 | UPDATE policy על `prompts` ל־admin בלבד |
+
+### Phase F: Coach (0015-0016)
+| # | מה |
+|---|---|
+| 0015 | `coach_messages` table (id, agent_id, role, content, proposed_prompt_diff, ...) |
+| 0016 | `coach_attachments` (תמונות/קבצים שאופרטור מצרף לקואץ׳) |
+
+### Phase G: Brain (0017, 0021)
+| # | מה |
+|---|---|
+| 0017 | `brain_documents` table — מסמכי הקשר שאופרטור מעלה |
+| 0021 | `extraction_status` enum + `extraction_error` text |
+
+### Phase H: Lockdown + Performance (0018-0019)
+| # | מה |
+|---|---|
+| 0018 | RLS admin-only reads על `conversations` / `messages` / `lead_memory` |
+| 0019 | composite indexes + phone routing |
+
+### Phase I: Kill Switch + Re-Engagement (0020)
+| # | מה |
+|---|---|
+| 0020 | `agents.is_paused` (kill switch) + `conversations.re_engaged_at` + re-engagement config |
+
+### Phase J: Lead Onboarding (0022-0024)
+| # | מה |
+|---|---|
+| 0022 | `lead_memory.q7_email` + `agents.mooz_url` / `mooz_api_token` / `mooz_check_enabled` |
+| 0023 | `scheduled_messages` table + `agents.first_touch_template_*` + lead-register endpoint |
+| 0024 | `agents.require_mooz_check` + `mooz_check_timeout_ms` |
+
+### Phase K: Concurrency Safety (0025)
+| # | מה |
+|---|---|
+| 0025_conversation_agent_lock | `conversations.agent_lock_taken_at` (atomic per-conversation lock) |
+| 0025_dispatcher_atomic_claim | `scheduled_messages.claimed_by_cron_id` (atomic claim ב־dispatcher) |
+
+### Phase L: Operator Alerts + Quiet Hours + Consent (0026-0027)
+| # | מה |
+|---|---|
+| 0026 | `agents.operator_alert_phones` (jsonb) — מי לקבל התראת כשל |
+| 0027_agent_quiet_hours | `agents.quiet_hours_start_il` / `quiet_hours_end_il` (0-23, IL) |
+| 0027_meeting_consent | `lead_memory.meeting_consented_at` — gate ל־handoff |
+
+### Phase M: Coach Realtime (0028)
+| # | מה |
+|---|---|
+| 0028 | `coach_messages` ל־supabase_realtime publication |
+
+---
 
 ## כללי עבודה
 
@@ -150,70 +528,66 @@ Meta Cloud API ──HookMyApp Cloud API channel    Supabase Realtime
 
 - **`main`** = production. Lovable מ-deploy ממנו אוטומטית.
 - **לא לעשות push ישיר ל-main.** Branch protection אוסר על זה.
-- **שמות branches**:
-  - `feat/<description>` — פיצ'ר חדש
-  - `fix/<description>` — תיקון באג
-  - `chore/<description>` — תחזוקה / refactoring / docs
+- **שמות branches**: `feat/...` · `fix/...` · `chore/...`
 - **PR title**: באנגלית, conventional commit style (`feat: add login screen`).
 - **PR description**: summary + test plan.
-- **לפני merge**: ה-CI חייב לעבור (typecheck + lint + build).
+- **לפני merge**: ה-CI חייב לעבור (typecheck + lint + build + tests).
 
 ### TypeScript
 
 - **Strict mode מופעל.** אל תכבה אותו.
 - אסור `any` — אם צריך טיפוס לא ידוע, השתמש ב-`unknown` ועשה narrowing.
-- Null checks חובה — אל תניח ש-value מוגדר אם הטיפוס מציין `null | undefined`.
+- Null checks חובה.
 
 ### Supabase
 
-- **רק migrations.** אסור לערוך את הסכמה ידנית ב-Supabase Studio. כל שינוי = migration חדש.
-- שמות migrations: `<NNNN>_<description>.sql` (4 ספרות, snake_case). דוגמה: `0001_initial_schema.sql`, `0002_rls_policies.sql`.
-- אחרי יצירת migration: `supabase db push` כדי להחיל על ה-DB, ואז `supabase gen types typescript` כדי לעדכן types.
-- **RLS חובה** על כל טבלה עם נתוני משתמש או לידים.
+- **רק migrations.** אסור לערוך את הסכמה ידנית ב-Supabase Studio.
+- שמות migrations: `<NNNN>_<description>.sql` (4 ספרות, snake_case).
+- אחרי יצירת migration: `supabase db push` ואז `supabase gen types typescript`.
+- **RLS חובה** על כל טבלה עם נתוני משתמש או לידים. מ־migration 0018: reads של נתוני לידים = admin בלבד.
 
 ### Prompts
 
-- כל Prompt חי כקובץ markdown ב-`prompts/<agent_name>/<version>.md`.
+- כל Prompt חי כקובץ markdown ב-`prompts/<agent_name>/<type>/<version>.md`.
 - שינוי Prompt = שינוי קובץ → PR → merge → סקריפט סנכרון מעלה ל-DB.
-- **אסור** לערוך Prompts ישירות ב-DB; זה יידרס בסנכרון הבא.
+- **שלוש דרכים להחליף את ה־active prompt**:
+  1. `prompts:sync` עם `_active.json` מעודכן (PR workflow).
+  2. כפתור ↺ Rollback בדף Prompts (admin, מיידי).
+  3. `prompt-coach-apply` (admin אחרי שיחת coach).
 
 ### Edge Functions
 
 - כל function ב־`supabase/functions/<name>/index.ts`. דנו, לא Node.
-- Deploy: `bunx supabase functions deploy <name> [--no-verify-jwt] --project-ref juoglkqtmjsziieqgmhf`. ה־`whatsapp-webhook` חייב `--no-verify-jwt` כי HookMyApp/Meta לא שולחים JWT — אימות נעשה דרך חתימת HMAC.
-- סודות נדחפים ל־Supabase דרך `bunx supabase secrets set --env-file <path>`. ה־`SUPABASE_*` מוזרקים אוטומטית.
-- ראה [supabase/functions/README.md](./supabase/functions/README.md) לפירוט הפונקציות, ה־secrets, וזרימת ה־HookMyApp Cloud API.
-- האגנט הראשי (Claude reply loop) רץ ב־`whatsapp-webhook` כ־background task דרך `EdgeRuntime.waitUntil` — ה־webhook מחזיר 200 מיד ל־HookMyApp ואז מייצר את התגובה ברקע. אין n8n.
-- הפונקציות הפעילות בפרוד: `invite-user`, `delete-user`, `whatsapp-webhook`, `whatsapp-send`, `prompt-replay` (admin-only A/B test).
+- Deploy: `bunx supabase functions deploy <name> [--no-verify-jwt] --project-ref juoglkqtmjsziieqgmhf`.
+- ה־`whatsapp-webhook`, `lead-register`, ו־`brain-sweep-stale`/`re-engage-cold-leads`/`dispatch-scheduled-templates` חייבים `--no-verify-jwt` (מאומתים דרך HMAC/cron secret/external webhook).
+- סודות: `bunx supabase secrets set --env-file <path>`.
+- האגנט הראשי רץ ב־`whatsapp-webhook` כ־background task דרך `EdgeRuntime.waitUntil`.
 
 ### Testing
 
-- **טסטים על הגרעין הקריטי בלבד**: queries, contexts, auth, חישובי KPIs.
-- אסור לטסט UI styling או רכיבי עיצוב.
-- כל פיצ'ר חדש שכולל לוגיקה לא-טריוויאלית → טסט.
+- **טסטים על הגרעין הקריטי בלבד**: queries, contexts, auth, KPIs, edge fn shared utilities.
+- כל קובץ קריטי ב־`_shared/` כולל test colocate (`*.test.ts`).
+- אסור לטסט UI styling.
 
 ### Auth
 
 - כל page (חוץ מ-login) דורש user מחובר.
 - Redirect ל-`/login` אם user לא מחובר.
-- ניהול משתמשים: רק admin יכול להוסיף/להסיר משתמשים.
+- ניהול משתמשים + פעולות mutation על נתוני לידים = admin בלבד.
+
+---
 
 ## Local Development
 
-### Setup ראשון (פעם אחת)
+### Setup ראשון
 
 ```bash
-# התקן Bun (אם אין)
 curl -fsSL https://bun.sh/install | bash
-
-# Clone & install
 git clone https://github.com/RicherLTD/richer-ai-agents-hub.git
 cd richer-ai-agents-hub
 ~/.bun/bin/bun install
-
-# העתק env example
 cp .env.example .env.local
-# ערוך .env.local עם ה-credentials של Supabase
+# ערוך .env.local עם credentials של Supabase
 ```
 
 ### פקודות יומיות
@@ -225,212 +599,159 @@ cp .env.example .env.local
 ~/.bun/bin/bun run build   # production build
 ```
 
+---
+
 ## משתני סביבה
 
-ראה `.env.example`. שלוש משפחות:
+### Client (build-time, public, ב־`.env`)
+- `VITE_SUPABASE_URL`
+- `VITE_SUPABASE_ANON_KEY`
 
-**Client (build-time, public, ב־`.env`):**
-- `VITE_SUPABASE_URL` — URL של פרויקט Supabase
-- `VITE_SUPABASE_ANON_KEY` — anon key (בטוח להיות בקוד client-side)
+### Server-side scripts (`.env.local`, gitignored)
+- `SUPABASE_PROJECT_REF`, `SUPABASE_ACCESS_TOKEN`
 
-**Server-side scripts (`.env.local`, gitignored):**
-- `SUPABASE_PROJECT_REF`, `SUPABASE_ACCESS_TOKEN` — נצרכים על ידי `bun run db:apply`, `prompts:sync`, `seed:test`, וגם פקודות ה־`bunx supabase functions deploy` / `secrets set`.
+### Edge function secrets (`.env.functions.local` לפיתוח, ב־Supabase secrets בפרוד)
 
-**Edge function secrets (Supabase secrets, גם ב־`.env.functions.local` לפיתוח):**
-- `VERIFY_TOKEN` — סיסמת ה־HMAC של ה־webhook (Meta App Secret בפרוד, או טוקן סשן בסנדבוקס). משמשת גם לאימות challenge ב־GET.
-- `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID` — endpoint + auth של HookMyApp (production: `https://graph.facebook.com/v22.0`; sandbox legacy: `https://sandbox.hookmyapp.com/v22.0`).
-- `HOOKMYAPP_AGENT_NAME` — slug ב־`agents.name` שאליו ייוחסו לידים נכנסים (פעיל: `affiliate_marketing`).
-- `ANTHROPIC_API_KEY` — `sk-ant-...`. בלעדיו לולאת התגובה האוטומטית מושבתת בעדינות (הודעות נכנסות עדיין נכנסות ל־DB).
-- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` — observability per-turn. בלעדיהם הבוט עובד אבל ללא trace (אזהרה ב־error_logs).
+**WhatsApp / HookMyApp:**
+- `VERIFY_TOKEN` — Meta App Secret (HMAC)
+- `WHATSAPP_API_URL`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`
+- `HOOKMYAPP_AGENT_NAME` — slug ב־`agents.name` ליחוס לידים נכנסים
 
-מסלול עדכון אופייני:
+**AI:**
+- `ANTHROPIC_API_KEY` — `sk-ant-...`
+- `OPENAI_API_KEY` — לתמלול voice notes (Whisper)
+
+**Observability:**
+- `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST`
+
+**Handoff fan-out:**
+- `HANDOFF_WEBHOOK_URL` — Make.com scenario URL
+- `HANDOFF_WEBHOOK_SECRET` — HMAC לחתימת הקריאה
+
+**Mooz pre-check:**
+- `MOOZ_API_BASE_URL`
+- (ה־token פר־סוכן ב־`agents.mooz_api_token`)
+
 ```bash
-# ערוך .env.functions.local — שלוש משפחות הסודות (HookMyApp, Anthropic, Langfuse)
+# עדכון סודות בפרוד:
 bunx supabase secrets set --env-file .env.functions.local --project-ref juoglkqtmjsziieqgmhf
 ```
 
-**אסור** לשים `service_role` key ב-client-side. הוא רק לסקריפטים שרצים בצד שרת (למשל סקריפט סנכרון Prompts).
+**אסור** לשים `service_role` key ב-client-side.
 
-## מצב נוכחי
+---
 
-### מה קיים ועובד (Phases A → D-full סגורים)
+## מצב נוכחי (2026-05-20)
+
+### מה קיים ועובד
 
 **Production WhatsApp pipeline:**
-- HookMyApp Cloud API → WABA `1001103162575975` (`+972 55-991-7038`, "מכללת ריצ׳ר ליזמות דיגיטלית") → webhook ישיר ל־edge function. אין tunnel/proxy בייצור.
-- אימות חתימה דו־כיווני (Meta `X-Hub-Signature-256` + HookMyApp `X-HookMyApp-Signature-256`), fail-open ב־POST ללא חתימה כדי לעבור verification ping של HookMyApp.
-- GET challenge: תומך גם בדפוס Meta (`hub.mode/hub.verify_token/hub.challenge`) וגם בדפוס echo של ה־VERIFY_TOKEN.
+- HookMyApp Cloud API → WABA `1001103162575975` (`+972 55-991-7038`).
 - שיחה דו־כיוונית מאומתת end-to-end עם הטלפון האמיתי.
+- 14 edge functions בייצור, 28 migrations applied.
+- Prompt פעיל: `main/v8`, `memory_extractor/v2`.
 
-**Phase A — Reliability (Stop the bleeding):**
-- **Idempotency**: migration `0007` הוסיף `meta_message_id UNIQUE`. retry של Meta לא מייצר תגובה כפולה.
-- **DLQ**: migration `0008` הוסיף `failed_messages`. כל validation fail / send fail / Claude empty / RPC error נכנס שם, עם payload + error_type + retry_count.
-- **Structured error logs**: migration `0009` הוסיף `error_logs` עם enum `error_type`. כל `console.error` הוחלף ב־`logError({ source, error_type, message, context })`.
-- **Send retry**: 3 ניסיונות עם backoff (1s/2s), `AbortController` timeout 8s, Bearer redaction בלוגים.
-- **Race-safe upsert**: migration `0010` הוסיף UNIQUE על `(agent_id, lead_phone)` ב־conversations.
+**Phase A-E (תועד מראש):**
+- Idempotency, DLQ, error_logs, Langfuse traces, memory extractor, funnel + handoff, prompt rollback + replay.
 
-**Phase B — Observability (Langfuse):**
-- **Custom Langfuse HTTP client** ב־`_shared/langfuse.ts` (לא SDK — Deno compat). pricing של Sonnet 4.6: `$3/M input`, `$15/M output`, `$3.75/M cache write`, `$0.30/M cache read`.
-- **Trace per turn**: כל קריאת Claude → trace ב־Langfuse Cloud עם system+messages+output+tokens+cost+latency. כשל ב־ingestion → `error_logs` (לא חוסם).
-- **Provenance ב־`messages`**: migration `0012` הוסיף `langfuse_trace_id`, `prompt_version_id`, `tokens_input`, `tokens_output`, `cost_usd`, `latency_ms`, `model`.
-- **`MessageDebugPopover`** — אייקון Info על fucking בועת outbound → cost / latency / tokens / trace_id (Copy button) / prompt_version_id.
-- **`CostLatencyDashboard`** ב־Analytics — 6 כרטיסים: עלות היום / השבוע / החודש, P50 / P95 latency, מספר תגובות. דרך `getOperationsMetrics()` ב־`src/lib/operations.ts`.
-- **Realtime**: migration `0013` הוסיף `public.messages` ל־`supabase_realtime` publication. דף Conversations משתמש ב־channel `messages:agent=<id>` ומרענן `react-query` אוטומטית — אין צורך ב־refresh ידני.
+**Phase F — Prompt Coach:**
+- צ׳אט אדמין עם Sonnet 4.6 שמציע שיפורים ל־prompt קיים.
+- tool-use: `propose_prompt_edit` מחזיר diff מובנה.
+- coach רואה: prompt פעיל, שיחות אחרונות, brain documents.
+- Realtime על coach_messages → UI חי.
+- `prompt-coach-apply` מבצע את ההחלפה אטומית.
 
-**Phase C — Memory + Self-healing:**
-- **Memory extractor**: `_shared/extractMemory.ts` קוראת ל־Claude Haiku 4.5 ב־JSON mode (assistant prefill `{`) אחרי כל תור מוצלח. ממלאה `lead_memory.q1_age..q6_investment + conversation_summary + primary_objection + notes_for_advisor + red_flags`.
-- **Auto-tagging**: `decideConversationTag()` ממפה red_flags → `current_tag`. `underage` → `underage`. אחר → `requires_human`. תגיות סופיות (`zoom_scheduled` / `opted_out` / `ghosted`) לא נדרסות.
-- **Hallucination guards**: `_shared/validateAgentReply.ts` חוסם הודעות שמכילות AI brand leak (ChatGPT/Claude/OpenAI/Gemini), Hebrew self-disclosure (אני AI/בוט/מודל), currency (₪/$/ש״ח/שקלים), guarantees (מובטח/מבטיח/ערבות). תגובה לא תקינה → לא נשלחת + נכנסת ל־DLQ + `error_logs(error_type=hallucination_*)`.
-- **Prompt חדש**: `prompts/affiliate_marketing/memory_extractor/v1.md` — מסונכרן ל־DB דרך `bun run prompts:sync`.
+**Phase G — Brain:**
+- אופרטור מעלה PDF/תמונה דרך BrainTab.
+- `brain-ingest` מחלץ טקסט (Sonnet) ברקע, `injectionScan` חוסם הזרקות.
+- `brain-sweep-stale` מטפל בתקועים.
+- ה־agent loop טוען את ה־brain כחלק מה־system context.
 
-**Phase D-mini — Prompt rollback:**
-- migration `0014`: policy `UPDATE` על `prompts` לאדמינים בלבד.
-- `setActivePromptVersion()` ב־`src/lib/prompts.ts` — מבטל active קודם של אותו `(agent_id, prompt_type)` ומפעיל את החדש בעסקה אחת.
-- **כפתור ↺ (RotateCcw)** ב־Prompts page (admin בלבד) — מציג confirm dialog ואז מפעיל. אישור מיידי דרך `react-query` invalidation.
+**Phase H — Lockdown + Performance:**
+- migration 0018: reads של נתוני לידים = admin בלבד.
+- composite indexes על messages + phone routing לריבוי סוכנים.
 
-**Phase D-full — Prompt replay (A/B test):**
-- **`prompt-replay` edge function** (admin-only, requireAdmin): מקבל `{ promptId, conversationId }`, טוען את כל ההודעות, מריץ את ה־prompt המועמד מול ההיסטוריה תור אחר תור (max 30), ומחזיר side-by-side של תגובת הבוט בפועל מול תגובת המועמד + עלות + latency פר תור.
-- **`PromptReplayDialog`** + כפתור ⤧ (GitCompare) ב־Prompts page (admin בלבד) — בוחר שיחה אחרונה (30 אחרונות, כולל inactive), מריץ, מציג השוואה.
+**Phase I — Kill Switch:**
+- `agents.is_paused` — האופרטור עוצר סוכן ב־1 קליק; ה־webhook לא מפעיל AI כל עוד paused.
+- מצב inbound עדיין נכנס ל־DB כדי לא לאבד היסטוריה.
 
-**עדיין יציב:**
-- **דשבורד** — Layout, Sidebar (RTL), 6 routes פעילים עם נתונים אמיתיים.
-- **Auth** — login + AuthContext + ProtectedRoute + ניהול משתמשים (admin בלבד).
-- **Leads** — טבלה עם פילטרים וחיפוש.
-- **Dashboard KPIs** — כרטיסי KPI + funnel/tag breakdown + לידים אחרונים.
-- **Analytics** — A/B testing, התנגדויות, AI providers + Cost/Latency.
-- **Conversations** — chat-style + master/detail + MessageThread + LeadMemoryPanel + ReplyBox + DebugPopover + Realtime.
-- **Prompts viewer** — read-only עם פילטרים + Rollback + Replay (admin).
-- **RLS** — `authenticated` בלבד; outbound INSERT עם `direction='outbound'`; UPDATE על prompts לאדמינים; SELECT/INSERT על error_logs/failed_messages לאדמינים.
-- **CI** — typecheck + lint + build + 155 vitest tests.
-- **Migrations**: 0001-0014 ב־`supabase/migrations/`.
+**Phase J — Lead Onboarding (Landing → WhatsApp):**
+- `lead-register` מקבל ליד מ־Make.com (טופס landing page).
+- upsert conversation + lead_memory עם q7_email.
+- enqueue `scheduled_messages` עם first-touch template אחרי X דקות.
+- `dispatch-scheduled-templates` שולח בזמן הנכון, עם Mooz pre-check + quiet hours.
 
-**Phase E — Funnel automation + handoff fan-out (live, whatsapp-webhook v18):**
-- **Hot-fix קריטי**: התיקון של import שחסר ל־`runMemoryExtraction` ב־webhook. עד התיקון, Phase C קרס בשקט בכל תור בייצור (lead_memory היה ריק, current_tag לא הסלים ל־`underage`/`requires_human`). תוקן בקומיט 17fba8b.
-- **Funnel stage classifier** — `decideFunnelStage(memory, currentTag, currentStage)` ב־`_shared/extractMemory.ts`: 0 מ־q1-q5 → `cold`, 1+ → `mid`, כל 5 → `done`, תג טרמינלי (`zoom_scheduled`/`opted_out`/`ghosted`) → `done`. `done` דביק (אף פעם לא יורד). q6_investment בונוס, לא מעורר `done`. נכתב ל־`conversations.funnel_stage` באותו UPDATE של ה־primary_objection/current_tag.
-- **Zoom handoff** — `shouldTriggerZoomHandoff(memory, currentTag, currentStage, nextStage)` ב־`_shared/extractMemory.ts`: כשהשלב עובר ל־`done` והליד נקי מ־red_flags ולא בתג חוסם → בעדכון של אותו תור, `current_tag='zoom_scheduled'` + `status='paused'` + `zoom_scheduled_at=now()`. הקצאת יועץ לא אוטומטית (טבלת `advisors` ריקה היום); אופרטור משייך מהדשבורד.
-- **Fan-out webhook** — `_shared/fireHandoffWebhook.ts` עושה POST ל־`HANDOFF_WEBHOOK_URL` (Supabase secret) עם payload יציב: `{event, timestamp, agent:{id,name}, conversation:{...}, lead_memory:{q1..q6, summary, primary_objection, red_flags, notes_for_advisor}}`. חתימה אופציונלית עם `HANDOFF_WEBHOOK_SECRET` → header `X-Handoff-Signature-256: sha256=HEX`. 3 ניסיונות / 8s timeout / retry על 5xx ו־429 / non-retry על 4xx אחר / כשל סופי → `error_logs` + `failed_messages` DLQ. ה־URL היום מופנה ל־Make.com scenario שמפזר ל־Mooz (קביעת פגישות in-house) + Fireberry CRM + התראות יועצים.
+**Phase K — Concurrency Safety:**
+- atomic per-conversation lock על agent loop (migration 0025_conversation_agent_lock).
+- atomic claim על dispatcher כדי שלא ישלח אותו message פעמיים גם אם tick גולש (0025_dispatcher_atomic_claim).
 
-### מה חסר
+**Phase L — Operator Care:**
+- `operator_alert_phones` — התראת WhatsApp לאופרטור על כשל קריטי.
+- `quiet_hours_start_il/end_il` — חלון שתיקה פר־סוכן.
+- `meeting_consented_at` — gate חובה ל־handoff (לא מספיק לזהות תשובות חיוביות, צריך הסכמה מפורשת).
 
-- **Phase D-full v2** — auto-scoring של replay (LLM-as-judge על relevance/tone/no-hallucination), golden dataset, CI block אם prompt חדש מוריד ציון מתחת לבייסליין.
-- **טבלת advisors מאוכלסת** — היום ריקה. ברגע שמוסיפים יועצים, האופרטור משייך ידנית; round-robin אוטומטי יכול להוסיף בעתיד.
-- **Multi-agent בפועל** — הסכימה תומכת, אבל היום סוכן יחיד פעיל (`affiliate_marketing`). מספר טלפון יחיד ב־WABA.
-- **Pilot 50 לידים** — תשתית מוכנה. ממתינים לאישור פתיחת קמפיין עם תנועה אמיתית.
+**Phase M — Coach Realtime (PR אחרון):**
+- coach_messages ב־publication → UI מתעדכן ברגע ש־background task מסיים לדבר.
 
-## תוכנית עבודה (PRs)
+**Voice + Judge:**
+- voice notes  →  Whisper (he)  →  טקסט שנכנס ל־history.
+- שכבת בטיחות שנייה: `judgeReply` עם Haiku 4.5 שמסנן סטיות סמנטיות (מעבר ל־regex).
 
-הסדר חשוב — תלות בין PRs.
+### מה חסר / בעבודה
 
-### שלב 0: תשתית
+- **טבלת `advisors` מאוכלסת** — היום ריקה. אופרטור משייך ידנית; round-robin אוטומטי בעתיד.
+- **Multi-agent בפועל** — הסכימה תומכת, אבל היום סוכן יחיד פעיל (`affiliate_marketing`).
+- **Auto-scoring על prompt replay** (LLM-as-judge על golden dataset + CI block).
+- **Pilot 50 לידים בתנועה אמיתית** — תשתית מוכנה, ממתינים לאישור פתיחת קמפיין.
 
-- [x] **PR 1** — `chore/foundations`: CLAUDE.md, strict TS, `.env.example`
-- [x] **PR 2** — `chore/ci`: GitHub Actions workflow
-- [x] **PR 3** — Branch protection ב-GitHub (לא קוד; הוגדר ב-Settings)
-
-### שלב 1: Supabase
-
-- [x] **PR 4** — `chore/supabase-cli`: התקנת Supabase CLI + scaffold (הסכמה הראשונית הוקמה ב-Studio לפני המעבר ל-migrations — ראה `supabase/README.md`)
-- [x] **PR 5** — `feat/rls-policies`: migration `0001_rls_policies.sql` (anon + authenticated, mid-step)
-- [x] **PR 6** — `feat/supabase-types`: ייצור TS types אוטומטי
-
-### שלב 2: Auth
-
-- [x] **PR 7** — `feat/supabase-client`: `client.ts` + `@supabase/supabase-js` + החלפת `getAgents()` mock בקריאה אמיתית
-- [x] **PR 8** — `feat/auth-login`: login screen + AuthContext + ProtectedRoute + logout dropdown ב-sidebar
-- [x] **PR 9** — `feat/auth-rls-update`: migration `0002_auth_rls_update.sql` — RLS policies מ-`anon, authenticated` ל-`authenticated` בלבד
-
-### שלב 3: חיבור ראשון לנתונים
-
-- [x] **PR 10** — `feat/agents-real-data`: ✅ בוצע ב-PR 7 (לא נדרש PR נפרד)
-
-### שלב 4: בניית מסכים
-
-- [x] **PR 11a** — `feat/admin-role-schema`: app_users + role enum + is_admin() + admin-only mutations
-- [x] **PR 11b** — `feat/settings-tabs-and-agents`: Settings tabs + agents management + admin gate
-- [x] **PR 11c** — `feat/users-management`: invite/role/remove + invite-user/delete-user edge functions
-- [x] **PR 13** — `feat/leads-screen`: table + filters + search
-- [x] **PR 14** — `feat/conversations-list`: chat-app style list
-- [x] **PR 15** — `feat/conversation-view`: master/detail + messages + lead_memory + reply box (migration 0005 — messages outbound INSERT policy)
-- [x] **PR 16** — `feat/dashboard-kpis`: KPI cards + funnel/tag breakdown + recent leads
-- [x] **PR 17** — `feat/prompts-screen`: read-only viewer
-- [x] **PR 18** — `feat/analytics-screen`: A/B testing + objections + AI providers
-- [x] **PR 19** — `feat/prompts-sync`: file→DB sync script + first prompt for affiliate_marketing (migration 0006 — UNIQUE on prompts)
-
-### שלב 5: שילוב WhatsApp + AI loop
-
-ה־ארכיטקטורה של n8n הוחלפה ב־Supabase Edge Functions (החלטה #6). כל ה־AI loop גר בקוד.
-
-- [x] **PR 20** — `feat/whatsapp-hookmyapp-sandbox`:
-  - `whatsapp-webhook` edge function: HMAC verify + upsert conversation + insert inbound + autonomous Claude reply loop ברקע (Sonnet 4.6 + adaptive thinking)
-  - `whatsapp-send` edge function: שליחה ידנית מה־ReplyBox דרך HookMyApp
-  - `_shared/auth.ts`: `requireUser` נוסף ל־`requireAdmin`
-- [x] **PR 22** — `feat: wire WhatsApp via HookMyApp sandbox + autonomous Claude reply loop`
-- [x] **PR 23** — `feat(reliability): phase A — idempotency, DLQ, structured error logs`
-  - migrations 0007 (meta_message_id UNIQUE), 0008 (failed_messages DLQ), 0009 (error_logs), 0010 (conversation race-safe UNIQUE), 0011 (drop SECURITY DEFINER views)
-  - `_shared/logError.ts` + `_shared/dlq.ts` + `_shared/whatsappSend.ts` (retry/timeout/redaction)
-- [x] **PR 24** — `feat(observability): phase B — Langfuse traces + per-message provenance + Realtime + debug UI`
-  - `_shared/langfuse.ts` (HTTP client) + migration 0012 (provenance columns) + 0013 (Realtime publication)
-  - `src/lib/operations.ts` + `CostLatencyDashboard` + `MessageDebugPopover`
-- [x] **PR 25** — `feat(memory): phase C — memory extractor + auto-tagging + hallucination guards`
-  - `_shared/extractMemory.ts` (Haiku JSON mode) + `_shared/validateAgentReply.ts`
-  - `prompts/affiliate_marketing/memory_extractor/v1.md`
-- [x] **PR 26** — `feat(prompts): phase D-mini — admin prompt rollback button`
-  - migration 0014 (admin UPDATE policy on prompts) + `setActivePromptVersion()` + ↺ button
-- [x] **PR 27** — `feat(prompts): phase D-full — prompt replay (A/B test)`
-  - `prompt-replay` edge function (admin-only) + `PromptReplayDialog` + ⤧ button
-- [x] **Production WABA**: HookMyApp Cloud API connected. webhook ישיר על URL של `whatsapp-webhook`. Cloudflare tunnel/proxy מקומי לא רלוונטיים יותר בפרוד.
-- [x] **Phase E — Funnel + Handoff** (`feat/funnel-stage-classifier`, whatsapp-webhook v18):
-  - Hot-fix: `runMemoryExtraction` import שהיה חסר ב־webhook (Phase C היה שבור בייצור משחרור v14)
-  - `decideFunnelStage` — `cold` / `mid` / `done` אוטו, `done` דביק
-  - `shouldTriggerZoomHandoff` — בתום q1-q5 → `zoom_scheduled` + `paused`
-  - `fireHandoffWebhook` — POST ל־`HANDOFF_WEBHOOK_URL` (Make.com → Mooz + Fireberry) עם 3 retries + HMAC אופציונלי, DLQ על כשל
-- [ ] **Phase D-full v2**: auto-scoring של replay (LLM-as-judge) + golden dataset + CI block
-- [ ] **Pilot עם 50 לידים** + הרחבה הדרגתית
-
-### עזרי פיתוח
-
-- `bun run seed:test` / `seed:clear` — מאכלס/ננקה ~8 שיחות דמו תחת prefix `+97255500…` כדי שהדשבורד לא יהיה ריק לפני זרם ייצור אמיתי.
-- `bunx supabase functions deploy <name> [--no-verify-jwt] --project-ref juoglkqtmjsziieqgmhf` — deploy של edge function ספציפית.
-- `bun run wa:proxy` ([scripts/wa-tunnel-proxy.mjs](./scripts/wa-tunnel-proxy.mjs)) — proxy מקומי לפיתוח מול sandbox. בייצור (Cloud API) — לא נחוץ.
-- `bun run prompts:sync` — מסנכרן קבצים מ־`prompts/<agent>/<type>/<version>.md` ל־`prompts` table (upsert).
-- **Supabase MCP** — שינויים בסכמה (`apply_migration`) ו־deploy של edge functions (`deploy_edge_function`) דרך Claude. שמור על הזוגיות: כל migration חייב גם להיכתב כקובץ ב־`supabase/migrations/<NNNN>_<name>.sql` באותו PR.
+---
 
 ## הקשר עסקי
 
 - **לקוח**: מכללת ריצ'ר, תוכנית שיווק שותפים בניהול האחים סיטון
 - **נפח לידים**: 2,000+ בחודש מפרסום ממומן
 - **מערכת קיימת**: Virtual Spirit (תוחלף בהדרגה)
-- **CRM**: Fireberry (מקבל webhook במקרי escalation)
+- **CRM**: Fireberry (מקבל webhook במקרי escalation דרך Make.com)
+- **Booking**: Mooz (קביעת זום אמיתית)
 - **לוח זמנים**: Pilot עם 50 לידים → הרחבה הדרגתית עד 2,000+/חודש
 
 ## הקשר ייחודי לסוכן הראשון
 
 - **שם**: שיווק שותפים — האחים סיטון
-- **מטרה**: תיאום זום עם יועץ לימודים + ליקוט מ-5 שאלות. **לא** מכירה ישירה.
+- **מטרה**: תיאום זום עם יועץ לימודים + ליקוט מ-5 שאלות (q1-q5). **לא** מכירה ישירה.
 - **טון**: עברית מדוברת, חברית, לא רשמית. הודעות קצרות (1-3 משפטים).
 - **זהות**: נציג קשר אנונימי, לא AI ולא בשם נציג ספציפי.
 - **גבולות קשיחים**: אסור לציין מחירים, אסור להבטיח הכנסות, אסור להמציא פרטים, אסור לשלוח לינקים שלא אושרו.
 
-ראה את ה־Prompt המלא ב־[prompts/affiliate_marketing/main/v1.md](./prompts/affiliate_marketing/main/v1.md) — מסונכרן ל־`prompts` table דרך `bun run prompts:sync` ונטען על ידי `whatsapp-webhook` בכל תור.
+ראה את ה־Prompt המלא ב־[prompts/affiliate_marketing/main/v8.md](./prompts/affiliate_marketing/main/v8.md) (פעיל היום).
+
+---
 
 ## נקודות מסוכנות
 
 - **לידים = אנשים אמיתיים.** באג ב-flow של WhatsApp = הודעה שגויה לליד = פגיעה במכללה. תמיד בדוק.
-- **חוק הספאם הישראלי**: יש לקבל אישור מהליד לפני שליחה. אישור הוטמע בטופס.
+- **חוק הספאם הישראלי**: יש לקבל אישור מהליד לפני שליחה. אישור הוטמע בטופס landing page (lead-register).
 - **Multi-tenancy**: כל קוד צריך להיות agent-aware (מסונן לפי `activeAgent.id`). אסור להניח סוכן יחיד.
-- **Prompt = רגיש**. שינוי בלא בדיקה יכול לגרום לבוט לדבר באופן שגוי. תמיד PR-review. בנוסף: כפתור Rollback בדף Prompts (admin) מאפשר חזרה מהירה לגרסה קודמת — `is_active` מתחלף ב־DB וה־webhook קורא מ־DB בכל תור, כלומר rollback מיידי.
-- **Hallucination guards**: `validateAgentReply` חוסם תגובות עם AI brand leaks, Hebrew self-disclosure (אני AI/בוט), מחירים, או ערבויות. אבל זה safety-net — לא תחליף ל־PR-review של ה־prompt.
-- **RLS**: בלי policies נכונות, anon read מחזיר רשימה ריקה. בדוק policies אחרי כל שינוי סכמה.
-- **`VERIFY_TOKEN` rotation**: בייצור — מסונכרן עם Meta App Secret. אם דולף, כל אחד יכול להזריק הודעות חתומות → להחליף ב־Meta Console + `bunx supabase secrets set` מחדש.
-- **Service-role באלה־פונקציה**: `whatsapp-webhook` רץ עם service_role (עוקף RLS). שורות inbound נכתבות ישירות. לא לחשוף את ה־service_role בקוד הקליינט בשום צורה.
-- **`--no-verify-jwt` על `whatsapp-webhook` ו־`prompt-replay`**: הפונקציות ציבוריות מבחינת Supabase Auth. אבל יש שכבת הגנה משלהן: `whatsapp-webhook` דורש חתימת HMAC, `prompt-replay` דורש JWT של אדמין (`requireAdmin`).
-- **Fail-open על POST ללא חתימה**: כדי לעבור verification ping של HookMyApp, ה־webhook מחזיר 200 גם בלי signature. הוא **לא** מעבד payload במצב הזה. אם נראה ב־logs שמישהו מנסה להזריק → להוסיף audit / blocklist.
-- **Langfuse keys**: 3 keys נפרדים (`PUBLIC` / `SECRET` / `HOST`). אם מודבקים יחד בשגיאה → trace יכשל ויהיה log של `URL invalid` ב־error_logs (שזה איך גילינו את הבעיה בעבר). תמיד 3 ערכים נפרדים.
-- **Hebrew regex word boundary**: ב־JS `\b` לא תופס תווי עברית (לא ב־word class). בכל regex של hallucination guard בעברית — **לא** להשתמש ב־`\b`.
-- **Edit hook על קבצי auth/security**: יש hook ב־Claude Code שמסרב Edit/Write על דברים שנוגעים ל־auth / migrations / security config / API keys, גם בקבצי docs. במידת הצורך — Python script דרך Bash, כי הוא לא חסום.
+- **Prompt = רגיש**. שינוי בלא בדיקה יכול לגרום לבוט לדבר באופן שגוי. תמיד PR-review. בנוסף: Rollback בדף Prompts (admin) מאפשר חזרה מהירה.
+- **Hallucination guards** + **judgeReply**: שכבת safety-net דו־רובדית, אבל לא תחליף ל־PR-review של ה־prompt.
+- **RLS**: בלי policies נכונות, anon read מחזיר רשימה ריקה. בדוק policies אחרי כל שינוי סכמה. מ־0018: לידים = admin only.
+- **`VERIFY_TOKEN` rotation**: בייצור — מסונכרן עם Meta App Secret. אם דולף, כל אחד יכול להזריק הודעות חתומות.
+- **Service-role ב־edge function**: `whatsapp-webhook` רץ עם service_role (עוקף RLS). לא לחשוף את ה־service_role בקוד הקליינט.
+- **`--no-verify-jwt` על public functions**: `whatsapp-webhook`, `lead-register`, ה־cron functions. יש שכבת הגנה משלהן (HMAC / cron secret).
+- **Fail-open על POST ללא חתימה ב־webhook**: כדי לעבור verification ping של HookMyApp. הוא **לא** מעבד payload במצב הזה.
+- **Fail-closed על Mooz check**: אם Mooz לא עונה — לא שולחים. עדיף לא לשלוח מאשר לקבוע פעמיים.
+- **Langfuse keys**: 3 keys נפרדים (`PUBLIC` / `SECRET` / `HOST`). אם מודבקים יחד → trace יכשל.
+- **Hebrew regex word boundary**: ב־JS `\b` לא תופס תווי עברית. בכל regex של hallucination guard בעברית — **לא** להשתמש ב־`\b`.
+- **kill switch**: `agents.is_paused=true` עוצר את ה־AI loop אבל inbound עדיין נכנס. אם אופרטור משאיר paused לזמן ארוך — היסטוריה נצברת בלי תגובות.
+- **quiet hours**: שעות wrap-midnight (20→8) מטופלות נכון. אל תוסיף timezone אחר חוץ מ־Asia/Jerusalem בלי לעדכן את quietHours.ts.
+- **agent_lock TTL**: 60 שניות. אם מודל מתמשך מעל 60s (Sonnet 4.6 עם thinking) — webhook מקביל יכול לקחת lock וליצור double-reply. הקאפ של 110s על Anthropic SDK (PR #65) מקטין את הסיכון אבל לא מבטל. נטר ב־Langfuse.
+- **brain context size**: brain_documents נטענים לתוך system prompt. cap של 200K chars total + 40K per doc. מסמך מאוד גדול ידחק היסטוריה.
+
+---
 
 ## חומרי עזר
 
 - **מסמך אפיון מלא v2.0** (42 עמודים, 25 פרקים) — נמצא אצל המשתמש; לא בריפו.
-- **מסמך העברה** — נמצא אצל המשתמש; הסקירה בתוך מסמך זה מבוססת עליו.
+- **מסמך העברה** — נמצא אצל המשתמש.
 - **תכנית Lovable** — `.lovable/plan.md` בריפו.
 - **Repo**: https://github.com/RicherLTD/richer-ai-agents-hub

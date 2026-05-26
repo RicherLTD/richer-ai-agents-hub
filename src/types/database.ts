@@ -108,8 +108,12 @@ export type Database = {
           created_by: string | null
           description: string | null
           display_name: string
+          first_touch_delay_minutes: number
+          first_touch_template_language: string
+          first_touch_template_name: string | null
           icon_url: string | null
           id: string
+          is_paused: boolean
           meeting_duration_minutes: number
           meeting_type_id: string | null
           name: string
@@ -119,6 +123,7 @@ export type Database = {
           status: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at: string | null
           whatsapp_number: string | null
+          whatsapp_phone_number_id: string | null
           whatsapp_provider: string | null
         }
         Insert: {
@@ -127,8 +132,12 @@ export type Database = {
           created_by?: string | null
           description?: string | null
           display_name: string
+          first_touch_delay_minutes?: number
+          first_touch_template_language?: string
+          first_touch_template_name?: string | null
           icon_url?: string | null
           id?: string
+          is_paused?: boolean
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
           name: string
@@ -138,6 +147,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
           whatsapp_number?: string | null
+          whatsapp_phone_number_id?: string | null
           whatsapp_provider?: string | null
         }
         Update: {
@@ -146,8 +156,12 @@ export type Database = {
           created_by?: string | null
           description?: string | null
           display_name?: string
+          first_touch_delay_minutes?: number
+          first_touch_template_language?: string
+          first_touch_template_name?: string | null
           icon_url?: string | null
           id?: string
+          is_paused?: boolean
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
           name?: string
@@ -157,6 +171,7 @@ export type Database = {
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
           whatsapp_number?: string | null
+          whatsapp_phone_number_id?: string | null
           whatsapp_provider?: string | null
         }
         Relationships: []
@@ -215,6 +230,112 @@ export type Database = {
         }
         Relationships: []
       }
+      brain_documents: {
+        Row: {
+          agent_id: string
+          ai_description: string | null
+          ai_title: string | null
+          description: string | null
+          extracted_text: string | null
+          extraction_error: string | null
+          extraction_status: Database["public"]["Enums"]["brain_extraction_status"]
+          file_size_bytes: number | null
+          id: string
+          is_active: boolean
+          page_count: number | null
+          shared_across_agents: boolean
+          source_kind: string
+          storage_path: string | null
+          tags: string[]
+          title: string
+          token_count: number | null
+          updated_at: string
+          uploaded_at: string
+          uploaded_by: string
+        }
+        Insert: {
+          agent_id: string
+          ai_description?: string | null
+          ai_title?: string | null
+          description?: string | null
+          extracted_text?: string | null
+          extraction_error?: string | null
+          extraction_status?: Database["public"]["Enums"]["brain_extraction_status"]
+          file_size_bytes?: number | null
+          id?: string
+          is_active?: boolean
+          page_count?: number | null
+          shared_across_agents?: boolean
+          source_kind: string
+          storage_path?: string | null
+          tags?: string[]
+          title: string
+          token_count?: number | null
+          updated_at?: string
+          uploaded_at?: string
+          uploaded_by: string
+        }
+        Update: {
+          agent_id?: string
+          ai_description?: string | null
+          ai_title?: string | null
+          description?: string | null
+          extracted_text?: string | null
+          extraction_error?: string | null
+          extraction_status?: Database["public"]["Enums"]["brain_extraction_status"]
+          file_size_bytes?: number | null
+          id?: string
+          is_active?: boolean
+          page_count?: number | null
+          shared_across_agents?: boolean
+          source_kind?: string
+          storage_path?: string | null
+          tags?: string[]
+          title?: string
+          token_count?: number | null
+          updated_at?: string
+          uploaded_at?: string
+          uploaded_by?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "brain_documents_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      brain_usage_log: {
+        Row: {
+          brain_document_ids: string[]
+          coach_message_id: string
+          created_at: string
+          id: string
+        }
+        Insert: {
+          brain_document_ids?: string[]
+          coach_message_id: string
+          created_at?: string
+          id?: string
+        }
+        Update: {
+          brain_document_ids?: string[]
+          coach_message_id?: string
+          created_at?: string
+          id?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "brain_usage_log_coach_message_id_fkey"
+            columns: ["coach_message_id"]
+            isOneToOne: false
+            referencedRelation: "coach_messages"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       coach_messages: {
         Row: {
           agent_id: string
@@ -258,7 +379,29 @@ export type Database = {
           role?: string
           user_id?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "coach_messages_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "coach_messages_applied_prompt_id_fkey"
+            columns: ["applied_prompt_id"]
+            isOneToOne: false
+            referencedRelation: "prompts"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "coach_messages_referenced_conversation_id_fkey"
+            columns: ["referenced_conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       conversations: {
         Row: {
@@ -288,6 +431,7 @@ export type Database = {
           qualifies_zoom_basic: boolean | null
           qualifies_zoom_premium: boolean | null
           quality_score: number | null
+          re_engaged_at: string | null
           secondary_objections: string[] | null
           source_campaign: string | null
           source_funnel: string | null
@@ -324,6 +468,7 @@ export type Database = {
           qualifies_zoom_basic?: boolean | null
           qualifies_zoom_premium?: boolean | null
           quality_score?: number | null
+          re_engaged_at?: string | null
           secondary_objections?: string[] | null
           source_campaign?: string | null
           source_funnel?: string | null
@@ -362,6 +507,7 @@ export type Database = {
           qualifies_zoom_basic?: boolean | null
           qualifies_zoom_premium?: boolean | null
           quality_score?: number | null
+          re_engaged_at?: string | null
           secondary_objections?: string[] | null
           source_campaign?: string | null
           source_funnel?: string | null
@@ -750,6 +896,84 @@ export type Database = {
           },
         ]
       }
+      scheduled_messages: {
+        Row: {
+          agent_id: string
+          attempts: number
+          conversation_id: string | null
+          created_at: string
+          id: string
+          last_error: string | null
+          lead_name: string | null
+          lead_phone: string
+          meta_message_id: string | null
+          scheduled_for: string
+          sent_at: string | null
+          source_campaign: string | null
+          source_funnel: string | null
+          status: Database["public"]["Enums"]["scheduled_message_status"]
+          template_language: string
+          template_name: string
+          template_variables: Json
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          attempts?: number
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          lead_name?: string | null
+          lead_phone: string
+          meta_message_id?: string | null
+          scheduled_for: string
+          sent_at?: string | null
+          source_campaign?: string | null
+          source_funnel?: string | null
+          status?: Database["public"]["Enums"]["scheduled_message_status"]
+          template_language?: string
+          template_name: string
+          template_variables?: Json
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          attempts?: number
+          conversation_id?: string | null
+          created_at?: string
+          id?: string
+          last_error?: string | null
+          lead_name?: string | null
+          lead_phone?: string
+          meta_message_id?: string | null
+          scheduled_for?: string
+          sent_at?: string | null
+          source_campaign?: string | null
+          source_funnel?: string | null
+          status?: Database["public"]["Enums"]["scheduled_message_status"]
+          template_language?: string
+          template_name?: string
+          template_variables?: Json
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "scheduled_messages_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scheduled_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
     }
     Views: {
       [_ in never]: never
@@ -761,6 +985,7 @@ export type Database = {
       agent_status_enum: "active" | "paused" | "archived"
       ai_provider_enum: "claude" | "gpt" | "pending" | "manual"
       app_role: "admin" | "user"
+      brain_extraction_status: "pending" | "ready" | "failed"
       conversation_status_enum: "active" | "paused" | "completed" | "opted_out"
       funnel_stage_enum: "cold" | "mid" | "done"
       message_direction_enum: "inbound" | "outbound"
@@ -781,6 +1006,7 @@ export type Database = {
         | "negative"
         | "unknown"
       question_version_enum: "A" | "B" | "C"
+      scheduled_message_status: "pending" | "sent" | "failed" | "cancelled"
       tag_enum:
         | "not_hotlist"
         | "hotlist"
@@ -922,6 +1148,7 @@ export const Constants = {
       agent_status_enum: ["active", "paused", "archived"],
       ai_provider_enum: ["claude", "gpt", "pending", "manual"],
       app_role: ["admin", "user"],
+      brain_extraction_status: ["pending", "ready", "failed"],
       conversation_status_enum: ["active", "paused", "completed", "opted_out"],
       funnel_stage_enum: ["cold", "mid", "done"],
       message_direction_enum: ["inbound", "outbound"],
@@ -944,6 +1171,7 @@ export const Constants = {
         "unknown",
       ],
       question_version_enum: ["A", "B", "C"],
+      scheduled_message_status: ["pending", "sent", "failed", "cancelled"],
       tag_enum: [
         "not_hotlist",
         "hotlist",
