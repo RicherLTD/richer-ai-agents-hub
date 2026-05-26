@@ -192,6 +192,12 @@ describe("dispatchMoozTool — book_meeting", () => {
     const memoryUpsert = calls.find((c) => c.table === "lead_memory" && c.op === "upsert");
     expect(memoryUpsert).toBeDefined();
     expect(memoryUpsert!.payload.q7_email).toBe("shlomo@example.com");
+
+    // book_meeting's next_step hint must include the proactive link line
+    // so Claude verbalises it in the confirmation message (v14 behavior).
+    expect(parsed.next_step).toContain(
+      "הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה",
+    );
   });
 
   it("slot_full surfaces slot_unavailable with retry guidance and does NOT update DB", async () => {
