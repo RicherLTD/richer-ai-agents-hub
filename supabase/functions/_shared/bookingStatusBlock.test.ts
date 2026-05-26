@@ -28,7 +28,7 @@ describe("renderBookingStatusBlock", () => {
     expect(block).toContain("HAS a confirmed Zoom meeting");
     // Asia/Jerusalem rendering should include the local time digits 18:00
     expect(block).toContain("18:00");
-    expect(block).toContain("הקישור יישלח אליך 5 דקות לפני הפגישה לוואטסאפ");
+    expect(block).toContain("הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה");
     expect(block).toContain("DO NOT call list_available_slots");
     expect(block).toContain("RESCHEDULE");
     expect(block).toContain("CANCEL");
