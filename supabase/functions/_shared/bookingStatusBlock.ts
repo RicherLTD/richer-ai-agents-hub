@@ -29,7 +29,7 @@ export type BookingLookupResult =
 /** Booking-related Hebrew + English keywords. If a lead's latest
  *  inbound matches this on a non-first turn, we re-check Mooz. */
 export const BOOKING_KEYWORD_RE =
-  /קבעתי|קבעת|זום|פגישה|קישור|link|מועד|מתי|שעה|להזיז|לשנות|לבטל|תאמתי|תיאמתי/i;
+  /קבעתי|קבעת|זום|פגישה|פגישות|קישור|link|מועד|מתי|שעה|להזיז|לשנות|להעביר|לבטל|מבטל|מבטלת|אבטל|תאריך|תאמתי|תיאמתי/i;
 
 export interface ShouldPreCheckArgs {
   moozClientPresent: boolean;

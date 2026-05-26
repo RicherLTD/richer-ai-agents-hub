@@ -1,9 +1,21 @@
 import { describe, expect, it } from "vitest";
 import {
   BOOKING_KEYWORD_RE,
+  type BookingLookupResult,
   renderBookingStatusBlock,
   shouldPreCheckMooz,
 } from "./bookingStatusBlock.ts";
+
+// Compile-time guard: if mooz.ts's lookupByPhone return type ever drifts
+// from BookingLookupResult, TypeScript catches it here. Erased at runtime
+// (import type from mooz.ts is type-only — no runtime dep on esm.sh).
+import type { MoozClient } from "./mooz.ts";
+type _MoozReturnAssertion =
+  Awaited<ReturnType<MoozClient["lookupByPhone"]>> extends BookingLookupResult
+    ? true
+    : never;
+const _moozAssertion: _MoozReturnAssertion = true;
+void _moozAssertion;
 
 describe("renderBookingStatusBlock", () => {
   it("booked branch — labels HAS confirmed, includes IL-formatted time + behavior rules", () => {
@@ -64,6 +76,12 @@ describe("BOOKING_KEYWORD_RE", () => {
     ["באיזה שעה?", true],
     ["אפשר להזיז?", true],
     ["אני רוצה לבטל", true],
+    ["אני מבטל את הזום", true],
+    ["מבטלת את הפגישה", true],
+    ["אבטל מחר", true],
+    ["פגישות שלי הסתיימו", true],
+    ["באיזה תאריך?", true],
+    ["אני רוצה להעביר את הפגישה", true],
     ["תיאמתי כבר", true],
     ["תאמתי עם היועץ", true],
     ["שלום, מה שלומך?", false],
