@@ -377,7 +377,11 @@
 | `extractMemory.ts` | חילוץ זיכרון + funnel stage + handoff decision |
 | `brainContext.ts` | טעינה + פירמוט של brain_documents לתוך system prompt |
 | `injectionScan.ts` | זיהוי prompt injection ב־brain uploads |
-| `moozCheck.ts` | בדיקה מול Mooz אם הליד כבר חתום (fail-closed) |
+| `mooz.ts` | Mooz API client — `list_available_slots` / `book_meeting` (tool-use) + `lookupByPhone` (pre-check) |
+| `moozTools.ts` | Anthropic tool definitions + dispatcher for Mooz tools |
+| `agentTurn.ts` | Tool-use loop wrapper around `anthropic.messages.create` |
+| `bookingStatusBlock.ts` | Conditional pre-check predicate + system-prompt block renderer (booked / not-booked / degraded) |
+| `moozCheck.ts` | ⚠️ legacy/dead — old single-purpose phone checker, kept for tests only. Live code uses `mooz.ts` |
 | `quietHours.ts` | חישוב חלון שתיקה פר־סוכן (Asia/Jerusalem, wrap-midnight) |
 | `alertOperators.ts` | WhatsApp alert לטלפוני אופרטור על כשל קריטי |
 | `fireHandoffWebhook.ts` | POST חתום ל־Make.com handoff |
@@ -498,9 +502,9 @@
 ### Phase J: Lead Onboarding (0022-0024)
 | # | מה |
 |---|---|
-| 0022 | `lead_memory.q7_email` + `agents.mooz_url` / `mooz_api_token` / `mooz_check_enabled` |
+| 0022 | `lead_memory.q7_email` + `agents.meeting_type_id` + `agents.meeting_duration_minutes` (Mooz booking config) |
 | 0023 | `scheduled_messages` table + `agents.first_touch_template_*` + lead-register endpoint |
-| 0024 | `agents.require_mooz_check` + `mooz_check_timeout_ms` |
+| 0024 | `agents.meeting_check_url` + `agents.meeting_check_enabled` (pre-check infra; currently unused by live code) |
 
 ### Phase K: Concurrency Safety (0025)
 | # | מה |
@@ -628,9 +632,10 @@ cp .env.example .env.local
 - `HANDOFF_WEBHOOK_URL` — Make.com scenario URL
 - `HANDOFF_WEBHOOK_SECRET` — HMAC לחתימת הקריאה
 
-**Mooz pre-check:**
-- `MOOZ_API_BASE_URL`
-- (ה־token פר־סוכן ב־`agents.mooz_api_token`)
+**Mooz integration (booking system):**
+- `MOOZ_ORG_API_KEY` — per-org bearer for `list_available_slots` + `book_meeting` tools (api-gateway calls). Without it, `moozClientFromEnv` returns null and the bot can't see real slots or book.
+- `MOOZ_API_TOKEN` — global bearer for `lookupByPhone` (pre-check). Without it, every triggered pre-check returns `{booked:false, error:"MOOZ_API_TOKEN not configured"}` and the degraded prompt block is injected. Watch `error_logs.error_type='mooz_lookup_failed'` if you suspect this is missing.
+- Base URL is hardcoded in `_shared/mooz.ts` (`MOOZ_BASE_URL`); no separate env var.
 
 ```bash
 # עדכון סודות בפרוד:
