@@ -49,6 +49,10 @@ import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { runAgentTurn } from "../_shared/agentTurn.ts";
 import { moozClientFromEnv } from "../_shared/mooz.ts";
 import { type MoozDispatchCtx } from "../_shared/moozTools.ts";
+import {
+  renderBookingStatusBlock,
+  shouldPreCheckMooz,
+} from "../_shared/bookingStatusBlock.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
 import { isOptOutMessage } from "../_shared/optOut.ts";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
@@ -701,6 +705,68 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
       }
     : null;
 
+  // ── Pre-check Mooz for an existing booking ───────────────────────
+  // Runs only when we have a Mooz client AND either it's the very first
+  // inbound of this conversation OR the lead's latest message mentions
+  // scheduling. Output is a markdown block prepended to the system
+  // prompt so v14 can branch on it. Fail-open: any error => degraded
+  // block, not a hard skip of the turn.
+  const lastClaudeMsg = turn.claudeMessages[turn.claudeMessages.length - 1];
+  const lastInboundText =
+    lastClaudeMsg?.role === "user" && typeof lastClaudeMsg.content === "string"
+      ? lastClaudeMsg.content
+      : "";
+  const preCheckArgs = {
+    moozClientPresent: moozClient !== null,
+    claudeMessageCount: turn.claudeMessages.length,
+    lastInboundText,
+  };
+  let bookingStatusBlock = "";
+  if (moozClient && shouldPreCheckMooz(preCheckArgs)) {
+    try {
+      const lookup = await moozClient.lookupByPhone(ctx.leadPhone);
+      // lookupByPhone never throws on common errors — it returns
+      // { booked: false, error: "..." } instead. Surface those to
+      // error_logs so a Mooz outage is visible to the operator.
+      if (lookup.booked === false && "error" in lookup) {
+        await logError({
+          admin: ctx.admin,
+          source: AGENT_LOOP_SOURCE,
+          errorType: "mooz_lookup_failed",
+          level: "warn",
+          message: lookup.error,
+          context: {
+            lead_phone: ctx.leadPhone,
+            trigger:
+              preCheckArgs.claudeMessageCount === 1 ? "first_turn" : "keyword",
+          },
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        });
+      }
+      bookingStatusBlock = renderBookingStatusBlock(lookup);
+    } catch (err) {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "mooz_lookup_failed",
+        level: "warn",
+        message: err instanceof Error ? err.message : String(err),
+        context: {
+          lead_phone: ctx.leadPhone,
+          trigger:
+            preCheckArgs.claudeMessageCount === 1 ? "first_turn" : "keyword",
+        },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+      bookingStatusBlock = renderBookingStatusBlock({
+        booked: false,
+        error: "lookup_failed",
+      });
+    }
+  }
+
   let turnResult;
   const startTime = new Date();
   // Inject today's date in Asia/Jerusalem so the model resolves
@@ -720,6 +786,10 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     `When a lead says "היום" use ${todayDate}. ` +
     `When they say "מחר" compute it as the next calendar day in YYYY-MM-DD. ` +
     `Always pass dates to list_available_slots in YYYY-MM-DD format using THIS reference, not your training cutoff.\n\n`;
+  // Single source of truth for the system prompt — runAgentTurn AND
+  // the Langfuse trace below should both record exactly what Claude saw.
+  const fullSystemPrompt = dateHeader + bookingStatusBlock + turn.promptContent;
+
   try {
     turnResult = await runAgentTurn({
       anthropic: ctx.anthropic,
@@ -729,7 +799,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
       // reasoning and return an empty visible reply. 2048 gives the
       // model headroom for thinking AND a 1-3 sentence visible response.
       maxTokens: 2048,
-      systemPrompt: dateHeader + turn.promptContent,
+      systemPrompt: fullSystemPrompt,
       initialMessages: turn.claudeMessages,
       moozCtx,
       retry: {
@@ -797,7 +867,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
         promptVersion: turn.promptVersion,
         promptVersionId: turn.promptVersionId,
         model: CLAUDE_MODEL,
-        systemPrompt: turn.promptContent,
+        systemPrompt: fullSystemPrompt,
         claudeMessages: turn.claudeMessages,
         startTime,
         endTime,

@@ -346,7 +346,7 @@ async function handleBookMeeting(
       end_utc: result.booking.end_time,
       local_il: formatLocalIL(result.booking.start_time),
       next_step:
-        "Confirm the booking to the lead in one short message. Include the time in Israel timezone in natural Hebrew. Don't promise links — they're sent by email separately.",
+        "Confirm the booking to the lead in one short message. Include the time in Israel timezone in natural Hebrew. ALWAYS include the line verbatim: \"הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה\". A short closing word ('בהצלחה!' or a single emoji) is fine after the line, but nothing more.",
     }),
     bookingCreated: true,
   };
