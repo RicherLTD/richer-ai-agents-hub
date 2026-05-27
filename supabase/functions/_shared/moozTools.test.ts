@@ -17,10 +17,21 @@ interface AdminCall {
   where?: { col: string; val: unknown };
 }
 
-function makeAdmin(): {
+// A lead that clears the qualification floor (goal + pain + >=3 answers).
+// Default for the mock so existing happy-path tests proceed into the tool.
+const QUALIFIED_MEMORY = {
+  q1_age: 30,
+  q2_motivation: "להגדיל הכנסה",
+  q3_dream_change: "עצמאות פיננסית",
+  q4_blocker: "אין זמן",
+  q5_urgency: "החודש",
+};
+
+function makeAdmin(opts?: { leadMemory?: Record<string, unknown> | null }): {
   admin: MoozDispatchCtx["admin"];
   calls: AdminCall[];
 } {
+  const leadMemory = opts && "leadMemory" in opts ? opts.leadMemory : QUALIFIED_MEMORY;
   const calls: AdminCall[] = [];
   // deno-lint-ignore no-explicit-any
   const adminAny: any = {
@@ -42,6 +53,17 @@ function makeAdmin(): {
         },
         insert() {
           return Promise.resolve({ error: null });
+        },
+        select(_cols: string) {
+          return {
+            eq(_col: string, _val: unknown) {
+              return {
+                maybeSingle() {
+                  return Promise.resolve({ data: leadMemory, error: null });
+                },
+              };
+            },
+          };
         },
       };
     },
@@ -105,6 +127,20 @@ describe("MOOZ_TOOL_DEFS", () => {
 });
 
 describe("dispatchMoozTool — list_available_slots", () => {
+  it("blocks until the lead clears the qualification floor", async () => {
+    const { admin } = makeAdmin({ leadMemory: null });
+    const ctx = makeCtx(makeMoozStub({}), admin);
+    const r = await dispatchMoozTool(
+      "list_available_slots",
+      { preferred_date: "2026-05-21" },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(parsed.reason).toBe("lead_not_qualified_yet");
+    expect(r.bookingCreated).toBe(false);
+  });
+
   it("rejects malformed preferred_date", async () => {
     const { admin } = makeAdmin();
     const ctx = makeCtx(makeMoozStub({}), admin);
@@ -164,6 +200,29 @@ describe("dispatchMoozTool — list_available_slots", () => {
 });
 
 describe("dispatchMoozTool — book_meeting", () => {
+  it("blocks (defense in depth) when the lead has not cleared the floor", async () => {
+    // Only 2 of 5 answered → below the floor.
+    const { admin, calls } = makeAdmin({
+      leadMemory: { q3_dream_change: "עצמאות", q4_blocker: "אין זמן" },
+    });
+    const ctx = makeCtx(makeMoozStub({}), admin);
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+      },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(r.bookingCreated).toBe(false);
+    // must NOT have touched the DB
+    expect(calls.find((c) => c.table === "conversations")).toBeUndefined();
+  });
+
   it("happy path updates conversation + lead_memory + returns booking_id", async () => {
     const { admin, calls } = makeAdmin();
     const ctx = makeCtx(makeMoozStub({}), admin);

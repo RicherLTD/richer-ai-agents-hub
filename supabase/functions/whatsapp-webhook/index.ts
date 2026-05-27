@@ -49,6 +49,7 @@ import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { runAgentTurn } from "../_shared/agentTurn.ts";
 import { moozClientFromEnv } from "../_shared/mooz.ts";
 import { type MoozDispatchCtx } from "../_shared/moozTools.ts";
+import { loadBrainRows, buildBrainSection } from "../_shared/brainContext.ts";
 import {
   renderBookingStatusBlock,
   shouldPreCheckMooz,
@@ -767,6 +768,29 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     }
   }
 
+  // Load the operator-curated brain (knowledge base) and fold it into the
+  // system prompt so the LIVE agent — not just the Prompt Coach — can use it.
+  // Same visibility rules + caps that buildBrainSection enforces. Best-effort:
+  // a brain-load failure must never cost the lead a reply, so we fall back to
+  // no brain. (Prompt-caching of this block is a follow-up that lands with
+  // v15, when the system prompt is restructured stable-content-first.)
+  let brainText = "";
+  try {
+    const brainSection = buildBrainSection(await loadBrainRows(ctx.admin, ctx.agentId));
+    if (brainSection.text) brainText = "\n\n" + brainSection.text;
+  } catch (brainErr) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "brain_load_failed",
+      level: "warn",
+      message: brainErr instanceof Error ? brainErr.message : String(brainErr),
+      context: {},
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+  }
+
   let turnResult;
   const startTime = new Date();
   // Inject today's date in Asia/Jerusalem so the model resolves
@@ -788,7 +812,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     `Always pass dates to list_available_slots in YYYY-MM-DD format using THIS reference, not your training cutoff.\n\n`;
   // Single source of truth for the system prompt — runAgentTurn AND
   // the Langfuse trace below should both record exactly what Claude saw.
-  const fullSystemPrompt = dateHeader + bookingStatusBlock + turn.promptContent;
+  const fullSystemPrompt = dateHeader + bookingStatusBlock + turn.promptContent + brainText;
 
   try {
     turnResult = await runAgentTurn({

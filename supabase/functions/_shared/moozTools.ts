@@ -20,6 +20,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 import type Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
 import { logError } from "./logError.ts";
+import { meetsZoomQualificationFloor } from "./zoomGate.ts";
 
 /** Anthropic tool definitions — passed verbatim to messages.create({tools}). */
 export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
@@ -132,12 +133,54 @@ export async function dispatchMoozTool(
   };
 }
 
+// ─── qualification gate ──────────────────────────────────────────────
+
+/**
+ * Deterministic backstop that stops the bot from offering or booking a Zoom
+ * before the lead is warm enough. Reads lead_memory (as of the last
+ * extraction — a one-turn lag is fine, it errs toward more warming) and runs
+ * the floor: goal (q3) + pain (q4) + >=3 of the 5 core questions. Returns a
+ * blocking tool_result when unmet, or null to let the tool proceed.
+ */
+async function checkQualificationGate(
+  ctx: MoozDispatchCtx,
+): Promise<MoozDispatchResult | null> {
+  const { data: mem } = await ctx.admin
+    .from("lead_memory")
+    .select("q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency")
+    .eq("conversation_id", ctx.conversationId)
+    .maybeSingle();
+  const row = (mem ?? {}) as Record<string, unknown>;
+  const gate = meetsZoomQualificationFloor({
+    q1_age: (row.q1_age as number | null) ?? null,
+    q2_motivation: (row.q2_motivation as string | null) ?? null,
+    q3_dream_change: (row.q3_dream_change as string | null) ?? null,
+    q4_blocker: (row.q4_blocker as string | null) ?? null,
+    q5_urgency: (row.q5_urgency as string | null) ?? null,
+  });
+  if (gate.ok) return null;
+  return {
+    resultJson: JSON.stringify({
+      blocked: true,
+      reason: "lead_not_qualified_yet",
+      missing: gate.missing,
+      guidance:
+        "עוד מוקדם להציע או לקבוע פגישה. עדיין חסר: " +
+        gate.missing.join("; ") +
+        ". תמשיך לחמם בטבעיות — תחפור בכאב ובמה שהליד באמת רוצה לשנות, ואל תזכיר פגישה עד שזה מתמלא.",
+    }),
+    bookingCreated: false,
+  };
+}
+
 // ─── list_available_slots ────────────────────────────────────────────
 
 async function handleListSlots(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
+  const blocked = await checkQualificationGate(ctx);
+  if (blocked) return blocked;
   const parsed = parseListInput(input);
   if (!parsed.ok) {
     return {
@@ -264,6 +307,8 @@ async function handleBookMeeting(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
+  const blocked = await checkQualificationGate(ctx);
+  if (blocked) return blocked;
   const parsed = parseBookInput(input);
   if (!parsed.ok) {
     return {
