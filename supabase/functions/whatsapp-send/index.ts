@@ -174,7 +174,6 @@ Deno.serve(async (req) => {
         content,
         timestamp: ts,
         meta_message_id: sendResult.metaMessageId,
-        ai_provider: "manual",
       })
       .select("*")
       .single();
