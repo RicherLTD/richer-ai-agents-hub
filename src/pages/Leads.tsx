@@ -5,6 +5,7 @@ import { Search, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { EmptyState } from "@/components/EmptyState";
+import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
 import { DateRangeFilter, type DatePreset, type DateRange } from "@/components/leads/DateRangeFilter";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
 import { FunnelStageBadge } from "@/components/leads/FunnelStageBadge";
@@ -192,7 +193,10 @@ const Leads = () => {
                       {lead.lead_name?.trim() || "—"}
                     </TableCell>
                     <TableCell dir="ltr" className="font-mono text-xs text-muted-foreground tabular-nums">
-                      {maskPhone(lead.lead_phone)}
+                      <div className="flex items-center gap-1.5">
+                        <span>{maskPhone(lead.lead_phone)}</span>
+                        <CopyPhoneButton phone={lead.lead_phone} className="sm:group-hover:opacity-100" />
+                      </div>
                     </TableCell>
                     <TableCell>
                       <DisplayStatusBadge status={deriveDisplayStatus(lead)} />

@@ -1,6 +1,7 @@
 import { format, isSameDay, isYesterday } from "date-fns";
 import { he } from "date-fns/locale";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
 import { deriveDisplayStatus } from "@/lib/conversation-status";
 import { cn } from "@/lib/utils";
@@ -66,11 +67,18 @@ export function ConversationListItem({ conversation, isActive, onClick }: Props)
   const displayStatus = deriveDisplayStatus(conversation);
   const isLive = displayStatus === "opened" || displayStatus === "zoom_scheduled";
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={() => onClick(conversation)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onClick(conversation);
+        }
+      }}
       className={cn(
-        "group/row relative flex w-full items-center gap-3 border-b border-border-subtle px-3 py-3 text-right transition-colors",
+        "group/row relative flex w-full cursor-pointer items-center gap-3 border-b border-border-subtle px-3 py-3 text-right transition-colors",
         "hover:bg-surface-hover",
         isActive && "bg-surface-hover",
       )}
@@ -102,12 +110,15 @@ export function ConversationListItem({ conversation, isActive, onClick }: Props)
           </span>
         </div>
         <div className="mt-1 flex items-center gap-2">
-          <p dir="ltr" className="flex-1 truncate text-right font-mono text-[11px] text-muted-foreground tabular-nums">
-            {conversation.lead_phone}
-          </p>
+          <div className="flex min-w-0 flex-1 items-center gap-1">
+            <p dir="ltr" className="min-w-0 truncate font-mono text-[11px] text-muted-foreground tabular-nums">
+              {conversation.lead_phone}
+            </p>
+            <CopyPhoneButton phone={conversation.lead_phone} className="sm:group-hover/row:opacity-100" />
+          </div>
           <DisplayStatusBadge status={deriveDisplayStatus(conversation)} />
         </div>
       </div>
-    </button>
+    </div>
   );
 }

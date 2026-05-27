@@ -400,7 +400,7 @@
 │   │   ├── layout/         # AppLayout, AppSidebar, AppHeader, AgentSelector
 │   │   ├── ui/             # shadcn primitives
 │   │   ├── dashboard/      # KPI cards + funnel/tag breakdown
-│   │   ├── leads/          # Leads table + filters
+│   │   ├── leads/          # Leads table + filters + CopyPhoneButton (shared: leads + conversations)
 │   │   ├── analytics/      # CostLatency + Objections + AiProviders + ExperimentCard
 │   │   ├── conversations/  # MessageThread · ReplyBox · LeadMemoryPanel · MessageDebugPopover
 │   │   ├── prompts/        # PromptViewDialog · PromptReplayDialog
