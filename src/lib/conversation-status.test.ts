@@ -18,6 +18,7 @@ function row(partial: Partial<ConversationStatusInput>): ConversationStatusInput
     current_tag: null,
     last_inbound_at: null,
     created_at: FIVE_HOURS_AGO,
+    manual_mode_since: null,
     ...partial,
   };
 }
@@ -134,6 +135,39 @@ describe("deriveDisplayStatus", () => {
       ).toBe("opened");
     }
   });
+
+  it("returns 'manual' when manual_mode_since is set", () => {
+    expect(
+      deriveDisplayStatus(row({ manual_mode_since: TWO_HOURS_AGO }), NOW),
+    ).toBe<DisplayStatus>("manual");
+  });
+
+  it("manual mode wins over requires_human (operator actively took over)", () => {
+    expect(
+      deriveDisplayStatus(
+        row({ current_tag: "requires_human", manual_mode_since: TWO_HOURS_AGO }),
+        NOW,
+      ),
+    ).toBe("manual");
+  });
+
+  it("zoom_scheduled wins over manual mode", () => {
+    expect(
+      deriveDisplayStatus(
+        row({ current_tag: "zoom_scheduled", manual_mode_since: TWO_HOURS_AGO }),
+        NOW,
+      ),
+    ).toBe("zoom_scheduled");
+  });
+
+  it("manual mode wins over a stale last_inbound_at (not closed)", () => {
+    expect(
+      deriveDisplayStatus(
+        row({ manual_mode_since: TWO_HOURS_AGO, last_inbound_at: FORTY_NINE_HOURS_AGO }),
+        NOW,
+      ),
+    ).toBe("manual");
+  });
 });
 
 describe("statusBreakdown", () => {
@@ -141,6 +175,7 @@ describe("statusBreakdown", () => {
     const rows: ConversationStatusInput[] = [
       row({ current_tag: "zoom_scheduled" }),
       row({ current_tag: "zoom_scheduled" }),
+      row({ manual_mode_since: TWO_HOURS_AGO }),
       row({ current_tag: "requires_human" }),
       row({ current_tag: "block_risk" }),
       row({ current_tag: "opted_out" }),
@@ -153,6 +188,7 @@ describe("statusBreakdown", () => {
     const out = statusBreakdown(rows, NOW);
     expect(out).toEqual({
       zoom_scheduled: 2,
+      manual: 1,
       requires_human: 2,
       opted_out: 1,
       closed: 2,
@@ -168,6 +204,7 @@ describe("statusBreakdown", () => {
       template_sent: 0,
       opened: 0,
       zoom_scheduled: 0,
+      manual: 0,
       requires_human: 0,
       opted_out: 0,
       closed: 0,

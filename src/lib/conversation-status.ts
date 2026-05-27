@@ -24,6 +24,7 @@ export const DISPLAY_STATUSES = [
   "template_sent",
   "opened",
   "zoom_scheduled",
+  "manual",
   "requires_human",
   "opted_out",
   "closed",
@@ -35,6 +36,7 @@ export const DISPLAY_STATUS_LABEL: Record<DisplayStatus, string> = {
   template_sent: "טמפלייט נשלח",
   opened: "שיחה נפתחה",
   zoom_scheduled: "נקבע זום",
+  manual: "מצב ידני",
   requires_human: "דרוש נציג",
   opted_out: "הסר",
   closed: "שיחה סגורה",
@@ -48,6 +50,7 @@ export const DISPLAY_STATUS_VARIANT: Record<
   template_sent: "outline",
   opened: "default",
   zoom_scheduled: "default",
+  manual: "secondary",
   requires_human: "destructive",
   opted_out: "destructive",
   closed: "secondary",
@@ -74,6 +77,7 @@ export interface ConversationStatusInput {
   current_tag: Conversation["current_tag"];
   last_inbound_at: Conversation["last_inbound_at"];
   created_at: Conversation["created_at"];
+  manual_mode_since: Conversation["manual_mode_since"];
 }
 
 /**
@@ -91,6 +95,11 @@ export function deriveDisplayStatus(
 
   // 1. Zoom wins outright — even if status is paused or anything else.
   if (tag === "zoom_scheduled") return "zoom_scheduled";
+
+  // Manual mode — operator actively took over. Ranks above requires_human:
+  // if the bot gave up and an operator then stepped in, "manual" describes
+  // the live state more accurately.
+  if (conv.manual_mode_since) return "manual";
 
   // 2. Bot can't continue.
   if (tag && HUMAN_TAGS.has(tag)) return "requires_human";
@@ -139,6 +148,7 @@ export function statusBreakdown(
     template_sent: 0,
     opened: 0,
     zoom_scheduled: 0,
+    manual: 0,
     requires_human: 0,
     opted_out: 0,
     closed: 0,
