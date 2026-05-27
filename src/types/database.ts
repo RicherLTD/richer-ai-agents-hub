@@ -424,6 +424,8 @@ export type Database = {
           last_interaction_at: string | null
           lead_name: string | null
           lead_phone: string
+          manual_mode_by: string | null
+          manual_mode_since: string | null
           primary_objection:
             | Database["public"]["Enums"]["objection_enum"]
             | null
@@ -461,6 +463,8 @@ export type Database = {
           last_interaction_at?: string | null
           lead_name?: string | null
           lead_phone: string
+          manual_mode_by?: string | null
+          manual_mode_since?: string | null
           primary_objection?:
             | Database["public"]["Enums"]["objection_enum"]
             | null
@@ -500,6 +504,8 @@ export type Database = {
           last_interaction_at?: string | null
           lead_name?: string | null
           lead_phone?: string
+          manual_mode_by?: string | null
+          manual_mode_since?: string | null
           primary_objection?:
             | Database["public"]["Enums"]["objection_enum"]
             | null
