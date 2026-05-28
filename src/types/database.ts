@@ -111,14 +111,20 @@ export type Database = {
           first_touch_delay_minutes: number
           first_touch_template_language: string
           first_touch_template_name: string | null
+          first_touch_template_variables_template: Json
           icon_url: string | null
           id: string
           is_paused: boolean
+          meeting_check_enabled: boolean
+          meeting_check_url: string | null
           meeting_duration_minutes: number
           meeting_type_id: string | null
           name: string
+          operator_alert_phones: string[]
           primary_goal: string | null
           product_info: Json | null
+          quiet_hours_end_il: number | null
+          quiet_hours_start_il: number | null
           source_funnels: string[] | null
           status: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at: string | null
@@ -135,14 +141,20 @@ export type Database = {
           first_touch_delay_minutes?: number
           first_touch_template_language?: string
           first_touch_template_name?: string | null
+          first_touch_template_variables_template?: Json
           icon_url?: string | null
           id?: string
           is_paused?: boolean
+          meeting_check_enabled?: boolean
+          meeting_check_url?: string | null
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
           name: string
+          operator_alert_phones?: string[]
           primary_goal?: string | null
           product_info?: Json | null
+          quiet_hours_end_il?: number | null
+          quiet_hours_start_il?: number | null
           source_funnels?: string[] | null
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
@@ -159,14 +171,20 @@ export type Database = {
           first_touch_delay_minutes?: number
           first_touch_template_language?: string
           first_touch_template_name?: string | null
+          first_touch_template_variables_template?: Json
           icon_url?: string | null
           id?: string
           is_paused?: boolean
+          meeting_check_enabled?: boolean
+          meeting_check_url?: string | null
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
           name?: string
+          operator_alert_phones?: string[]
           primary_goal?: string | null
           product_info?: Json | null
+          quiet_hours_end_il?: number | null
+          quiet_hours_start_il?: number | null
           source_funnels?: string[] | null
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
@@ -406,6 +424,7 @@ export type Database = {
       conversations: {
         Row: {
           agent_id: string | null
+          agent_lock_taken_at: string | null
           ai_provider_used:
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
@@ -445,6 +464,7 @@ export type Database = {
         }
         Insert: {
           agent_id?: string | null
+          agent_lock_taken_at?: string | null
           ai_provider_used?:
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
@@ -486,6 +506,7 @@ export type Database = {
         }
         Update: {
           agent_id?: string | null
+          agent_lock_taken_at?: string | null
           ai_provider_used?:
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
@@ -703,6 +724,7 @@ export type Database = {
           conversation_summary: string | null
           created_at: string | null
           last_meaningful_moment: string | null
+          meeting_consented_at: string | null
           notes_for_advisor: string | null
           promises_made: string[] | null
           q1_age: number | null
@@ -723,6 +745,7 @@ export type Database = {
           conversation_summary?: string | null
           created_at?: string | null
           last_meaningful_moment?: string | null
+          meeting_consented_at?: string | null
           notes_for_advisor?: string | null
           promises_made?: string[] | null
           q1_age?: number | null
@@ -743,6 +766,7 @@ export type Database = {
           conversation_summary?: string | null
           created_at?: string | null
           last_meaningful_moment?: string | null
+          meeting_consented_at?: string | null
           notes_for_advisor?: string | null
           promises_made?: string[] | null
           q1_age?: number | null
@@ -837,6 +861,30 @@ export type Database = {
           },
         ]
       }
+      mooz_webhook_events: {
+        Row: {
+          event: string
+          id: number
+          idempotency_key: string
+          mooz_booking_id: string
+          received_at: string
+        }
+        Insert: {
+          event: string
+          id?: number
+          idempotency_key: string
+          mooz_booking_id: string
+          received_at?: string
+        }
+        Update: {
+          event?: string
+          id?: number
+          idempotency_key?: string
+          mooz_booking_id?: string
+          received_at?: string
+        }
+        Relationships: []
+      }
       opt_outs: {
         Row: {
           id: string
@@ -906,6 +954,7 @@ export type Database = {
         Row: {
           agent_id: string
           attempts: number
+          claimed_at: string | null
           conversation_id: string | null
           created_at: string
           id: string
@@ -926,6 +975,7 @@ export type Database = {
         Insert: {
           agent_id: string
           attempts?: number
+          claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
           id?: string
@@ -946,6 +996,7 @@ export type Database = {
         Update: {
           agent_id?: string
           attempts?: number
+          claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
           id?: string
@@ -985,6 +1036,23 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      claim_scheduled_messages: {
+        Args: { p_claim_grace_seconds?: number; p_limit: number; p_now: string }
+        Returns: {
+          agent_id: string
+          agent_is_paused: boolean
+          agent_meeting_check_enabled: boolean
+          agent_meeting_check_url: string
+          attempts: number
+          conversation_id: string
+          id: string
+          lead_name: string
+          lead_phone: string
+          template_language: string
+          template_name: string
+          template_variables: Json
+        }[]
+      }
       is_admin: { Args: never; Returns: boolean }
     }
     Enums: {
@@ -1193,3 +1261,5 @@ export const Constants = {
     },
   },
 } as const
+A new version of Supabase CLI is available: v2.101.0 (currently installed v2.95.6)
+We recommend updating regularly for new features and bug fixes: https://supabase.com/docs/guides/cli/getting-started#updating-the-supabase-cli
