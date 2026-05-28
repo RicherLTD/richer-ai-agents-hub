@@ -3,7 +3,7 @@ import { MessageCircle } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
-import { getConversationById } from "@/lib/conversations";
+import { getConversationById, setConversationMode } from "@/lib/conversations";
 import { getLeadMemory } from "@/lib/lead-memory";
 import {
   getMessagesForConversation,
@@ -16,6 +16,7 @@ import type { Message } from "@/types/message";
 import { ConversationDetailHeader } from "./ConversationDetailHeader";
 import { LeadMemoryPanel } from "./LeadMemoryPanel";
 import { MessageThread } from "./MessageThread";
+import { ManualModeBar } from "./ManualModeBar";
 import { ReplyBox } from "./ReplyBox";
 
 interface Props {
@@ -85,7 +86,16 @@ export function ConversationDetail({ conversationId }: Props) {
     mutationFn: (content: string) => sendOutboundMessage({ conversationId, content }),
     onSuccess: () => {
       void queryClient.invalidateQueries({
-        queryKey: ["conversation", conversationId, "messages"],
+        queryKey: ["conversation", conversationId],
+      });
+    },
+  });
+
+  const modeMutation = useMutation({
+    mutationFn: (mode: "manual" | "ai") => setConversationMode({ conversationId, mode }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: ["conversation", conversationId],
       });
     },
   });
@@ -158,6 +168,11 @@ export function ConversationDetail({ conversationId }: Props) {
             leadLabel={conversation.lead_name?.trim() || conversation.lead_phone}
           />
         </div>
+        <ManualModeBar
+          conversation={conversation}
+          pending={modeMutation.isPending}
+          onSetMode={(mode) => modeMutation.mutate(mode)}
+        />
         <ReplyBox onSend={(content) => sendMutation.mutateAsync(content).then(() => undefined)} />
       </div>
 

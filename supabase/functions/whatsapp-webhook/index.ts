@@ -580,7 +580,7 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     .eq("id", ctx.conversationId)
     .eq("status", "active")
     .or(`agent_lock_taken_at.is.null,agent_lock_taken_at.lt.${lockTimeoutAt}`)
-    .select("id, current_tag, status");
+    .select("id, current_tag, status, manual_mode_since");
   if (!claim || claim.length === 0) {
     // Distinguish "lock contention" from "conversation paused" so the
     // operator sees the right reason in error_logs.
@@ -633,6 +633,29 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
       level: "info",
       message: `current_tag=${claimedTag} is in BLOCKING_TAGS — agent loop skipped`,
       context: { current_tag: claimedTag, lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return;
+  }
+
+  const claimedManualSince =
+    (claim[0] as { manual_mode_since?: string | null }).manual_mode_since ?? null;
+  if (claimedManualSince) {
+    // Operator took manual control — release the lock and skip the bot.
+    // Mirrors the BLOCKING_TAGS release path above. Sticky across inbound
+    // because the ingest upsert never writes manual_mode_since.
+    await ctx.admin
+      .from("conversations")
+      .update({ agent_lock_taken_at: null })
+      .eq("id", ctx.conversationId);
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "conversation_manual_mode_skip",
+      level: "info",
+      message: `conversation in manual mode since ${claimedManualSince} — agent loop skipped`,
+      context: { manual_mode_since: claimedManualSince, lead_phone: ctx.leadPhone },
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
