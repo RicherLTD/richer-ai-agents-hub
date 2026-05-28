@@ -117,7 +117,7 @@ Deno.serve(async (req) => {
   const nowIso = new Date().toISOString();
   const { data: candidates, error: pickErr } = await admin
     .from("scheduled_messages")
-    .select("id, agent_id, conversation_id, lead_phone, template_name, template_language, template_variables, attempts, agents!inner(is_paused, quiet_hours_start_il, quiet_hours_end_il)")
+    .select("id, agent_id, conversation_id, lead_phone, template_name, template_language, template_variables, attempts, agents!inner(is_paused, quiet_hours_start_il, quiet_hours_end_il), conversations(manual_mode_since)")
     .eq("status", "pending")
     .lte("scheduled_for", nowIso)
     .eq("agents.is_paused", false)
@@ -134,12 +134,20 @@ Deno.serve(async (req) => {
     template_variables: unknown;
     attempts: number;
     agents: { is_paused: boolean; quiet_hours_start_il: number | null; quiet_hours_end_il: number | null };
+    conversations: { manual_mode_since: string | null } | null;
   };
   const rows = (candidates ?? []) as unknown as Row[];
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0 };
   for (const row of rows) {
     if (isQuietHourNow({ startIl: row.agents.quiet_hours_start_il, endIl: row.agents.quiet_hours_end_il })) {
       results.deferred_quiet_hours++;
+      continue;
+    }
+    if (row.conversations?.manual_mode_since) {
+      // Operator took manual control of this conversation — don't fire a
+      // queued template into an active human-handled chat. Row stays
+      // pending; next tick retries once the operator hands back to AI.
+      results.deferred_manual_mode++;
       continue;
     }
     const variables: string[] = Array.isArray(row.template_variables)
