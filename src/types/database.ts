@@ -460,6 +460,7 @@ export type Database = {
           tag_subtype: string | null
           updated_at: string | null
           watched_series_stage: number | null
+          zoom_booked_by: string | null
           zoom_scheduled_at: string | null
         }
         Insert: {
@@ -502,6 +503,7 @@ export type Database = {
           tag_subtype?: string | null
           updated_at?: string | null
           watched_series_stage?: number | null
+          zoom_booked_by?: string | null
           zoom_scheduled_at?: string | null
         }
         Update: {
@@ -544,6 +546,7 @@ export type Database = {
           tag_subtype?: string | null
           updated_at?: string | null
           watched_series_stage?: number | null
+          zoom_booked_by?: string | null
           zoom_scheduled_at?: string | null
         }
         Relationships: [
@@ -957,11 +960,13 @@ export type Database = {
           claimed_at: string | null
           conversation_id: string | null
           created_at: string
+          delivered_at: string | null
           id: string
           last_error: string | null
           lead_name: string | null
           lead_phone: string
           meta_message_id: string | null
+          read_at: string | null
           scheduled_for: string
           sent_at: string | null
           source_campaign: string | null
@@ -978,11 +983,13 @@ export type Database = {
           claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
+          delivered_at?: string | null
           id?: string
           last_error?: string | null
           lead_name?: string | null
           lead_phone: string
           meta_message_id?: string | null
+          read_at?: string | null
           scheduled_for: string
           sent_at?: string | null
           source_campaign?: string | null
@@ -999,11 +1006,13 @@ export type Database = {
           claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
+          delivered_at?: string | null
           id?: string
           last_error?: string | null
           lead_name?: string | null
           lead_phone?: string
           meta_message_id?: string | null
+          read_at?: string | null
           scheduled_for?: string
           sent_at?: string | null
           source_campaign?: string | null
