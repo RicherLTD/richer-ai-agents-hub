@@ -1147,6 +1147,27 @@ async function ingestDeliveryStatus(
     return;
   }
 
+  // Persist delivery/read onto the template send row (if this wamid is a
+  // template send). meta_message_id matches scheduled_messages for templates;
+  // for ordinary agent replies it matches nothing → harmless no-op. The
+  // `is null` guards keep it idempotent against Meta's repeated callbacks and
+  // correct under out-of-order delivery (read can arrive before delivered).
+  if (statusName === "delivered" || statusName === "read") {
+    const deliveryTs = metaTimestampToIso(status.timestamp);
+    await admin
+      .from("scheduled_messages")
+      .update({ delivered_at: deliveryTs })
+      .eq("meta_message_id", wamid)
+      .is("delivered_at", null);
+    if (statusName === "read") {
+      await admin
+        .from("scheduled_messages")
+        .update({ read_at: deliveryTs })
+        .eq("meta_message_id", wamid)
+        .is("read_at", null);
+    }
+  }
+
   // Non-failure status — log at info so we have an audit trail.
   await logError({
     admin,

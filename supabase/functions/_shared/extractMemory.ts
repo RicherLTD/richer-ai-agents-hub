@@ -552,6 +552,12 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     conversationUpdate.current_tag = "zoom_scheduled";
     conversationUpdate.status = "paused";
     conversationUpdate.zoom_scheduled_at = new Date().toISOString();
+    // Consent observed + handed off, but no actual Mooz booking was made by
+    // the bot here — classify separately so it is NOT counted as an agent
+    // conversion (migration 0033). This block only runs when the conversation
+    // is not already in NON_HANDOFF_TAGS (incl. zoom_scheduled), so it can
+    // never clobber an 'agent' attribution written by the book_meeting tool.
+    conversationUpdate.zoom_booked_by = "consent_handoff";
   }
   if (Object.keys(conversationUpdate).length > 0) {
     const { error: updErr } = await input.admin

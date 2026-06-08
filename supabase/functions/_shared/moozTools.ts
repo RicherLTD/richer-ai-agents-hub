@@ -17,6 +17,7 @@
 // truth, no double-fire even if the bot retries.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { agentBookingNote } from "./moozBookingSource.ts";
 import type Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
 import { logError } from "./logError.ts";
@@ -324,7 +325,7 @@ async function handleBookMeeting(
     customerPhone: ctx.leadPhone,
     startTime: parsed.startTime,
     endTime: parsed.endTime,
-    notes: `WhatsApp lead — conversation ${ctx.conversationId}`,
+    notes: agentBookingNote(ctx.conversationId),
   });
 
   if (!result.ok) {
@@ -444,6 +445,11 @@ async function updateConversationOnBooking(args: {
     .from("conversations")
     .update({
       current_tag: "zoom_scheduled",
+      // The bot itself booked this meeting in-chat — the only route that
+      // counts as an agent conversion. Set directly at the source so the
+      // attribution does not depend on the Mooz webhook arriving (migration
+      // 0033). 'agent' is the top of the never-downgrade precedence.
+      zoom_booked_by: "agent",
       funnel_stage: "done",
       status: "paused",
       zoom_scheduled_at: args.scheduledAt,

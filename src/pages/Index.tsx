@@ -6,6 +6,7 @@ import { CostLatencyDashboard } from "@/components/analytics/CostLatencyDashboar
 import { ExperimentCard } from "@/components/analytics/ExperimentCard";
 import { ObjectionBreakdownChart } from "@/components/analytics/ObjectionBreakdown";
 import { SecondaryObjectionsList } from "@/components/analytics/SecondaryObjectionsList";
+import { TemplateFunnelCard } from "@/components/analytics/TemplateFunnelCard";
 import { FunnelBreakdownChart } from "@/components/dashboard/FunnelBreakdownChart";
 import { KpiCard } from "@/components/dashboard/KpiCard";
 import { RecentLeadsList } from "@/components/dashboard/RecentLeadsList";
@@ -173,6 +174,8 @@ function AdvancedAnalyticsTab({ agentId }: { agentId: string }) {
         metrics={operationsQuery.data}
         isLoading={operationsQuery.isLoading}
       />
+
+      <TemplateFunnelCard agentId={agentId} />
 
       <div className="grid gap-3 md:grid-cols-2">
         <FunnelDropoffCard agentId={agentId} />
