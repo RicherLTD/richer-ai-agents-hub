@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { BarChart3, FlaskConical } from "lucide-react";
 import { AiProviderBreakdown } from "@/components/analytics/AiProviderBreakdown";
 import { CostLatencyDashboard } from "@/components/analytics/CostLatencyDashboard";
+import { TemplateFunnelCard } from "@/components/analytics/TemplateFunnelCard";
 import { ExperimentCard } from "@/components/analytics/ExperimentCard";
 import { ObjectionBreakdownChart } from "@/components/analytics/ObjectionBreakdown";
 import { SecondaryObjectionsList } from "@/components/analytics/SecondaryObjectionsList";
@@ -9,11 +10,13 @@ import { EmptyState } from "@/components/EmptyState";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAgent } from "@/contexts/AgentContext";
+import { useAuth } from "@/contexts/AuthContext";
 import { getAnalytics } from "@/lib/analytics";
 import { getOperationsMetrics } from "@/lib/operations";
 
 const Analytics = () => {
   const { activeAgent, isLoading: isAgentLoading } = useAgent();
+  const { isAdmin } = useAuth();
 
   const analyticsQuery = useQuery({
     queryKey: ["analytics", activeAgent?.id] as const,
@@ -49,6 +52,12 @@ const Analytics = () => {
         <p className="text-sm text-destructive">
           שגיאה בטעינת מטריקות תפעול: {operationsQuery.error.message}
         </p>
+      )}
+
+      {isAdmin && (
+        <section>
+          <TemplateFunnelCard agentId={activeAgent.id} />
+        </section>
       )}
 
       <CostLatencyDashboard

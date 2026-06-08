@@ -27,6 +27,7 @@
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { logError } from "../_shared/logError.ts";
+import { classifyMoozBookingSource } from "../_shared/moozBookingSource.ts";
 import {
   buildHandoffPayload,
   fireHandoffWebhook,
@@ -360,17 +361,38 @@ async function handleCreatedOrRescheduled(args: {
   }
   const wasAlreadyScheduled = conversation.current_tag === "zoom_scheduled";
 
+  // Attribute the booking source for analytics (migration 0033). The bot
+  // stamps its own bookings with a marker in the Mooz notes; self-service
+  // (and advisor / Make.com-completed) bookings do not carry it.
+  const bookedBy = classifyMoozBookingSource(booking.notes);
+
   // Always reflect the latest scheduled_at — handles reschedule case.
+  // 'agent' is the top of the never-downgrade precedence, so set it inline
+  // (it may legitimately upgrade an earlier 'consent_handoff' / 'self'). A
+  // 'self' classification must NOT clobber an existing 'agent'/'consent_handoff',
+  // so it is applied separately below with an `is null` guard.
+  const convUpdate: Record<string, unknown> = {
+    current_tag: "zoom_scheduled",
+    funnel_stage: "done",
+    status: "paused",
+    zoom_scheduled_at: scheduledAt,
+    lead_name: conversation.lead_name ?? booking.customer_name ?? null,
+  };
+  if (bookedBy === "agent") {
+    convUpdate.zoom_booked_by = "agent";
+  }
   const { error: updErr } = await admin
     .from("conversations")
-    .update({
-      current_tag: "zoom_scheduled",
-      funnel_stage: "done",
-      status: "paused",
-      zoom_scheduled_at: scheduledAt,
-      lead_name: conversation.lead_name ?? booking.customer_name ?? null,
-    })
+    .update(convUpdate)
     .eq("id", conversation.id);
+  if (bookedBy === "self") {
+    // Never-downgrade: claim 'self' only if nothing has classified it yet.
+    await admin
+      .from("conversations")
+      .update({ zoom_booked_by: "self" })
+      .eq("id", conversation.id)
+      .is("zoom_booked_by", null);
+  }
   // Mirror the consent + email into lead_memory; that's where the handoff
   // pipeline reads them from.
   await admin
