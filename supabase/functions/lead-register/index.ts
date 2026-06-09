@@ -28,6 +28,7 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
+import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 
 const SOURCE = "lead-register";
 
@@ -54,18 +55,6 @@ function asTrimmedString(v: unknown): string | null {
   return t.length === 0 ? null : t;
 }
 
-/** Strict-ish E.164 normalisation. We accept three formats from Make:
- *  +972551234567 (E.164), 0551234567 (Israeli local), 972551234567 (no plus).
- *  Anything else → null and we 400.
- */
-function normaliseIsraeliPhone(raw: string): string | null {
-  const t = raw.trim().replace(/[\s\-()]/g, "");
-  if (/^\+972\d{8,9}$/.test(t)) return t;
-  if (/^972\d{8,9}$/.test(t)) return `+${t}`;
-  if (/^0\d{8,9}$/.test(t)) return `+972${t.slice(1)}`;
-  return null;
-}
-
 /** Email coercion mirrors extractMemory.asEmail. */
 function coerceEmail(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -85,7 +74,7 @@ function coercePayload(raw: unknown): LeadRegisterPayload | null {
   const lead_phone_raw = asTrimmedString(o.lead_phone);
   const lead_name = asTrimmedString(o.lead_name);
   if (!agent_slug || !lead_phone_raw || !lead_name) return null;
-  const lead_phone = normaliseIsraeliPhone(lead_phone_raw);
+  const lead_phone = toCanonicalPhone(lead_phone_raw);
   if (!lead_phone) return null;
   return {
     agent_slug,
@@ -202,10 +191,13 @@ async function enqueueScheduledTemplate(
   }
 
   const scheduledFor = new Date(Date.now() + args.delayMinutes * 60_000).toISOString();
-  const variables: string[] = [
-    args.payload.lead_name.split(" ")[0] ?? args.payload.lead_name,
-    args.payload.product ?? "התכנית שלנו",
-  ];
+  // The first-touch template (as approved in Meta) has NO body placeholders,
+  // so we MUST send zero parameters — any param triggers Meta error #132000
+  // ("number of params does not match the expected number"). Name/product
+  // personalization belongs in the Make→Fireberry flow, NOT the WhatsApp
+  // template. (If a future template adds {{1}}/{{2}}, source them from
+  // agents.first_touch_template_variables_template — never hardcode here.)
+  const variables: string[] = [];
   const { error } = await admin
     .from("scheduled_messages")
     .insert({
