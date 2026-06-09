@@ -191,10 +191,13 @@ async function enqueueScheduledTemplate(
   }
 
   const scheduledFor = new Date(Date.now() + args.delayMinutes * 60_000).toISOString();
-  const variables: string[] = [
-    args.payload.lead_name.split(" ")[0] ?? args.payload.lead_name,
-    args.payload.product ?? "התכנית שלנו",
-  ];
+  // The first-touch template (as approved in Meta) has NO body placeholders,
+  // so we MUST send zero parameters — any param triggers Meta error #132000
+  // ("number of params does not match the expected number"). Name/product
+  // personalization belongs in the Make→Fireberry flow, NOT the WhatsApp
+  // template. (If a future template adds {{1}}/{{2}}, source them from
+  // agents.first_touch_template_variables_template — never hardcode here.)
+  const variables: string[] = [];
   const { error } = await admin
     .from("scheduled_messages")
     .insert({
