@@ -123,25 +123,66 @@ async function upsertConversation(
   agentId: string,
   payload: LeadRegisterPayload,
 ): Promise<string> {
-  const { data, error } = await admin
+  // UPDATE-first: touch only safe fields, never overwrite status/funnel stage.
+  // source_campaign / source_funnel are only set when the existing value is null
+  // (coalesce semantics via .is("source_campaign", null) guard is impractical in
+  // a single UPDATE — we rely on the DB defaults; if already set we skip them).
+  const updateSet: Record<string, string | null> = {};
+  if (payload.lead_name !== null) updateSet.lead_name = payload.lead_name;
+
+  const { count: updateCount, error: updateError } = await admin
     .from("conversations")
-    .upsert(
-      {
-        agent_id: agentId,
-        lead_phone: payload.lead_phone,
-        lead_name: payload.lead_name,
-        // First touch is OUTBOUND — conversation starts "active" because the
-        // bot is expected to handle the reply when it lands.
-        status: "active",
-        source_campaign: payload.source_campaign,
-        source_funnel: payload.source_funnel ?? payload.product,
-      },
-      { onConflict: "agent_id,lead_phone", ignoreDuplicates: false },
-    )
+    .update(updateSet)
+    .eq("agent_id", agentId)
+    .eq("lead_phone", payload.lead_phone)
+    .select("id", { count: "exact", head: true });
+
+  if (updateError) throw new Error(`update conversation failed: ${updateError.message}`);
+
+  if ((updateCount ?? 0) > 0) {
+    // Row already existed — fetch its id.
+    const { data: existing, error: selectError } = await admin
+      .from("conversations")
+      .select("id")
+      .eq("agent_id", agentId)
+      .eq("lead_phone", payload.lead_phone)
+      .single();
+    if (selectError) throw new Error(`select conversation failed: ${selectError.message}`);
+    return existing.id as string;
+  }
+
+  // Row did not exist — INSERT with status: "active".
+  // First touch is OUTBOUND — conversation starts "active" because the
+  // bot is expected to handle the reply when it lands.
+  const { data: inserted, error: insertError } = await admin
+    .from("conversations")
+    .insert({
+      agent_id: agentId,
+      lead_phone: payload.lead_phone,
+      lead_name: payload.lead_name,
+      status: "active",
+      source_campaign: payload.source_campaign,
+      source_funnel: payload.source_funnel ?? payload.product,
+    })
     .select("id")
     .single();
-  if (error) throw new Error(`upsert conversation failed: ${error.message}`);
-  return data.id as string;
+
+  if (insertError) {
+    // Race: another request inserted the row between our UPDATE and INSERT.
+    if (insertError.code === "23505") {
+      const { data: raceRow, error: raceSelectError } = await admin
+        .from("conversations")
+        .select("id")
+        .eq("agent_id", agentId)
+        .eq("lead_phone", payload.lead_phone)
+        .single();
+      if (raceSelectError) throw new Error(`fallback select failed: ${raceSelectError.message}`);
+      return raceRow.id as string;
+    }
+    throw new Error(`insert conversation failed: ${insertError.message}`);
+  }
+
+  return inserted.id as string;
 }
 
 async function upsertLeadMemoryEmail(
@@ -176,13 +217,16 @@ async function enqueueScheduledTemplate(
     delayMinutes: number;
   },
 ): Promise<{ enqueued: boolean; scheduledFor: string }> {
-  // Idempotency: if a pending row already exists for this conversation
-  // (re-registration within the window), do NOT enqueue a second send.
+  // Idempotency: skip enqueue if a pending template exists, OR if a template
+  // was already sent within the last 24 hours (re-registration guard).
+  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { data: existing } = await admin
     .from("scheduled_messages")
-    .select("id, scheduled_for")
+    .select("id, scheduled_for, status")
     .eq("conversation_id", args.conversationId)
-    .eq("status", "pending")
+    .or(
+      `status.eq.pending,and(status.eq.sent,scheduled_for.gte.${cutoff24h})`,
+    )
     .order("scheduled_for", { ascending: false })
     .limit(1)
     .maybeSingle();

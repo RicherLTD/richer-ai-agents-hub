@@ -151,6 +151,33 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("היועץ ידבר איתך בזום").ok).toBe(true);
   });
 
+  it("does NOT false-positive on standalone number+אלף without a price context", () => {
+    // "2 אלף לידים" — no price-word before, no currency after → allowed
+    expect(validateAgentReply("יש לנו 2 אלף לידים בחודש").ok).toBe(true);
+    // "300 אלף בוגרים" — same
+    expect(validateAgentReply("יותר מ-300 אלף בוגרים בארץ").ok).toBe(true);
+    // But "ההשקעה היא 5 אלף ₪" — price word present → blocked (regression)
+    expect(validateAgentReply("ההשקעה היא 5 אלף ₪").ok).toBe(false);
+  });
+
+  it("does NOT false-positive on innocent 2-digit numbers after a price word", () => {
+    // "התוכנית בנויה מ-12 שלבים" — 2-digit, no currency token → allowed
+    expect(validateAgentReply("התוכנית בנויה מ-12 שלבים").ok).toBe(true);
+    // "הקורס מתאים לבני 25" — 2-digit age after קורס → allowed
+    expect(validateAgentReply("הקורס מתאים לבני 25").ok).toBe(true);
+    // But "הקורס עולה 5000" — 4-digit → blocked (regression)
+    expect(validateAgentReply("הקורס עולה 5000").ok).toBe(false);
+  });
+
+  it("does NOT false-positive on conditional motivational language without an income noun", () => {
+    // No income noun between verb and time-window → not an income promise
+    expect(
+      validateAgentReply("אם תעשה את זה כמו שצריך תראה שינוי בחודש-חודשיים").ok,
+    ).toBe(true);
+    // With a concrete number → still blocked (regression)
+    expect(validateAgentReply("תרוויח 3000 בחודש").ok).toBe(false);
+  });
+
   it("does NOT confuse 'מעולה' (excellent) for 'עולה' (costs)", () => {
     // Regression for the 2026-05-24 incident — Kfir's booking-confirmation
     // reply ("מעולה, 11:30 מחר פנוי! 🙌 ... שם מלא ... כתובת מייל") got

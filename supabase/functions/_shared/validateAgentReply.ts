@@ -62,13 +62,22 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   // "מתעלה" / "התעלה". The lookbehind says: only match these tokens when
   // they are NOT preceded by another Hebrew letter (i.e. they stand as
   // their own word).
+  //
+  // The trailing number group was tightened to avoid false-positives on
+  // innocent 2-digit numbers (e.g. "התוכנית בנויה מ-12 שלבים", "בני 25"):
+  // either a 4+ digit bare number (likely a price amount) OR a 2+ digit
+  // number that is immediately followed by an explicit currency/unit token.
   {
-    pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}\d{2,}[\s]*(?:אלף|אלפים|K|k)?/,
+    pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}(?:\d{4,}|\d{2,}[\s]*(?:אלף|אלפים|K\b|k\b|₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
   },
   // Standalone large numbers paired with money words (אלף / K / אלפים).
+  // Tightened to avoid false-positives on non-price contexts like
+  // "2 אלף לידים" or "300 אלף בוגרים": we require EITHER a price-context
+  // word before the number (Alt A) OR an explicit currency symbol immediately
+  // after (Alt B). A bare "X אלף" with no price anchor is allowed through.
   {
-    pattern: /\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)/,
+    pattern: /(?:(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,60}\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)|\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)\s*(?:₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
   },
   // Income guarantees — narrow set of legally-binding terms ONLY.
@@ -81,8 +90,20 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     pattern: /מובטח(?:ת|ים|ות)?|ערבות/,
     reason: "income_guarantee",
   },
+  // Income-verb + time-window without a concrete number: only fire when an
+  // income-related word (כסף / הכנסה / סכום / הרבה / טוב / גדול) appears
+  // between the verb and the time-window.  This prevents false-positives on
+  // conditional/motivational language like "אם תעשה את זה כמו שצריך תראה
+  // שינוי בחודש-חודשיים" (no income noun → not blocked) while still catching
+  // qualitative promises like "תעשה הרבה כסף בשנה" or "תרוויחי טוב בחודש".
   {
-    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
+    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}(?:כסף|הכנסה|סכום|הרבה|טוב|גדול)[^.!?\n]{0,20}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
+    reason: "income_guarantee",
+  },
+  // Income-verb + explicit number + time-window: catches "תרוויח 5000 בחודש"
+  // regardless of what words appear around the number.
+  {
+    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}\d+[^.!?\n]{0,20}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
     reason: "income_guarantee",
   },
 ];

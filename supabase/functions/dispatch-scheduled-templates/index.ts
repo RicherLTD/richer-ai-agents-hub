@@ -1,6 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 
+const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
+
 function j(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -116,29 +118,39 @@ Deno.serve(async (req) => {
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 200 ? limitRaw : 50;
   const nowIso = new Date().toISOString();
   const { data: candidates, error: pickErr } = await admin
-    .from("scheduled_messages")
-    .select("id, agent_id, conversation_id, lead_phone, template_name, template_language, template_variables, attempts, agents!inner(is_paused, quiet_hours_start_il, quiet_hours_end_il)")
-    .eq("status", "pending")
-    .lte("scheduled_for", nowIso)
-    .eq("agents.is_paused", false)
-    .order("scheduled_for", { ascending: true })
-    .limit(limit);
+    .rpc("claim_scheduled_messages", { p_limit: limit, p_now: nowIso });
   if (pickErr) return j({ error: pickErr.message }, 500);
   type Row = {
     id: string;
     agent_id: string;
     conversation_id: string | null;
     lead_phone: string;
+    lead_name: string | null;
     template_name: string;
     template_language: string;
     template_variables: unknown;
     attempts: number;
-    agents: { is_paused: boolean; quiet_hours_start_il: number | null; quiet_hours_end_il: number | null };
+    agent_is_paused: boolean;
+    agent_quiet_hours_start_il: number | null;
+    agent_quiet_hours_end_il: number | null;
+    conversation_status: string | null;
+    conversation_current_tag: string | null;
   };
   const rows = (candidates ?? []) as unknown as Row[];
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, cancelled: 0 };
   for (const row of rows) {
-    if (isQuietHourNow({ startIl: row.agents.quiet_hours_start_il, endIl: row.agents.quiet_hours_end_il })) {
+    // Skip rows whose conversation is paused or in a terminal tag — the template
+    // would land in a conversation the agent cannot reply to. Cancel rather than
+    // defer so the row doesn't keep re-claiming.
+    if (
+      (row.conversation_status !== null && row.conversation_status !== "active") ||
+      (row.conversation_current_tag !== null && BLOCKING_TAGS.has(row.conversation_current_tag))
+    ) {
+      await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null }).eq("id", row.id);
+      results.cancelled = (results.cancelled ?? 0) + 1;
+      continue;
+    }
+    if (isQuietHourNow({ startIl: row.agent_quiet_hours_start_il, endIl: row.agent_quiet_hours_end_il })) {
       results.deferred_quiet_hours++;
       continue;
     }
@@ -157,11 +169,24 @@ Deno.serve(async (req) => {
           : [{ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) }],
       },
     };
-    const res = await fetch(`${apiUrl}/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(`${apiUrl}/${phoneId}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timer);
+      // Timeout or network error — clear claim so next tick can retry.
+      await admin.from("scheduled_messages").update({ claimed_at: null, attempts: row.attempts + 1 }).eq("id", row.id);
+      results.failed++;
+      continue;
+    }
+    clearTimeout(timer);
     const text = await res.text().catch(() => "");
     if (res.ok) {
       let wamid: string | null = null;
@@ -197,6 +222,7 @@ Deno.serve(async (req) => {
       });
       await admin.from("scheduled_messages").update({
         status: row.attempts + 1 >= 3 ? "failed" : "pending",
+        claimed_at: row.attempts + 1 >= 3 ? undefined : null,  // release claim for retry
         attempts: row.attempts + 1,
         last_error: sanitised,
       }).eq("id", row.id);

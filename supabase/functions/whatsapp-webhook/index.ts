@@ -791,7 +791,9 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     });
   }
 
-  let turnResult;
+  // startTime is set once and reused for the first-attempt latency
+  // measurement. The retry re-uses the same value intentionally — we want
+  // the total wall-clock time (including the guard rejection) in the trace.
   const startTime = new Date();
   // Inject today's date in Asia/Jerusalem so the model resolves
   // "מחר"/"היום"/"יום ראשון" relative to NOW, not to its training cutoff.
@@ -814,196 +816,273 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   // the Langfuse trace below should both record exactly what Claude saw.
   const fullSystemPrompt = dateHeader + bookingStatusBlock + turn.promptContent + brainText;
 
-  try {
-    turnResult = await runAgentTurn({
-      anthropic: ctx.anthropic,
-      model: CLAUDE_MODEL,
-      // 1024 was too tight once v6/v7 + adaptive-thinking landed —
-      // adaptive thinking can use most of the budget on internal
-      // reasoning and return an empty visible reply. 2048 gives the
-      // model headroom for thinking AND a 1-3 sentence visible response.
-      maxTokens: 2048,
-      systemPrompt: fullSystemPrompt,
-      initialMessages: turn.claudeMessages,
-      moozCtx,
-      retry: {
-        maxAttempts: 3,
-        baseDelayMs: 1000,
-        onRetry: ({ attempt, delayMs, status }) => {
-          void logError({
+  // Guard-retry loop: up to 2 attempts total.
+  //
+  // Attempt 0 — normal run with fullSystemPrompt.
+  // Attempt 1 — only reached when attempt 0 was rejected by validateAgentReply
+  //             OR judgeReply.  The system prompt gets a concise hint appended
+  //             asking the model to avoid the specific patterns that triggered
+  //             the guard.  Everything else (claudeMessages, moozCtx, retry
+  //             config) is identical so no extra context is loaded.
+  //
+  // Langfuse is traced for attempt 0 only — the retry is an internal
+  // implementation detail; tracing it separately would inflate cost metrics.
+  // The operator CAN see that a retry occurred via error_logs (errorType
+  // "guard_rejection_retry").  Only when attempt 1 also fails do we escalate
+  // to the full logAndDlq path (DLQ + operator alert).
+  let guardHint = "";
+  let langfuseTraceId: string | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const systemPromptThisAttempt = fullSystemPrompt + guardHint;
+
+    let turnResult;
+    try {
+      turnResult = await runAgentTurn({
+        anthropic: ctx.anthropic,
+        model: CLAUDE_MODEL,
+        // 1024 was too tight once v6/v7 + adaptive-thinking landed —
+        // adaptive thinking can use most of the budget on internal
+        // reasoning and return an empty visible reply. 2048 gives the
+        // model headroom for thinking AND a 1-3 sentence visible response.
+        maxTokens: 2048,
+        systemPrompt: systemPromptThisAttempt,
+        initialMessages: turn.claudeMessages,
+        moozCtx,
+        retry: {
+          maxAttempts: 3,
+          baseDelayMs: 1000,
+          onRetry: ({ attempt: retryAttempt, delayMs, status }) => {
+            void logError({
+              admin: ctx.admin,
+              source: AGENT_LOOP_SOURCE,
+              errorType: "anthropic_retry",
+              level: "info",
+              message: `retry ${retryAttempt} after ${delayMs}ms (status=${status})`,
+              context: { attempt: retryAttempt, delayMs, status, model: CLAUDE_MODEL },
+              agentId: ctx.agentId,
+              conversationId: ctx.conversationId,
+            });
+          },
+        },
+      });
+    } catch (err) {
+      await logAndDlq(
+        ctx,
+        "claude_api_error",
+        err instanceof Error ? err.message : String(err),
+        err instanceof Error ? err.message : String(err),
+        {
+          model: CLAUDE_MODEL,
+          prompt_version: turn.promptVersion,
+          prompt_version_id: turn.promptVersionId,
+          lead_phone: ctx.leadPhone,
+          mooz_tools_enabled: moozCtx !== null,
+          guard_attempt: attempt,
+        },
+      );
+      return;
+    }
+    const response = turnResult.response as unknown as AnthropicMessageResponse;
+    const endTime = new Date();
+
+    const usage: AnthropicUsage = {
+      inputTokens: turnResult.totalUsage.inputTokens,
+      outputTokens: turnResult.totalUsage.outputTokens,
+      cacheReadTokens: turnResult.totalUsage.cacheReadTokens,
+      cacheCreationTokens: turnResult.totalUsage.cacheCreationTokens,
+    };
+    const costUsd = computeSonnet46Cost(usage);
+    const latencyMs = endTime.getTime() - startTime.getTime();
+
+    const rawReply = extractFirstTextBlock(response);
+    // When the model called a Mooz tool this turn, HH:MM time mentions are
+    // expected (and required — the model just received real slots). Skip
+    // the "invented_meeting_time" guard in that case only.
+    const validation = validateAgentReply(rawReply, {
+      hasMoozToolUseThisTurn: turnResult.hadToolUse,
+    });
+
+    // Trace the FIRST attempt only — regardless of validation outcome.
+    // Failed first attempts are exactly what operators want to see in
+    // Langfuse.  We do not trace the retry to avoid inflating cost metrics.
+    if (attempt === 0 && ctx.langfuse) {
+      langfuseTraceId = await ctx.langfuse.traceAgentTurn(
+        {
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+          leadPhone: ctx.leadPhone,
+          promptVersion: turn.promptVersion,
+          promptVersionId: turn.promptVersionId,
+          model: CLAUDE_MODEL,
+          systemPrompt: fullSystemPrompt,
+          claudeMessages: turn.claudeMessages,
+          startTime,
+          endTime,
+          output: validation.ok
+            ? validation.text
+            : `(invalid: ${validation.reason})`,
+          usage,
+          failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
+        },
+        async (detail) => {
+          await logError({
             admin: ctx.admin,
             source: AGENT_LOOP_SOURCE,
-            errorType: "anthropic_retry",
-            level: "info",
-            message: `retry ${attempt} after ${delayMs}ms (status=${status})`,
-            context: { attempt, delayMs, status, model: CLAUDE_MODEL },
+            errorType: "langfuse_ingestion_failed",
+            level: "warn",
+            message: `Langfuse ingestion failed status=${detail.status}`,
+            context: {
+              status: detail.status,
+              body: detail.body,
+              prompt_version: turn.promptVersion,
+            },
             agentId: ctx.agentId,
             conversationId: ctx.conversationId,
           });
         },
-      },
-    });
-  } catch (err) {
-    await logAndDlq(
-      ctx,
-      "claude_api_error",
-      err instanceof Error ? err.message : String(err),
-      err instanceof Error ? err.message : String(err),
-      {
-        model: CLAUDE_MODEL,
-        prompt_version: turn.promptVersion,
-        prompt_version_id: turn.promptVersionId,
-        lead_phone: ctx.leadPhone,
-        mooz_tools_enabled: moozCtx !== null,
-      },
-    );
-    return;
-  }
-  const response = turnResult.response as unknown as AnthropicMessageResponse;
-  const endTime = new Date();
+      );
+    }
 
-  const usage: AnthropicUsage = {
-    inputTokens: turnResult.totalUsage.inputTokens,
-    outputTokens: turnResult.totalUsage.outputTokens,
-    cacheReadTokens: turnResult.totalUsage.cacheReadTokens,
-    cacheCreationTokens: turnResult.totalUsage.cacheCreationTokens,
-  };
-  const costUsd = computeSonnet46Cost(usage);
-  const latencyMs = endTime.getTime() - startTime.getTime();
-
-  const rawReply = extractFirstTextBlock(response);
-  // When the model called a Mooz tool this turn, HH:MM time mentions are
-  // expected (and required — the model just received real slots). Skip
-  // the "invented_meeting_time" guard in that case only.
-  const validation = validateAgentReply(rawReply, {
-    hasMoozToolUseThisTurn: turnResult.hadToolUse,
-  });
-
-  // Trace the turn regardless of validation outcome — failed turns are
-  // exactly what we want to see in Langfuse so the operator can debug.
-  let langfuseTraceId: string | null = null;
-  if (ctx.langfuse) {
-    langfuseTraceId = await ctx.langfuse.traceAgentTurn(
-      {
-        agentId: ctx.agentId,
-        conversationId: ctx.conversationId,
-        leadPhone: ctx.leadPhone,
-        promptVersion: turn.promptVersion,
-        promptVersionId: turn.promptVersionId,
-        model: CLAUDE_MODEL,
-        systemPrompt: fullSystemPrompt,
-        claudeMessages: turn.claudeMessages,
-        startTime,
-        endTime,
-        output: validation.ok
-          ? validation.text
-          : `(invalid: ${validation.reason})`,
-        usage,
-        failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
-      },
-      async (detail) => {
+    if (!validation.ok) {
+      if (attempt === 0) {
+        // Log a warn-level entry so the operator can spot it in error_logs,
+        // but do NOT DLQ yet — we'll try once more with the guard hint.
         await logError({
           admin: ctx.admin,
           source: AGENT_LOOP_SOURCE,
-          errorType: "langfuse_ingestion_failed",
+          errorType: "guard_rejection_retry",
           level: "warn",
-          message: `Langfuse ingestion failed status=${detail.status}`,
+          message: `validateAgentReply rejected (attempt 0): ${validation.reason} — will retry with guard hint`,
           context: {
-            status: detail.status,
-            body: detail.body,
+            raw_reply: rawReply,
+            reason: validation.reason,
+            raw_length: rawReply?.length ?? 0,
             prompt_version: turn.promptVersion,
+            langfuse_trace_id: langfuseTraceId,
+            lead_phone: ctx.leadPhone,
           },
           agentId: ctx.agentId,
           conversationId: ctx.conversationId,
         });
-      },
-    );
-  }
+        guardHint =
+          "\n\n<!-- RETRY: previous reply was blocked by a safety guard. Generate a response that avoids: specific prices, currency amounts, exact meeting times (HH:MM format), and numbers adjacent to אלף/K. Keep the reply in 1-2 sentences. -->";
+        continue;
+      }
+      // attempt === 1: give up — full DLQ path
+      await logAndDlq(
+        ctx,
+        "claude_invalid_reply",
+        `validation failed after retry: ${validation.reason}`,
+        validation.reason,
+        {
+          raw_reply: rawReply,
+          reason: validation.reason,
+          raw_length: rawReply?.length ?? 0,
+          prompt_version: turn.promptVersion,
+          prompt_version_id: turn.promptVersionId,
+          langfuse_trace_id: langfuseTraceId,
+          cost_usd: costUsd,
+          lead_phone: ctx.leadPhone,
+        },
+      );
+      return;
+    }
 
-  if (!validation.ok) {
-    await logAndDlq(
-      ctx,
-      "claude_invalid_reply",
-      `validation failed: ${validation.reason}`,
-      validation.reason,
-      {
-        raw_reply: rawReply,
-        reason: validation.reason,
-        raw_length: rawReply?.length ?? 0,
-        prompt_version: turn.promptVersion,
-        prompt_version_id: turn.promptVersionId,
-        langfuse_trace_id: langfuseTraceId,
-        cost_usd: costUsd,
-        lead_phone: ctx.leadPhone,
-      },
-    );
-    return;
-  }
-
-  // Second-layer safety: ask Haiku to judge the reply against semantic
-  // rules the regex validator can\'t enforce ("5 אלף בחודש", subtle AI
-  // disclosure, income hints without "מובטח"). Degrades open on
-  // judge failure so a Haiku outage doesn\'t stop legitimate traffic.
-  const verdict = await judgeReply(ctx.anthropic, validation.text, async (msg) => {
-    await logError({
-      admin: ctx.admin,
-      source: AGENT_LOOP_SOURCE,
-      errorType: "judge_unavailable",
-      level: "warn",
-      message: msg,
-      context: { prompt_version: turn.promptVersion },
-      agentId: ctx.agentId,
-      conversationId: ctx.conversationId,
+    // Second-layer safety: ask Haiku to judge the reply against semantic
+    // rules the regex validator can't enforce ("5 אלף בחודש", subtle AI
+    // disclosure, income hints without "מובטח"). Degrades open on
+    // judge failure so a Haiku outage doesn't stop legitimate traffic.
+    const verdict = await judgeReply(ctx.anthropic, validation.text, async (msg) => {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "judge_unavailable",
+        level: "warn",
+        message: msg,
+        context: { prompt_version: turn.promptVersion },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
     });
-  });
-  if (!verdict.ok) {
-    await logAndDlq(
-      ctx,
-      "judge_rejected_reply",
-      `Haiku judge rejected: ${verdict.reason}`,
-      verdict.reason,
-      {
-        raw_reply: validation.text,
-        judge_reason: verdict.reason,
-        judge_tokens_in: verdict.tokensInput,
-        judge_tokens_out: verdict.tokensOutput,
-        prompt_version: turn.promptVersion,
-        prompt_version_id: turn.promptVersionId,
-        langfuse_trace_id: langfuseTraceId,
-        lead_phone: ctx.leadPhone,
-      },
-    );
+    if (!verdict.ok) {
+      if (attempt === 0) {
+        // Log a warn-level entry so the operator can spot it in error_logs,
+        // but do NOT DLQ yet — we'll try once more with the guard hint.
+        await logError({
+          admin: ctx.admin,
+          source: AGENT_LOOP_SOURCE,
+          errorType: "guard_rejection_retry",
+          level: "warn",
+          message: `judgeReply rejected (attempt 0): ${verdict.reason} — will retry with guard hint`,
+          context: {
+            raw_reply: validation.text,
+            judge_reason: verdict.reason,
+            judge_tokens_in: verdict.tokensInput,
+            judge_tokens_out: verdict.tokensOutput,
+            prompt_version: turn.promptVersion,
+            langfuse_trace_id: langfuseTraceId,
+            lead_phone: ctx.leadPhone,
+          },
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        });
+        guardHint =
+          "\n\n<!-- RETRY: previous reply was blocked by a safety guard. Generate a response that avoids: specific prices, currency amounts, exact meeting times (HH:MM format), and numbers adjacent to אלף/K. Keep the reply in 1-2 sentences. -->";
+        continue;
+      }
+      // attempt === 1: give up — full DLQ path
+      await logAndDlq(
+        ctx,
+        "judge_rejected_reply",
+        `Haiku judge rejected after retry: ${verdict.reason}`,
+        verdict.reason,
+        {
+          raw_reply: validation.text,
+          judge_reason: verdict.reason,
+          judge_tokens_in: verdict.tokensInput,
+          judge_tokens_out: verdict.tokensOutput,
+          prompt_version: turn.promptVersion,
+          prompt_version_id: turn.promptVersionId,
+          langfuse_trace_id: langfuseTraceId,
+          lead_phone: ctx.leadPhone,
+        },
+      );
+      return;
+    }
+
+    // Both guards passed — send and record the reply, then break out of the loop.
+    await sendAndRecordReply(ctx, validation.text, {
+      promptVersion: turn.promptVersion,
+      promptVersionId: turn.promptVersionId,
+      langfuseTraceId,
+      tokensInput: usage.inputTokens ?? null,
+      tokensOutput: usage.outputTokens ?? null,
+      costUsd,
+      latencyMs,
+    });
+
+    // Capture reply text for the memory extractor (used after the loop).
+    // We need to break out of the loop scope carrying these values.
+    // Store them via a flag so we can call runMemoryExtraction below.
+    //
+    // The simplest approach: record success inline and return early.
+    await runMemoryExtraction({
+      admin: ctx.admin,
+      anthropic: ctx.anthropic,
+      agentId: ctx.agentId,
+      agentName: ctx.agentName,
+      conversationId: ctx.conversationId,
+      claudeMessages: [
+        ...turn.claudeMessages,
+        { role: "assistant", content: validation.text },
+      ],
+      handoffWebhookUrl: ctx.handoffWebhookUrl,
+      handoffWebhookSecret: ctx.handoffWebhookSecret,
+      dashboardBaseUrl: ctx.dashboardBaseUrl,
+    });
     return;
   }
-
-  await sendAndRecordReply(ctx, validation.text, {
-    promptVersion: turn.promptVersion,
-    promptVersionId: turn.promptVersionId,
-    langfuseTraceId,
-    tokensInput: usage.inputTokens ?? null,
-    tokensOutput: usage.outputTokens ?? null,
-    costUsd,
-    latencyMs,
-  });
-
-  // Memory extraction runs after the reply has shipped. The lead has
-  // already received their message — this is pure analytics + tag
-  // routing. Build the history "post-reply" so the extractor sees the
-  // full turn including the bot's reply.
-  await runMemoryExtraction({
-    admin: ctx.admin,
-    anthropic: ctx.anthropic,
-    agentId: ctx.agentId,
-    agentName: ctx.agentName,
-    conversationId: ctx.conversationId,
-    claudeMessages: [
-      ...turn.claudeMessages,
-      { role: "assistant", content: validation.text },
-    ],
-    handoffWebhookUrl: ctx.handoffWebhookUrl,
-    handoffWebhookSecret: ctx.handoffWebhookSecret,
-    dashboardBaseUrl: ctx.dashboardBaseUrl,
-  });
 }
 
 const NON_TEXT_CANNED_REPLY = "היי 😊 רק שתדע, אני יותר טוב/ה בטקסט מאשר בקבצי קול. תוכל/י לכתוב לי את זה במקום? תודה!";
