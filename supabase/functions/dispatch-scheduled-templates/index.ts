@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
+import { alertOperators } from "../_shared/alertOperators.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -138,6 +139,7 @@ Deno.serve(async (req) => {
   };
   const rows = (candidates ?? []) as unknown as Row[];
   const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, cancelled: 0 };
+  let auth401AlertSent = false;
   for (const row of rows) {
     // Skip rows whose conversation is paused or in a terminal tag — the template
     // would land in a conversation the agent cannot reply to. Cancel rather than
@@ -220,6 +222,30 @@ Deno.serve(async (req) => {
         agent_id: row.agent_id,
         conversation_id: row.conversation_id,
       });
+      // 401/403 = auth failure — retrying won't help; fail immediately and alert once per tick
+      if (res.status === 401 || res.status === 403) {
+        if (!auth401AlertSent && row.conversation_id) {
+          auth401AlertSent = true;
+          alertOperators({
+            admin,
+            apiUrl,
+            accessToken: token,
+            phoneNumberId: phoneId,
+            agentId: row.agent_id,
+            conversationId: row.conversation_id,
+            leadPhone: row.lead_phone,
+            failureType: `template_auth_${res.status}`,
+            failureDetail: `WHATSAPP_ACCESS_TOKEN לא תקין — יש לחדש ב-Supabase Secrets`,
+          }).catch(() => {});
+        }
+        await admin.from("scheduled_messages").update({
+          status: "failed",
+          claimed_at: null,
+          last_error: `auth_error_${res.status}`,
+        }).eq("id", row.id);
+        results.failed++;
+        continue;
+      }
       await admin.from("scheduled_messages").update({
         status: row.attempts + 1 >= 3 ? "failed" : "pending",
         claimed_at: row.attempts + 1 >= 3 ? undefined : null,  // release claim for retry
