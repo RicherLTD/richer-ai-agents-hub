@@ -19,6 +19,43 @@
 3. **טמפלייט פתיחה** — נוסח השאלה יהיה 1:1 כמו השותפים (1. להכניס עוד כסף / 2. לצאת ממסגרת / 3. ללמוד מקצוע אמיתי / 4. חופש לעבוד מכל מקום). המשתמש יספק שם טמפלייט Meta מאושר נפרד.
 4. **הפרדת נתונים** — אופציה א': אותם מנהלים מנהלים את שני הסוכנים; רוצים תצוגות מופרדות ונקיות. **לא** נדרש per-user RBAC (`user_agents`/RLS). מספיק לתקן את דליפת ה-deep-link ב-`getConversationById`.
 5. **פרומפט** — נבנה על שלד `main/v16` של השותפים; כל פרט מוצר עובר התאמה לשלו יפרח + פרטי המסלול; כל השאר זהה מילה במילה.
+6. **הפרדה פיזית של ה-webhook (דרך A)** — המספר החדש הוא **channel נפרד ב-HookMyApp עם קרדנציאלס משלו** (VERIFY_TOKEN, ACCESS_TOKEN, WABA, API URL שונים). לכן כל סוכן מקבל **פונקציית edge webhook נפרדת**, ששתיהן מייבאות handler משותף אחד. אפס שינוי התנהגותי לזרימת השותפים.
+
+## הפער הקריטי שהתגלה ותוקן בתכנון
+
+ה-webhook הקיים **מנתב** inbound לסוכן הנכון לפי `whatsapp_phone_number_id` — אבל שני נתיבים משתמשים ב-**env גלובלי אחד**, לא per-agent:
+
+1. **אימות HMAC** (`whatsapp-webhook/index.ts:1629`) — מאמת כל inbound מול `VERIFY_TOKEN` אחד, **לפני** שידוע לאיזה סוכן ההודעה שייכת. המספר החדש חותם עם secret שונה → הודעותיו היו נכשלות באימות ומושמטות בשקט.
+2. **שליחה יוצאת** (`index.ts:1715‑1832`) — בונה קרדנציאלס מ-`WHATSAPP_ACCESS_TOKEN`/`WHATSAPP_PHONE_NUMBER_ID`/`WHATSAPP_API_URL` גלובליים. תגובות תמיר היו נשלחות עם הטוקן/המספר של כפיר או נכשלות.
+
+**המשמעות:** "webhook אחד לשניהם" נכון לניתוב, שגוי לקרדנציאלס. הפתרון: הפרדה פיזית (דרך A).
+
+### אילוץ Supabase: secrets ברמת פרויקט
+
+Secrets ב-Supabase Edge Functions הם **ברמת הפרויקט** (משותפים לכל הפונקציות) — אי אפשר לתת לפונקציה השנייה `VERIFY_TOKEN` אחר תחת אותו שם. לכן ההפרדה נעשית ב**שמות env נפרדים** לכל channel, וכל entrypoint שולף את הסט שלו ומעביר אותו ל-handler המשותף.
+
+## ארכיטקטורת ה-webhook החדשה (דרך A)
+
+**חילוץ handler משותף:**
+- מעבירים את גוף ה-`Deno.serve` (שורות 1549‑1845) + פונקציות העזר שברמת המודול מ-`whatsapp-webhook/index.ts` אל `_shared/whatsappWebhookHandler.ts`, שמייצא `handleWhatsappWebhook(req, config)`.
+- `config` נושא את הערכים ה-channel-specific בלבד: `verifyToken`, `whatsappApiUrl`, `whatsappAccessToken`, `whatsappPhoneNumberId`, `hookmyappAgentName`. כל שאר הסודות (ANTHROPIC/SUPABASE/LANGFUSE/HANDOFF/MOOZ/OPENAI) נשארים env גלובלי שנקרא בתוך ה-handler — הם זהים לשני הסוכנים.
+
+**שני entrypoints דקים:**
+- `whatsapp-webhook/index.ts` (קיים) → קורא את שמות ה-env הלא-מסופתחים (הקיימים) ומעביר ל-handler עם `hookmyappAgentName: "affiliate_marketing"`. **התנהגות זהה להיום.**
+- `whatsapp-webhook-dm/index.ts` (חדש) → קורא את שמות ה-env בסיומת `_DM` ומעביר ל-handler עם `hookmyappAgentName: "digital_marketing"`.
+
+**Env חדשים (Supabase secrets) עבור ה-channel של תמיר:**
+```
+VERIFY_TOKEN_DM              = Du75v38bYEz2em5yQKPV-wBik9Ezj3nT
+WHATSAPP_ACCESS_TOKEN_DM     = hmat_live_g1jFFOSPFQZ1sR_XDM386AHCvIVJrR0w
+WHATSAPP_PHONE_NUMBER_ID_DM  = 1183645111502568
+WHATSAPP_API_URL_DM          = https://gateway.hookmyapp.com/meta/v22.0
+```
+(פרטי ה-channel: WABA `2240831796748191`, HookMyApp channel `ch_WhZYrfGT`.)
+
+**Deploy:** שתי הפונקציות עם `--no-verify-jwt`. ב-HookMyApp מפנים את ה-channel החדש ל-URL של `whatsapp-webhook-dm`.
+
+**עיקרון:** כל instance הוא single-channel — בדיוק מה שהקוד הקיים מניח. דליפת קרדנציאלס בין המוצרים הופכת בלתי אפשרית מבנית. השליטה בדשבורד עדיין מאוחדת לפי `agent_id`.
 
 ## Mooz — פרטי סוג הפגישה של שיווק דיגיטלי
 
@@ -48,11 +85,11 @@ Slug:        richer_marketing
 | `quiet_hours_end_il` | `8` |
 | `operator_alert_phones` | `ARRAY['+972512310702','+972525563338']` (זהה לשותפים) |
 | `first_touch_delay_minutes` | `40` |
-| `whatsapp_number` | ערך אמיתי מהמשתמש (E.164) — או `NULL` עד שיגיע |
-| `whatsapp_phone_number_id` | **ערך אמיתי מהמשתמש** — קריטי לניתוב; `NULL` עד שיגיע |
+| `whatsapp_phone_number_id` | `1183645111502568` (ידוע — קריטי לניתוב) |
+| `whatsapp_number` | E.164 לתצוגה — `NULL` עד שהמשתמש יספק את המספר הקריא |
 | `first_touch_template_name` | `NULL` עד שהמשתמש יספק שם טמפלייט מאושר |
 
-**סיכון**: כל עוד `whatsapp_phone_number_id` הוא `NULL`, אין ניתוב — הסוכן לא מקבל תעבורה, ואין סכנת ערבוב. ברגע שהמספר מחובר ב-HookMyApp, יש להזין את ה-`phone_number_id` הנכון (אחרת inbound נופל ל-fallback של `HOOKMYAPP_AGENT_NAME` = השותפים).
+**הערה**: `whatsapp_phone_number_id` ידוע ונכנס ל-migration. גם אם הוא היה `NULL` — אין סכנת ערבוב, כי ה-entrypoint של תמיר (`whatsapp-webhook-dm`) מנתב עם `hookmyappAgentName: "digital_marketing"` כ-fallback, ולא לשותפים.
 
 יש לוודא שאין שדות `NOT NULL` נוספים בטבלת `agents` שאין להם default; אם יש — לספק ערך סביר ב-INSERT.
 
@@ -116,16 +153,19 @@ prompts/digital_marketing/
 ## מה במפורש לא עושים (YAGNI / גבולות)
 
 - **לא** יוצרים טבלת `user_agents` ו**לא** משנים RLS (אופציה א').
-- **לא** יוצרים edge function חדש — אותו `whatsapp-webhook` משרת את שני הסוכנים.
 - **לא** משנים סכמת `lead_memory` / `messages` / funnel / handoff.
+- **לא** משנים את התנהגות ה-webhook של השותפים — החילוץ ל-handler משותף הוא behavior-preserving; ה-entrypoint הקיים ממשיך לקרוא את אותם env ולפעול בדיוק אותו דבר.
+- **לא** יוצרים edge function חדש לכל דבר אחר (memory/handoff/dispatch) — רק ה-webhook מקבל instance שני.
 - **לא** נוגעים בפרומפטים או בקונפיג של סוכן השותפים.
 - **לא** יוצרים סכמה/טבלאות נפרדות ל-Supabase — הפרדה לוגית לפי `agent_id` היא ה-pattern הנכון (החלטה ארכיטקטונית #6, תשתית משותפת).
 
 ## סדר יישום מוצע
 
-1. Migration 0037 (שורת agent).
-2. תיקיית פרומפטים + `_active.json` (main v1 + memory_extractor v1).
-3. הרצת migration ל-DB + `prompts:sync`.
-4. תיקון `getConversationById` + `ConversationDetail` + טסט.
-5. אימות (typecheck/lint/build/tests + בדיקת DB).
-6. (ידני, המשתמש) הזנת מספר/phone_number_id/טמפלייט + חיבור HookMyApp + בדיקת Make.com.
+1. **חילוץ handler משותף** — `_shared/whatsappWebhookHandler.ts` מייצא `handleWhatsappWebhook(req, config)`; `whatsapp-webhook/index.ts` הופך ל-entrypoint דק (behavior-preserving). אימות: typecheck + הטסטים הקיימים עוברים, ההתנהגות של השותפים זהה.
+2. **entrypoint שני** — `whatsapp-webhook-dm/index.ts` שקורא env בסיומת `_DM` עם `hookmyappAgentName: "digital_marketing"`.
+3. **Migration 0037** — שורת agent `digital_marketing` (עם `whatsapp_phone_number_id = 1183645111502568`).
+4. **תיקיית פרומפטים** + `_active.json` (main v1 מבוסס v16 + memory_extractor v1).
+5. **הרצת migration ל-DB + `prompts:sync`**.
+6. **תיקון הפרדה** — `getConversationById` + `ConversationDetail` + טסט.
+7. **אימות** — typecheck/lint/build/tests + בדיקת DB (שורת agent + 2 שורות prompts active).
+8. **(ידני, המשתמש)** — הגדרת secrets `*_DM` ב-Supabase, deploy שתי הפונקציות עם `--no-verify-jwt`, הפניית ה-channel החדש ב-HookMyApp ל-`whatsapp-webhook-dm`, הזנת `first_touch_template_name` כשיאושר, בדיקת הסתעפות Make.com.
