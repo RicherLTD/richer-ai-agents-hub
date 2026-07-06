@@ -23,13 +23,10 @@ WHATSAPP_API_URL_DM         = https://gateway.hookmyapp.com/meta/v22.0
 ```
 (WABA `2240831796748191`, HookMyApp channel `ch_WhZYrfGT`.)
 
-Mooz meeting type (digital marketing → same advisors, but a **separate Mooz org**):
+Mooz meeting type (digital marketing → same advisors):
 ```
 meeting_type_id = d44fe2dc-f849-4468-af5c-a6bdf1e91087
-mooz orgId       = 915d9ade-c7e0-43c9-b8b5-871d9df97ad5   (informational — the org is identified by its API key, not sent in requests)
-MOOZ_ORG_API_KEY_DM = <PENDING from operator — the api-gateway Bearer key for org 915d9ade>
 ```
-The Mooz `api-gateway` (list_available_slots + create_booking) authenticates with a **per-org** Bearer key. The digital-marketing meeting type lives in a different org than affiliate, so it needs its own org key. The `bookings-lookup` token (`MOOZ_API_TOKEN`) is global/cross-org and is **not** duplicated.
 
 Still pending from operator (do NOT block on these; they are step-8 ops):
 - `whatsapp_number` (E.164 display value)
@@ -39,8 +36,7 @@ Still pending from operator (do NOT block on these; they are step-8 ops):
 
 ## File structure
 
-- **Create** `supabase/functions/_shared/whatsappWebhookHandler.ts` — the full webhook handler (moved from the entrypoint), exporting `handleWhatsappWebhook(req, channel)` + `WebhookChannelConfig`. Owns: HMAC verify, routing, ingest, agent loop, memory/handoff. Reads channel credentials (WhatsApp + Mooz org key) from its `channel` argument; reads all other secrets from `Deno.env` directly.
-- **Modify** `supabase/functions/_shared/mooz.ts` — `moozClientFromEnv` accepts an optional `orgApiKey` override (falls back to `MOOZ_ORG_API_KEY` env) so each channel can use its own org key.
+- **Create** `supabase/functions/_shared/whatsappWebhookHandler.ts` — the full webhook handler (moved from the entrypoint), exporting `handleWhatsappWebhook(req, channel)` + `WebhookChannelConfig`. Owns: HMAC verify, routing, ingest, agent loop, memory/handoff. Reads channel credentials from its `channel` argument; reads all other secrets from `Deno.env` directly.
 - **Modify** `supabase/functions/whatsapp-webhook/index.ts` — becomes a thin entrypoint: reads the existing (unsuffixed) env names, calls the shared handler. Behavior identical to today.
 - **Create** `supabase/functions/whatsapp-webhook-dm/index.ts` — thin entrypoint: reads `_DM`-suffixed env names, passes `agentName: "digital_marketing"`.
 - **Create** `supabase/migrations/0039_add_digital_marketing_agent.sql` — inserts the `digital_marketing` agent row (idempotent).
@@ -58,7 +54,6 @@ This is a mechanical relocation. The affiliate webhook must behave **exactly** a
 **Files:**
 - Create: `supabase/functions/_shared/whatsappWebhookHandler.ts`
 - Modify: `supabase/functions/whatsapp-webhook/index.ts`
-- Modify: `supabase/functions/_shared/mooz.ts`
 
 - [ ] **Step 1: Create the shared module by moving the entire current handler**
 
@@ -77,9 +72,9 @@ Move the **entire contents** of `supabase/functions/whatsapp-webhook/index.ts` i
    ```ts
    /**
     * Per-channel credentials. Everything else (Anthropic, Supabase, Langfuse,
-    * handoff, OpenAI, MOOZ_API_TOKEN lookup) is shared across agents and read
-    * from Deno.env inside the handler. These differ per HookMyApp channel/WABA
-    * (and per Mooz org), so each edge-function entrypoint passes its own set.
+    * handoff, Mooz, OpenAI) is shared across agents and read from Deno.env
+    * inside the handler. These five differ per HookMyApp channel/WABA, so each
+    * edge-function entrypoint passes its own set.
     */
    export interface WebhookChannelConfig {
      verifyToken: string | undefined;
@@ -87,8 +82,6 @@ Move the **entire contents** of `supabase/functions/whatsapp-webhook/index.ts` i
      whatsappApiUrl: string | undefined;
      whatsappAccessToken: string | undefined;
      whatsappPhoneNumberId: string | undefined;
-     /** Per-org Mooz api-gateway Bearer key (list slots + create booking). */
-     moozOrgApiKey: string | null;
    }
    ```
 
@@ -122,62 +115,14 @@ Move the **entire contents** of `supabase/functions/whatsapp-webhook/index.ts` i
      whatsappApiUrl,
      whatsappAccessToken,
      whatsappPhoneNumberId,
-     moozOrgApiKey,
    } = channel;
    const supabaseUrl = Deno.env.get("SUPABASE_URL");
    const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
    const anthropicApiKey = Deno.env.get("ANTHROPIC_API_KEY");
    ```
-   Everything downstream (`if (!verifyToken || !agentName || ...)`, the `ctx.hookmyapp` construction, `ingestEnv`, HMAC verify with `verifyToken`, routing fallback to `agentName`) stays byte-for-byte the same. Other `Deno.env.get(...)` calls further down (OPENAI_API_KEY, HANDOFF_WEBHOOK_URL/SECRET, DASHBOARD_BASE_URL, langfuseFromEnv) remain untouched. The Mooz threading is handled in points 5–7 below.
+   Everything downstream (`if (!verifyToken || !agentName || ...)`, the `ctx.hookmyapp` construction, `ingestEnv`, HMAC verify with `verifyToken`, routing fallback to `agentName`) stays byte-for-byte the same. All other `Deno.env.get(...)` calls further down (OPENAI_API_KEY, HANDOFF_WEBHOOK_URL/SECRET, DASHBOARD_BASE_URL, langfuseFromEnv, moozClientFromEnv) remain untouched.
 
-5. **Add `moozOrgApiKey` to the `AgentLoopCtx` interface.** In the moved file, add this field to `interface AgentLoopCtx` (after `dashboardBaseUrl`):
-   ```ts
-     /** Per-org Mooz api-gateway key for this channel (list slots + book). */
-     moozOrgApiKey: string | null;
-   ```
-
-6. **Pass it when constructing the ctx.** In the `generateAndSendAgentResponse({ ... })` call inside the POST branch (the object with `admin, conversationId, agentId, agentName, leadPhone, anthropic, hookmyapp, langfuse, handoffWebhookUrl, handoffWebhookSecret, dashboardBaseUrl`), add one line:
-   ```ts
-         moozOrgApiKey,
-   ```
-
-7. **Use the ctx key when building the Mooz client.** Change the `moozClientFromEnv` call (currently `moozClientFromEnv({ admin: ctx.admin, agentId: ctx.agentId, conversationId: ctx.conversationId })`) to pass the per-channel override:
-   ```ts
-   const moozClient = meetingTypeId
-     ? moozClientFromEnv({
-         admin: ctx.admin,
-         agentId: ctx.agentId,
-         conversationId: ctx.conversationId,
-         orgApiKey: ctx.moozOrgApiKey,
-       })
-     : null;
-   ```
-
-- [ ] **Step 2: Make `moozClientFromEnv` accept a per-channel org key override**
-
-In `supabase/functions/_shared/mooz.ts`, change the `moozClientFromEnv` signature + first line. Replace:
-```ts
-export function moozClientFromEnv(args: {
-  admin: SupabaseClient;
-  agentId: string;
-  conversationId?: string;
-}): MoozClient | null {
-  const orgKey = Deno.env.get("MOOZ_ORG_API_KEY")?.trim();
-```
-with:
-```ts
-export function moozClientFromEnv(args: {
-  admin: SupabaseClient;
-  agentId: string;
-  conversationId?: string;
-  /** Per-channel org key override; falls back to MOOZ_ORG_API_KEY env. */
-  orgApiKey?: string | null;
-}): MoozClient | null {
-  const orgKey = (args.orgApiKey ?? Deno.env.get("MOOZ_ORG_API_KEY"))?.trim();
-```
-Everything else in the function (the missing-key warning + `new MoozClient({ orgApiKey: orgKey, lookupToken: ... })`) stays the same. This is backward-compatible: callers that omit `orgApiKey` still read the env var.
-
-- [ ] **Step 3: Replace the entrypoint with a thin wrapper**
+- [ ] **Step 2: Replace the entrypoint with a thin wrapper**
 
 Overwrite `supabase/functions/whatsapp-webhook/index.ts` with exactly:
 ```ts
@@ -186,8 +131,8 @@ Overwrite `supabase/functions/whatsapp-webhook/index.ts` with exactly:
 // Thin entrypoint for the affiliate_marketing WhatsApp channel.
 // All logic lives in ../_shared/whatsappWebhookHandler.ts and is shared
 // with the digital_marketing channel (whatsapp-webhook-dm). This entrypoint
-// only supplies the per-channel HookMyApp + Mooz credentials from the
-// (unsuffixed) Supabase secrets that already back the affiliate number.
+// only supplies the per-channel HookMyApp credentials from the (unsuffixed)
+// Supabase secrets that already back the affiliate number.
 import { handleWhatsappWebhook } from "../_shared/whatsappWebhookHandler.ts";
 
 Deno.serve((req) =>
@@ -197,12 +142,11 @@ Deno.serve((req) =>
     whatsappApiUrl: Deno.env.get("WHATSAPP_API_URL"),
     whatsappAccessToken: Deno.env.get("WHATSAPP_ACCESS_TOKEN"),
     whatsappPhoneNumberId: Deno.env.get("WHATSAPP_PHONE_NUMBER_ID"),
-    moozOrgApiKey: Deno.env.get("MOOZ_ORG_API_KEY") ?? null,
   })
 );
 ```
 
-- [ ] **Step 4: Sanity-check the relocation locally**
+- [ ] **Step 3: Sanity-check the relocation locally**
 
 Run:
 ```bash
@@ -210,22 +154,17 @@ cd /Users/izhaksiton/Code/work/richer-ai-agents-hub
 grep -c "\.\./_shared/" supabase/functions/_shared/whatsappWebhookHandler.ts
 grep -n "Deno.serve" supabase/functions/_shared/whatsappWebhookHandler.ts
 grep -n "handleWhatsappWebhook" supabase/functions/whatsapp-webhook/index.ts
-grep -n "orgApiKey: ctx.moozOrgApiKey\|moozOrgApiKey" supabase/functions/_shared/whatsappWebhookHandler.ts
 ```
-Expected: first prints `0` (no stale `../_shared/` paths remain); second prints nothing (no `Deno.serve` in the shared module); third prints the import + call in the entrypoint; fourth prints the config field, the ctx interface field, the ctx construction line, and the `orgApiKey: ctx.moozOrgApiKey` usage.
+Expected: first command prints `0` (no stale `../_shared/` paths remain); second prints nothing (no `Deno.serve` left in the shared module); third prints the import + call lines in the entrypoint.
 
-> Note: this repo has no local Deno; the frontend `tsc --noEmit` only covers `src/`, so edge functions aren't type-checked locally. The authoritative typecheck is the Supabase bundler at deploy time (Task 8). Keep this task a pure relocation + the Mooz threading so review + deploy are sufficient.
+> Note: this repo has no local Deno; the frontend `tsc --noEmit` only covers `src/`, so edge functions aren't type-checked locally. The authoritative typecheck is the Supabase bundler at deploy time (Task 8). Keep this task a pure relocation so review + deploy are sufficient.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 cd /Users/izhaksiton/Code/work/richer-ai-agents-hub
-git add supabase/functions/_shared/whatsappWebhookHandler.ts supabase/functions/whatsapp-webhook/index.ts supabase/functions/_shared/mooz.ts
+git add supabase/functions/_shared/whatsappWebhookHandler.ts supabase/functions/whatsapp-webhook/index.ts
 git commit -m "refactor(webhook): extract shared handler with per-channel config
-
-Threads WhatsApp + Mooz-org credentials through a WebhookChannelConfig so a
-second channel can run the same handler with its own secrets. Behavior of the
-affiliate channel is unchanged.
 
 Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>"
 ```
@@ -258,7 +197,6 @@ Deno.serve((req) =>
     whatsappApiUrl: Deno.env.get("WHATSAPP_API_URL_DM"),
     whatsappAccessToken: Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
     whatsappPhoneNumberId: Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
-    moozOrgApiKey: Deno.env.get("MOOZ_ORG_API_KEY_DM") ?? null,
   })
 );
 ```
@@ -267,10 +205,10 @@ Deno.serve((req) =>
 
 Run:
 ```bash
-grep -o "verifyToken:\|agentName:\|whatsappApiUrl:\|whatsappAccessToken:\|whatsappPhoneNumberId:\|moozOrgApiKey:" supabase/functions/whatsapp-webhook-dm/index.ts | sort
-grep -o "verifyToken:\|agentName:\|whatsappApiUrl:\|whatsappAccessToken:\|whatsappPhoneNumberId:\|moozOrgApiKey:" supabase/functions/whatsapp-webhook/index.ts | sort
+diff <(sed 's/_DM//g; s/"digital_marketing"/Deno.env.get("HOOKMYAPP_AGENT_NAME")/' supabase/functions/whatsapp-webhook-dm/index.ts | grep "Deno.env.get\|agentName") \
+     <(grep "Deno.env.get\|agentName" supabase/functions/whatsapp-webhook/index.ts)
 ```
-Expected: both print the identical set of six config keys (`agentName`, `moozOrgApiKey`, `verifyToken`, `whatsappAccessToken`, `whatsappApiUrl`, `whatsappPhoneNumberId`), confirming both entrypoints pass the same config shape. (In the DM entrypoint `agentName` is a string literal; in the affiliate one it reads `HOOKMYAPP_AGENT_NAME` — that difference is intentional.)
+Expected: no differences in the credential lines (only the comment headers differ), confirming both entrypoints call the handler with the same shape.
 
 - [ ] **Step 3: Commit**
 
@@ -967,10 +905,8 @@ bunx supabase secrets set \
   WHATSAPP_ACCESS_TOKEN_DM="hmat_live_g1jFFOSPFQZ1sR_XDM386AHCvIVJrR0w" \
   WHATSAPP_PHONE_NUMBER_ID_DM="1183645111502568" \
   WHATSAPP_API_URL_DM="https://gateway.hookmyapp.com/meta/v22.0" \
-  MOOZ_ORG_API_KEY_DM="<org 915d9ade api-gateway key>" \
   --project-ref juoglkqtmjsziieqgmhf
 ```
-`MOOZ_ORG_API_KEY_DM` is the per-org Bearer key for the digital-marketing Mooz org (`915d9ade-...`). Without it, תמיר cannot list real slots or book — the bot falls back to the safe "no tools" single-turn mode. `MOOZ_API_TOKEN` (bookings-lookup) is already set globally and is shared.
 
 - [ ] **Step 2: Deploy both webhook functions (`--no-verify-jwt`)**
 

@@ -38,9 +38,7 @@ Secrets ב-Supabase Edge Functions הם **ברמת הפרויקט** (משותפ�
 
 **חילוץ handler משותף:**
 - מעבירים את גוף ה-`Deno.serve` (שורות 1549‑1845) + פונקציות העזר שברמת המודול מ-`whatsapp-webhook/index.ts` אל `_shared/whatsappWebhookHandler.ts`, שמייצא `handleWhatsappWebhook(req, config)`.
-- `config` נושא את הערכים ה-channel-specific בלבד: `verifyToken`, `whatsappApiUrl`, `whatsappAccessToken`, `whatsappPhoneNumberId`, `hookmyappAgentName`, ו-`moozOrgApiKey`. כל שאר הסודות (ANTHROPIC/SUPABASE/LANGFUSE/HANDOFF/OPENAI/`MOOZ_API_TOKEN`) נשארים env גלובלי שנקרא בתוך ה-handler — הם זהים לשני הסוכנים.
-
-**Mooz — org נפרד:** הפגישות של שיווק דיגיטלי יושבות ב-Mooz org אחר (`915d9ade-...`) מזה של השותפים. ה-`api-gateway` של Mooz (list slots + create booking) מאמת עם מפתח **per-org**, לכן תמיר צריך `MOOZ_ORG_API_KEY_DM` משלו. ה-org מזוהה ע"י המפתח, לא נשלח ב-request — ה-`meeting_type_id` פשוט חייב להשתייך ל-org של המפתח. ה-`bookings-lookup` (`MOOZ_API_TOKEN`) הוא cross-org גלובלי ולא משוכפל. הפתרון: `moozClientFromEnv` מקבל override של מפתח ה-org, שמושחל דרך ה-channel config ל-`AgentLoopCtx`.
+- `config` נושא את הערכים ה-channel-specific בלבד: `verifyToken`, `whatsappApiUrl`, `whatsappAccessToken`, `whatsappPhoneNumberId`, `hookmyappAgentName`. כל שאר הסודות (ANTHROPIC/SUPABASE/LANGFUSE/HANDOFF/MOOZ/OPENAI) נשארים env גלובלי שנקרא בתוך ה-handler — הם זהים לשני הסוכנים.
 
 **שני entrypoints דקים:**
 - `whatsapp-webhook/index.ts` (קיים) → קורא את שמות ה-env הלא-מסופתחים (הקיימים) ומעביר ל-handler עם `hookmyappAgentName: "affiliate_marketing"`. **התנהגות זהה להיום.**
@@ -52,9 +50,8 @@ VERIFY_TOKEN_DM              = Du75v38bYEz2em5yQKPV-wBik9Ezj3nT
 WHATSAPP_ACCESS_TOKEN_DM     = hmat_live_g1jFFOSPFQZ1sR_XDM386AHCvIVJrR0w
 WHATSAPP_PHONE_NUMBER_ID_DM  = 1183645111502568
 WHATSAPP_API_URL_DM          = https://gateway.hookmyapp.com/meta/v22.0
-MOOZ_ORG_API_KEY_DM          = ⏳ מהמשתמש — מפתח ה-api-gateway של org 915d9ade
 ```
-(פרטי ה-channel: WABA `2240831796748191`, HookMyApp channel `ch_WhZYrfGT`; Mooz org `915d9ade-c7e0-43c9-b8b5-871d9df97ad5`.)
+(פרטי ה-channel: WABA `2240831796748191`, HookMyApp channel `ch_WhZYrfGT`.)
 
 **Deploy:** שתי הפונקציות עם `--no-verify-jwt`. ב-HookMyApp מפנים את ה-channel החדש ל-URL של `whatsapp-webhook-dm`.
 
