@@ -29,9 +29,9 @@ meeting_type_id = d44fe2dc-f849-4468-af5c-a6bdf1e91087
 ```
 
 First-touch Meta template (approved): `series_marketing_1` (baked into migration 0039).
+Display phone number (E.164): `+972557113830` (baked into migration 0039).
 
-Still pending from operator (do NOT block on this; step-8 ops):
-- `whatsapp_number` (E.164 display value — cosmetic, dashboard only)
+All operator values are now known — nothing blocks implementation.
 
 ---
 
@@ -255,6 +255,7 @@ INSERT INTO public.agents (
   name,
   display_name,
   status,
+  whatsapp_number,
   whatsapp_phone_number_id,
   whatsapp_provider,
   meeting_type_id,
@@ -269,6 +270,7 @@ SELECT
   'digital_marketing',
   'שיווק דיגיטלי',
   'active',
+  '+972557113830',
   '1183645111502568',
   'hookmyapp',
   'd44fe2dc-f849-4468-af5c-a6bdf1e91087',
@@ -923,14 +925,9 @@ Expected: both bundle and deploy successfully. A bundle/type error here is the a
 
 In HookMyApp, set channel `ch_WhZYrfGT`'s webhook URL to the deployed `whatsapp-webhook-dm` function URL, and complete the GET verification handshake (uses `VERIFY_TOKEN_DM`).
 
-- [ ] **Step 4: Set `whatsapp_number` (display only) when available**
+- [ ] **Step 4: (none — all agent-row values are baked into migration 0039)**
 
-`first_touch_template_name` (`series_marketing_1`) is already set by migration 0039. Once the operator has the E.164 display number, update the agent row:
-```sql
-UPDATE public.agents
-SET whatsapp_number = '+972XXXXXXXXX'
-WHERE name = 'digital_marketing';
-```
+`whatsapp_number` (`+972557113830`) and `first_touch_template_name` (`series_marketing_1`) are both set by migration 0039. No post-hoc UPDATE needed.
 
 - [ ] **Step 5: Verify Make.com handoff branches by agent**
 

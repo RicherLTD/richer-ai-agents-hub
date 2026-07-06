@@ -86,7 +86,7 @@ Slug:        richer_marketing
 | `operator_alert_phones` | `ARRAY['+972512310702','+972525563338']` (זהה לשותפים) |
 | `first_touch_delay_minutes` | `40` |
 | `whatsapp_phone_number_id` | `1183645111502568` (ידוע — קריטי לניתוב) |
-| `whatsapp_number` | E.164 לתצוגה — `NULL` עד שהמשתמש יספק את המספר הקריא |
+| `whatsapp_number` | `+972557113830` (E.164 לתצוגה) |
 | `first_touch_template_name` | `series_marketing_1` (טמפלייט Meta מאושר) |
 
 **הערה**: `whatsapp_phone_number_id` ידוע ונכנס ל-migration. גם אם הוא היה `NULL` — אין סכנת ערבוב, כי ה-entrypoint של תמיר (`whatsapp-webhook-dm`) מנתב עם `hookmyappAgentName: "digital_marketing"` כ-fallback, ולא לשותפים.
