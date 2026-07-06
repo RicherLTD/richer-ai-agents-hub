@@ -15,6 +15,7 @@ acting.
 | `delete-user` | Hard-deletes an `auth.users` row (cascades to `app_users`) |
 | `whatsapp-webhook` | Public receiver for HookMyApp inbound webhooks (signed HMAC) + autonomous Claude reply loop (background) |
 | `whatsapp-send` | Authenticated proxy that sends an outbound text via HookMyApp (used by the dashboard ReplyBox for human takeover) |
+| `conversation-set-mode` | Authenticated toggle of a conversation between AI mode and manual mode (sets/clears `conversations.manual_mode_since` / `manual_mode_by`) |
 
 `_shared/auth.ts` exposes `requireUser` (any signed-in user) and
 `requireAdmin` (admin role). `_shared/cors.ts` is the CORS preflight
@@ -28,6 +29,7 @@ bun run fn:deploy invite-user --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy delete-user --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy whatsapp-webhook --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy whatsapp-send --project-ref juoglkqtmjsziieqgmhf
+bun run fn:deploy conversation-set-mode --project-ref juoglkqtmjsziieqgmhf
 
 # Or individually
 bunx supabase functions deploy invite-user --project-ref juoglkqtmjsziieqgmhf

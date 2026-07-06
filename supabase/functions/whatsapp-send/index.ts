@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
     // Admin gate: only operators with role='admin' can manually send a
     // message to a lead. Previously this was requireUser, which let any
     // authenticated user DM any lead phone — a privilege-escalation hole.
-    const { admin } = await requireAdmin(req);
+    const { admin, callerId } = await requireAdmin(req);
 
     const body = await req.json().catch(() => null);
     if (!isSendPayload(body)) {
@@ -233,6 +233,27 @@ Deno.serve(async (req) => {
         conversationId: conversation.id,
       });
       // Not lead-facing damage — don't fail the response.
+    }
+
+    // Manual intervention → switch the conversation to manual mode so the
+    // agent loop stops auto-replying. Only-if-null preserves the original
+    // takeover time across repeated manual sends. Best-effort: a failure
+    // here does not fail the response (the lead already got the message).
+    const { error: modeErr } = await admin
+      .from("conversations")
+      .update({ manual_mode_since: ts, manual_mode_by: callerId })
+      .eq("id", conversation.id)
+      .is("manual_mode_since", null);
+    if (modeErr) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "conversation_update_failed",
+        message: modeErr.message,
+        context: { dbCode: modeErr.code ?? null, field: "manual_mode_since" },
+        agentId: conversation.agent_id ?? null,
+        conversationId: conversation.id,
+      });
     }
 
     return jsonResponse(inserted, { status: 200, headers: corsHeaders });

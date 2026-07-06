@@ -22,6 +22,7 @@ import type Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
 import { logError } from "./logError.ts";
 import { meetsZoomQualificationFloor } from "./zoomGate.ts";
+import { formatIlHHMM } from "./ilTime.ts";
 
 /** Anthropic tool definitions — passed verbatim to messages.create({tools}). */
 export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
@@ -110,6 +111,20 @@ export interface MoozDispatchResult {
   /** True only when book_meeting succeeded — caller can use this to
    *  short-circuit further loop iterations / log a milestone. */
   bookingCreated: boolean;
+  /** Asia/Jerusalem "HH:MM" times this tool call legitimately surfaced —
+   *  the start+end of every slot returned by list_available_slots, or the
+   *  booked slot from book_meeting. The agent loop unions these across the
+   *  turn and feeds them to validateAgentReply as the allow-list, so the
+   *  model can only state times that Mooz actually offered. Empty on every
+   *  blocked / error / no-slot path — there is nothing legitimate to say. */
+  offeredTimesIL: string[];
+}
+
+/** Collect the IL HH:MM of a slot's start AND end. The bot usually states
+ *  the start, but a confirmation can mention the end too — both are
+ *  grounded in real Mooz data, so both are safe to allow. */
+function slotTimesIL(s: { start: string; end: string }): string[] {
+  return [formatIlHHMM(s.start), formatIlHHMM(s.end)].filter((t) => t.length > 0);
 }
 
 /**
@@ -131,6 +146,7 @@ export async function dispatchMoozTool(
   return {
     resultJson: JSON.stringify({ error: `unknown tool: ${name}` }),
     bookingCreated: false,
+    offeredTimesIL: [],
   };
 }
 
@@ -171,6 +187,7 @@ async function checkQualificationGate(
         ". תמשיך לחמם בטבעיות — תחפור בכאב ובמה שהליד באמת רוצה לשנות, ואל תזכיר פגישה עד שזה מתמלא.",
     }),
     bookingCreated: false,
+    offeredTimesIL: [],
   };
 }
 
@@ -187,6 +204,7 @@ async function handleListSlots(
     return {
       resultJson: JSON.stringify({ error: parsed.error }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
   const { fromIso, toIso, lookaheadDays } = computeRange(
@@ -217,6 +235,7 @@ async function handleListSlots(
         error: "Couldn't reach Mooz right now. Tell the lead the scheduling system is briefly down and you'll come back to them shortly.",
       }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -238,6 +257,8 @@ async function handleListSlots(
           : "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.",
     }),
     bookingCreated: false,
+    // Allow-list for the time guard: only the slots we actually surfaced.
+    offeredTimesIL: trimmed.flatMap(slotTimesIL),
   };
 }
 
@@ -315,6 +336,7 @@ async function handleBookMeeting(
     return {
       resultJson: JSON.stringify({ error: parsed.error }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -339,6 +361,7 @@ async function handleBookMeeting(
             "Slot was taken since you last looked. Apologize briefly, call list_available_slots again with the same preferred_date, and offer fresh options.",
         }),
         bookingCreated: false,
+        offeredTimesIL: [],
       };
     }
     if (result.kind === "invalid_input") {
@@ -350,6 +373,7 @@ async function handleBookMeeting(
             "Likely an invalid email. Ask the lead to confirm the address (אימייל) and try again.",
         }),
         bookingCreated: false,
+        offeredTimesIL: [],
       };
     }
     await logError({
@@ -368,6 +392,7 @@ async function handleBookMeeting(
           "Mooz couldn't complete the booking. Tell the lead the system is briefly down and a human will reach out shortly. Do not retry book_meeting in this turn.",
       }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -395,6 +420,11 @@ async function handleBookMeeting(
         "Confirm the booking to the lead in one short message. Include the time in Israel timezone in natural Hebrew. ALWAYS include the line verbatim: \"הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה\". A short closing word ('בהצלחה!' or a single emoji) is fine after the line, but nothing more.",
     }),
     bookingCreated: true,
+    // The confirmed slot is the only time the bot should state now.
+    offeredTimesIL: slotTimesIL({
+      start: result.booking.start_time,
+      end: result.booking.end_time,
+    }),
   };
 }
 

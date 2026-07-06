@@ -49,6 +49,8 @@ import { runMemoryExtraction } from "../_shared/extractMemory.ts";
 import { runAgentTurn } from "../_shared/agentTurn.ts";
 import { moozClientFromEnv } from "../_shared/mooz.ts";
 import { type MoozDispatchCtx } from "../_shared/moozTools.ts";
+import { formatIlHHMM } from "../_shared/ilTime.ts";
+import { buildGuardHint } from "../_shared/guardHint.ts";
 import { loadBrainRows, buildBrainSection } from "../_shared/brainContext.ts";
 import {
   renderBookingStatusBlock,
@@ -581,7 +583,7 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     .eq("id", ctx.conversationId)
     .eq("status", "active")
     .or(`agent_lock_taken_at.is.null,agent_lock_taken_at.lt.${lockTimeoutAt}`)
-    .select("id, current_tag, status");
+    .select("id, current_tag, status, manual_mode_since");
   if (!claim || claim.length === 0) {
     // Distinguish "lock contention" from "conversation paused" so the
     // operator sees the right reason in error_logs.
@@ -634,6 +636,29 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
       level: "info",
       message: `current_tag=${claimedTag} is in BLOCKING_TAGS — agent loop skipped`,
       context: { current_tag: claimedTag, lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return;
+  }
+
+  const claimedManualSince =
+    (claim[0] as { manual_mode_since?: string | null }).manual_mode_since ?? null;
+  if (claimedManualSince) {
+    // Operator took manual control — release the lock and skip the bot.
+    // Mirrors the BLOCKING_TAGS release path above. Sticky across inbound
+    // because the ingest upsert never writes manual_mode_since.
+    await ctx.admin
+      .from("conversations")
+      .update({ agent_lock_taken_at: null })
+      .eq("id", ctx.conversationId);
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "conversation_manual_mode_skip",
+      level: "info",
+      message: `conversation in manual mode since ${claimedManualSince} — agent loop skipped`,
+      context: { manual_mode_since: claimedManualSince, lead_phone: ctx.leadPhone },
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
@@ -723,9 +748,18 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     lastInboundText,
   };
   let bookingStatusBlock = "";
+  // When the lead already has a confirmed meeting, the bot may restate
+  // that time (the booked branch tells it to acknowledge the existing
+  // meeting). That time is grounded in real Mooz data, so it joins the
+  // allow-list for the invented-meeting-time guard below.
+  let existingBookingTimeIL: string | null = null;
   if (moozClient && shouldPreCheckMooz(preCheckArgs)) {
     try {
       const lookup = await moozClient.lookupByPhone(ctx.leadPhone);
+      if (lookup.booked === true) {
+        const t = formatIlHHMM(lookup.scheduledAt);
+        if (t) existingBookingTimeIL = t;
+      }
       // lookupByPhone never throws on common errors — it returns
       // { booked: false, error: "..." } instead. Surface those to
       // error_logs so a Mooz outage is visible to the operator.
@@ -896,12 +930,20 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     const latencyMs = endTime.getTime() - startTime.getTime();
 
     const rawReply = extractFirstTextBlock(response);
-    // When the model called a Mooz tool this turn, HH:MM time mentions are
-    // expected (and required — the model just received real slots). Skip
-    // the "invented_meeting_time" guard in that case only.
-    const validation = validateAgentReply(rawReply, {
-      hasMoozToolUseThisTurn: turnResult.hadToolUse,
-    });
+    // Invented-meeting-time guard, grounded in real Mooz data. The bot may
+    // only state an HH:MM time that Mooz actually surfaced this turn —
+    // either a slot returned by list_available_slots / book_meeting
+    // (turnResult.offeredTimesIL) or the lead's existing confirmed booking
+    // from the pre-check lookup. A tool merely *running* is NOT enough:
+    // the old `hasMoozToolUseThisTurn` flag let the model call
+    // list_available_slots, get back daytime slots, and still tell the lead
+    // "21:30" — an invented time that passed because a tool had run. Any
+    // HH:MM not in this allow-list is now blocked.
+    const allowedMeetingTimes = [
+      ...turnResult.offeredTimesIL,
+      ...(existingBookingTimeIL ? [existingBookingTimeIL] : []),
+    ];
+    const validation = validateAgentReply(rawReply, { allowedMeetingTimes });
 
     // Trace the FIRST attempt only — regardless of validation outcome.
     // Failed first attempts are exactly what operators want to see in
@@ -965,8 +1007,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
           agentId: ctx.agentId,
           conversationId: ctx.conversationId,
         });
-        guardHint =
-          "\n\n<!-- RETRY: previous reply was blocked by a safety guard. Generate a response that avoids: specific prices, currency amounts, exact meeting times (HH:MM format), and numbers adjacent to אלף/K. Keep the reply in 1-2 sentences. -->";
+        guardHint = buildGuardHint(validation.reason, allowedMeetingTimes);
         continue;
       }
       // attempt === 1: give up — full DLQ path
@@ -1027,8 +1068,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
           agentId: ctx.agentId,
           conversationId: ctx.conversationId,
         });
-        guardHint =
-          "\n\n<!-- RETRY: previous reply was blocked by a safety guard. Generate a response that avoids: specific prices, currency amounts, exact meeting times (HH:MM format), and numbers adjacent to אלף/K. Keep the reply in 1-2 sentences. -->";
+        guardHint = buildGuardHint(verdict.reason, allowedMeetingTimes);
         continue;
       }
       // attempt === 1: give up — full DLQ path

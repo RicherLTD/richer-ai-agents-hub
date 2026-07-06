@@ -68,3 +68,28 @@ export async function getConversationById(id: string): Promise<Conversation | nu
   }
   return data;
 }
+
+export interface SetConversationModeParams {
+  conversationId: string;
+  mode: "manual" | "ai";
+}
+
+/**
+ * Toggle a conversation between AI mode and manual mode via the
+ * `conversation-set-mode` edge function (admin-gated, service_role write).
+ */
+export async function setConversationMode({
+  conversationId,
+  mode,
+}: SetConversationModeParams): Promise<void> {
+  const { data, error } = await supabase.functions.invoke<{ error?: string }>(
+    "conversation-set-mode",
+    { body: { conversation_id: conversationId, mode } },
+  );
+  if (error) {
+    throw new Error(`Failed to set conversation mode: ${error.message}`);
+  }
+  if (data && "error" in data && data.error) {
+    throw new Error(data.error);
+  }
+}

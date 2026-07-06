@@ -136,9 +136,10 @@ Deno.serve(async (req) => {
     agent_quiet_hours_end_il: number | null;
     conversation_status: string | null;
     conversation_current_tag: string | null;
+    conversation_manual_mode_since: string | null;
   };
   const rows = (candidates ?? []) as unknown as Row[];
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
   let auth401AlertSent = false;
   for (const row of rows) {
     // Skip rows whose conversation is paused or in a terminal tag — the template
@@ -150,6 +151,15 @@ Deno.serve(async (req) => {
     ) {
       await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null }).eq("id", row.id);
       results.cancelled = (results.cancelled ?? 0) + 1;
+      continue;
+    }
+    if (row.conversation_manual_mode_since) {
+      // Operator took manual control of this conversation — don't fire a
+      // queued template into an active human-handled chat. DEFER (not
+      // cancel): release the claim so the row stays pending and retries
+      // once the operator hands the conversation back to AI.
+      await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+      results.deferred_manual_mode++;
       continue;
     }
     if (isQuietHourNow({ startIl: row.agent_quiet_hours_start_il, endIl: row.agent_quiet_hours_end_il })) {

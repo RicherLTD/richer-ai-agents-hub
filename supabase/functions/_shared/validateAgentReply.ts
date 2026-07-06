@@ -118,15 +118,30 @@ export function findHallucinationReason(text: string): string | null {
 /** HH:MM time pattern. Catches "12:45", "14:30", "9:00", "09:30", and the
  *  most common forms an Israeli speaker would write. Bare time only — we
  *  do NOT block day names ("מחר", "ראשון") because the bot legitimately
- *  needs to ask "when is good?" without committing to a slot. */
-const TIME_HH_MM_RE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/;
+ *  needs to ask "when is good?" without committing to a slot.
+ *
+ *  `g` flag so we can enumerate EVERY time mentioned in a reply (the bot
+ *  may offer two slots in one message) and check each one against the
+ *  grounded allow-list. */
+const TIME_HH_MM_RE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g;
+
+/** Canonicalise an "HH:MM" token so "09:30" and "9:30" compare equal.
+ *  Drops a leading zero on the hour; keeps the minute 2-digit. */
+function normalizeHHMM(token: string): string {
+  const m = /(\d{1,2}):([0-5]\d)/.exec(token);
+  if (!m) return token;
+  return `${parseInt(m[1], 10)}:${m[2]}`;
+}
 
 export interface ValidateOptions {
-  /** True when the assistant called a Mooz tool (list_available_slots or
-   *  book_meeting) in this turn. When false, mentions of specific HH:MM
-   *  times are blocked — the bot may not invent meeting times without
-   *  a tool call backing them. */
-  hasMoozToolUseThisTurn?: boolean;
+  /** The set of meeting times (Asia/Jerusalem "HH:MM") the bot is allowed
+   *  to state THIS turn — every slot that came back from
+   *  list_available_slots / book_meeting this turn, plus any existing
+   *  booking time from the Mooz pre-check lookup. Any HH:MM in the reply
+   *  that is NOT in this set is treated as an invented meeting time and
+   *  blocked. Defaults to empty, so a reply that names a time without any
+   *  tool grounding is always rejected — the bot may never invent times. */
+  allowedMeetingTimes?: ReadonlyArray<string>;
 }
 
 export function validateAgentReply(
@@ -150,8 +165,21 @@ export function validateAgentReply(
   if (hallucination) {
     return { ok: false, reason: `hallucination_${hallucination}` };
   }
-  if (!opts.hasMoozToolUseThisTurn && TIME_HH_MM_RE.test(text)) {
-    return { ok: false, reason: "invented_meeting_time" };
+  // Invented-meeting-time guard. Grounded in the real Mooz tool results:
+  // every HH:MM the bot states must be a slot that list_available_slots /
+  // book_meeting actually returned this turn (or an existing booking from
+  // the pre-check). A tool merely *running* is not enough — the model can
+  // call list_available_slots, get [] or a set that excludes 21:30, and
+  // then state 21:30 anyway. We compare each mentioned time against the
+  // allow-list and reject any that wasn't offered.
+  const stated = text.match(TIME_HH_MM_RE);
+  if (stated && stated.length > 0) {
+    const allowed = new Set((opts.allowedMeetingTimes ?? []).map(normalizeHHMM));
+    for (const t of stated) {
+      if (!allowed.has(normalizeHHMM(t))) {
+        return { ok: false, reason: "invented_meeting_time" };
+      }
+    }
   }
   return { ok: true, text };
 }

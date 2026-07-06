@@ -183,7 +183,7 @@ describe("validateAgentReply — hallucination guards", () => {
     // reply ("מעולה, 11:30 מחר פנוי! 🙌 ... שם מלא ... כתובת מייל") got
     // DLQ'd because the prefix-attached "עולה" inside "מעולה" tripped the
     // currency-mention guard.
-    const opts = { hasMoozToolUseThisTurn: true };
+    const opts = { allowedMeetingTimes: ["11:30"] };
     expect(
       validateAgentReply("מעולה, 11:30 מחר פנוי! מה השם המלא והמייל?", opts).ok,
     ).toBe(true);
@@ -193,8 +193,8 @@ describe("validateAgentReply — hallucination guards", () => {
   });
 });
 
-describe("validateAgentReply — invented meeting time guard", () => {
-  it("blocks HH:MM mentions when no Mooz tool ran this turn", () => {
+describe("validateAgentReply — invented meeting time guard (grounded)", () => {
+  it("blocks HH:MM mentions when no slots were offered this turn", () => {
     const r = validateAgentReply("מחר בשעה 12:45 היועץ יחזור אליך");
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toBe("invented_meeting_time");
@@ -206,10 +206,33 @@ describe("validateAgentReply — invented meeting time guard", () => {
     expect(validateAgentReply("19:45 מתאים?").ok).toBe(false);
   });
 
-  it("ALLOWS HH:MM when the assistant actually used a Mooz tool this turn", () => {
-    const opts = { hasMoozToolUseThisTurn: true };
+  it("ALLOWS HH:MM that matches a slot returned this turn", () => {
+    const opts = { allowedMeetingTimes: ["12:45", "10:30", "14:00"] };
     expect(validateAgentReply("מחר בשעה 12:45 נקבע זום", opts).ok).toBe(true);
     expect(validateAgentReply("מצאתי לך 10:30 ו-14:00 — מה עדיף?", opts).ok).toBe(true);
+  });
+
+  it("normalizes leading zeros: '09:30' matches an allowed '9:30' and vice versa", () => {
+    expect(validateAgentReply("נקבע ל-09:30?", { allowedMeetingTimes: ["9:30"] }).ok).toBe(true);
+    expect(validateAgentReply("נקבע ל-9:30?", { allowedMeetingTimes: ["09:30"] }).ok).toBe(true);
+  });
+
+  // THE incident: 21:30 at night. The bot called list_available_slots (so
+  // the old `hasMoozToolUseThisTurn` flag was true and the guard was OFF),
+  // got back daytime slots that did NOT include 21:30, and stated 21:30
+  // anyway. Grounding catches it: a tool ran, real times exist, but the
+  // stated time is not among them → blocked.
+  it("blocks an invented time even when OTHER slots were legitimately offered", () => {
+    const opts = { allowedMeetingTimes: ["10:30", "14:00"] };
+    const r = validateAgentReply("מעולה, קבעתי לך מחר ב-21:30 🙌", opts);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.reason).toBe("invented_meeting_time");
+  });
+
+  it("blocks a reply mixing one real and one invented time", () => {
+    const opts = { allowedMeetingTimes: ["10:30"] };
+    // 10:30 is real, 21:30 is invented — the whole reply must be rejected.
+    expect(validateAgentReply("יש לי 10:30 או 21:30 — מה עדיף?", opts).ok).toBe(false);
   });
 
   it("still ALLOWS day-name-only replies (no concrete time committed)", () => {

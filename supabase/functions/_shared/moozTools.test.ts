@@ -139,6 +139,8 @@ describe("dispatchMoozTool — list_available_slots", () => {
     expect(parsed.blocked).toBe(true);
     expect(parsed.reason).toBe("lead_not_qualified_yet");
     expect(r.bookingCreated).toBe(false);
+    // Nothing legitimate to state — the allow-list must be empty.
+    expect(r.offeredTimesIL).toEqual([]);
   });
 
   it("rejects malformed preferred_date", async () => {
@@ -171,6 +173,10 @@ describe("dispatchMoozTool — list_available_slots", () => {
     expect(parsed.slots).toHaveLength(12);
     expect(typeof parsed.slots[0].local_il).toBe("string");
     expect(parsed.hint).toContain("Offer 2-3");
+    // The allow-list is grounded in the returned slots. 08:00Z → 11:00 IL
+    // (summer, IDT +3). The bot may only state these times.
+    expect(r.offeredTimesIL).toContain("11:00");
+    expect(r.offeredTimesIL.length).toBeGreaterThan(0);
   });
 
   it("empty result yields 'try different day' guidance", async () => {
@@ -184,6 +190,8 @@ describe("dispatchMoozTool — list_available_slots", () => {
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.slot_count).toBe(0);
     expect(parsed.hint).toContain("different day");
+    // No slots → nothing the bot may state.
+    expect(r.offeredTimesIL).toEqual([]);
   });
 
   it("Mooz error returns user-facing message", async () => {
@@ -240,6 +248,9 @@ describe("dispatchMoozTool — book_meeting", () => {
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.success).toBe(true);
     expect(parsed.booking_id).toBe("book-1");
+    // 11:00Z → 14:00 IL, 11:30Z → 14:30 IL (summer). The confirmation may
+    // state exactly these.
+    expect(r.offeredTimesIL).toEqual(["14:00", "14:30"]);
 
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update).toBeDefined();
