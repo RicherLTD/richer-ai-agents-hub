@@ -1,6 +1,9 @@
-// whatsapp-webhook/index.ts
+// _shared/whatsappWebhookHandler.ts
 //
-// Public webhook receiver for HookMyApp + autonomous AI agent loop.
+// Shared HookMyApp webhook receiver + autonomous AI agent loop. Exported as
+// handleWhatsappWebhook(req, channel) and invoked by two thin entrypoints —
+// `whatsapp-webhook` (affiliate_marketing) and `whatsapp-webhook-dm`
+// (digital_marketing) — each passing its own per-channel credentials.
 //
 // GET  /functions/v1/whatsapp-webhook
 //   - Returns VERIFY_TOKEN as the response body (HookMyApp verify
@@ -25,13 +28,20 @@
 //     index on messages.meta_message_id and treated as a no-op skip —
 //     the agent loop is NOT triggered for a duplicate.
 //
-// Required env (set as Supabase secrets):
-//   VERIFY_TOKEN              - sandbox session HMAC (`hookmyapp sandbox env`)
-//   HOOKMYAPP_AGENT_NAME      - agents.name slug to attribute inbound to
-//   ANTHROPIC_API_KEY         - sk-ant-... (for the agent loop)
-//   WHATSAPP_API_URL          - sandbox: https://sandbox.hookmyapp.com/v22.0
-//   WHATSAPP_ACCESS_TOKEN     - sandbox activation code
-//   WHATSAPP_PHONE_NUMBER_ID  - sandbox session phone
+// Per-channel credentials — supplied by the caller via the
+// WebhookChannelConfig argument (NOT read from Deno.env here), so each
+// entrypoint can back a different HookMyApp channel / WABA:
+//   verifyToken            - HMAC secret (Meta App Secret / HookMyApp session)
+//   agentName              - agents.name slug to attribute inbound to (fallback
+//                            when phone_number_id routing misses)
+//   whatsappApiUrl         - HookMyApp Meta gateway base URL
+//   whatsappAccessToken    - HookMyApp channel access token
+//   whatsappPhoneNumberId  - Meta phone_number_id used for sends
+//
+// Shared env read from Deno.env inside the handler (same for all channels):
+//   ANTHROPIC_API_KEY, OPENAI_API_KEY, HANDOFF_WEBHOOK_URL/SECRET,
+//   DASHBOARD_BASE_URL, LANGFUSE_* (via langfuseFromEnv), MOOZ_* (via
+//   moozClientFromEnv).
 //
 // Auto-injected by Supabase: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY.
 
