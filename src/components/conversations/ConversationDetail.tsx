@@ -12,6 +12,7 @@ import {
   sendOutboundMessage,
 } from "@/lib/messages";
 import { supabase } from "@/lib/supabase/client";
+import { useAgent } from "@/contexts/AgentContext";
 import type { Message } from "@/types/message";
 import { ConversationDetailHeader } from "./ConversationDetailHeader";
 import { LeadMemoryPanel } from "./LeadMemoryPanel";
@@ -25,6 +26,7 @@ interface Props {
 
 export function ConversationDetail({ conversationId }: Props) {
   const queryClient = useQueryClient();
+  const { activeAgent } = useAgent();
   const [olderPages, setOlderPages] = useState<Message[]>([]);
   const [hasOlder, setHasOlder] = useState(true);
   const [isLoadingOlder, setIsLoadingOlder] = useState(false);
@@ -68,8 +70,9 @@ export function ConversationDetail({ conversationId }: Props) {
   }, [conversationId, queryClient]);
 
   const conversationQuery = useQuery({
-    queryKey: ["conversation", conversationId] as const,
-    queryFn: () => getConversationById(conversationId),
+    queryKey: ["conversation", conversationId, activeAgent?.id] as const,
+    queryFn: () => getConversationById(conversationId, activeAgent?.id),
+    enabled: !!activeAgent,
   });
 
   const messagesQuery = useQuery({
