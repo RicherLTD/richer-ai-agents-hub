@@ -13,7 +13,8 @@ acting.
 |---|---|
 | `invite-user` | Sends a Supabase invite to a new email; sets role on `app_users` |
 | `delete-user` | Hard-deletes an `auth.users` row (cascades to `app_users`) |
-| `whatsapp-webhook` | Public receiver for HookMyApp inbound webhooks (signed HMAC) + autonomous Claude reply loop (background) |
+| `whatsapp-webhook` | Public receiver for HookMyApp inbound webhooks (signed HMAC) + autonomous Claude reply loop (background) — **affiliate_marketing** channel. Thin entrypoint over `_shared/whatsappWebhookHandler.ts` |
+| `whatsapp-webhook-dm` | Same handler as `whatsapp-webhook`, for the **digital_marketing** channel (persona תמיר). Reads `_DM`-suffixed secrets so it backs a separate HookMyApp channel / WABA |
 | `whatsapp-send` | Authenticated proxy that sends an outbound text via HookMyApp (used by the dashboard ReplyBox for human takeover) |
 | `conversation-set-mode` | Authenticated toggle of a conversation between AI mode and manual mode (sets/clears `conversations.manual_mode_since` / `manual_mode_by`) |
 
@@ -28,6 +29,7 @@ shared by browser-callable functions.
 bun run fn:deploy invite-user --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy delete-user --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy whatsapp-webhook --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+bun run fn:deploy whatsapp-webhook-dm --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy whatsapp-send --project-ref juoglkqtmjsziieqgmhf
 bun run fn:deploy conversation-set-mode --project-ref juoglkqtmjsziieqgmhf
 
@@ -35,9 +37,26 @@ bun run fn:deploy conversation-set-mode --project-ref juoglkqtmjsziieqgmhf
 bunx supabase functions deploy invite-user --project-ref juoglkqtmjsziieqgmhf
 ```
 
-`whatsapp-webhook` MUST deploy with `--no-verify-jwt` — HookMyApp posts
-to it without a Supabase JWT. The function does its own auth via the
-`X-HookMyApp-Signature-256` HMAC.
+`whatsapp-webhook` and `whatsapp-webhook-dm` MUST deploy with
+`--no-verify-jwt` — HookMyApp posts to them without a Supabase JWT. Each
+does its own auth via the `X-HookMyApp-Signature-256` HMAC.
+
+**Multi-channel secrets.** Both webhook functions run the same shared
+handler; each entrypoint supplies its own per-channel credentials. Supabase
+secrets are project-wide, so the two channels use distinct names:
+
+| Value | affiliate (`whatsapp-webhook`) | digital marketing (`whatsapp-webhook-dm`) |
+|---|---|---|
+| HMAC secret | `VERIFY_TOKEN` | `VERIFY_TOKEN_DM` |
+| Gateway base URL | `WHATSAPP_API_URL` | `WHATSAPP_API_URL_DM` |
+| Channel access token | `WHATSAPP_ACCESS_TOKEN` | `WHATSAPP_ACCESS_TOKEN_DM` |
+| Meta phone_number_id | `WHATSAPP_PHONE_NUMBER_ID` | `WHATSAPP_PHONE_NUMBER_ID_DM` |
+| Agent slug fallback | `HOOKMYAPP_AGENT_NAME` | (hardcoded `digital_marketing` in the entrypoint) |
+
+Everything else (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MOOZ_*`,
+`HANDOFF_*`, `LANGFUSE_*`, `DASHBOARD_BASE_URL`) is shared across both
+channels. Set the `_DM` secrets with `bunx supabase secrets set ...`
+before deploying `whatsapp-webhook-dm`.
 
 `SUPABASE_ACCESS_TOKEN` (in `.env.local`) is required for the CLI; the
 runtime env vars (`SUPABASE_URL`, `SUPABASE_ANON_KEY`,
