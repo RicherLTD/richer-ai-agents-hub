@@ -87,7 +87,7 @@ Slug:        richer_marketing
 | `first_touch_delay_minutes` | `40` |
 | `whatsapp_phone_number_id` | `1183645111502568` (ידוע — קריטי לניתוב) |
 | `whatsapp_number` | E.164 לתצוגה — `NULL` עד שהמשתמש יספק את המספר הקריא |
-| `first_touch_template_name` | `NULL` עד שהמשתמש יספק שם טמפלייט מאושר |
+| `first_touch_template_name` | `series_marketing_1` (טמפלייט Meta מאושר) |
 
 **הערה**: `whatsapp_phone_number_id` ידוע ונכנס ל-migration. גם אם הוא היה `NULL` — אין סכנת ערבוב, כי ה-entrypoint של תמיר (`whatsapp-webhook-dm`) מנתב עם `hookmyappAgentName: "digital_marketing"` כ-fallback, ולא לשותפים.
 

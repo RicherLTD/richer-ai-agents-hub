@@ -28,9 +28,10 @@ Mooz meeting type (digital marketing → same advisors):
 meeting_type_id = d44fe2dc-f849-4468-af5c-a6bdf1e91087
 ```
 
-Still pending from operator (do NOT block on these; they are step-8 ops):
-- `whatsapp_number` (E.164 display value)
-- `first_touch_template_name` (approved Meta template name)
+First-touch Meta template (approved): `series_marketing_1` (baked into migration 0039).
+
+Still pending from operator (do NOT block on this; step-8 ops):
+- `whatsapp_number` (E.164 display value — cosmetic, dashboard only)
 
 ---
 
@@ -261,6 +262,7 @@ INSERT INTO public.agents (
   quiet_hours_start_il,
   quiet_hours_end_il,
   first_touch_delay_minutes,
+  first_touch_template_name,
   operator_alert_phones
 )
 SELECT
@@ -274,6 +276,7 @@ SELECT
   20,
   8,
   40,
+  'series_marketing_1',
   ARRAY['+972512310702', '+972525563338']::text[]
 WHERE NOT EXISTS (
   SELECT 1 FROM public.agents WHERE name = 'digital_marketing'
@@ -920,13 +923,12 @@ Expected: both bundle and deploy successfully. A bundle/type error here is the a
 
 In HookMyApp, set channel `ch_WhZYrfGT`'s webhook URL to the deployed `whatsapp-webhook-dm` function URL, and complete the GET verification handshake (uses `VERIFY_TOKEN_DM`).
 
-- [ ] **Step 4: Set `whatsapp_number` + `first_touch_template_name` when available**
+- [ ] **Step 4: Set `whatsapp_number` (display only) when available**
 
-Once the operator has the E.164 display number and the approved Meta template name, update the agent row:
+`first_touch_template_name` (`series_marketing_1`) is already set by migration 0039. Once the operator has the E.164 display number, update the agent row:
 ```sql
 UPDATE public.agents
-SET whatsapp_number = '+972XXXXXXXXX',
-    first_touch_template_name = '<approved_template_name>'
+SET whatsapp_number = '+972XXXXXXXXX'
 WHERE name = 'digital_marketing';
 ```
 
