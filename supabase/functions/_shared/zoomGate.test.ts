@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { meetsZoomQualificationFloor, MIN_CORE_ANSWERED } from "./zoomGate.ts";
+import { meetsZoomQualificationFloor } from "./zoomGate.ts";
 
 const empty = {
   q1_age: null,
@@ -10,67 +10,46 @@ const empty = {
 };
 
 describe("meetsZoomQualificationFloor", () => {
-  it("blocks an empty lead and reports all three gaps", () => {
+  it("blocks a lead who has shared neither a goal nor a pain", () => {
     const r = meetsZoomQualificationFloor(empty);
     expect(r.ok).toBe(false);
-    expect(r.missing).toHaveLength(3);
+    expect(r.missing).toHaveLength(1);
   });
 
-  it("blocks when the goal (q3) is missing — even with 3 other answers", () => {
+  it("blocks even when non-core answers exist but goal AND pain are missing", () => {
     const r = meetsZoomQualificationFloor({
       ...empty,
       q1_age: 30,
       q2_motivation: "להגדיל הכנסה",
-      q4_blocker: "אין זמן",
+      q5_urgency: "החודש",
     });
     expect(r.ok).toBe(false);
-    expect(r.missing.some((m) => m.includes("יעד"))).toBe(true);
   });
 
-  it("blocks when the pain (q4) is missing", () => {
-    const r = meetsZoomQualificationFloor({
-      ...empty,
-      q1_age: 30,
-      q2_motivation: "להגדיל הכנסה",
-      q3_dream_change: "עצמאות פיננסית",
-    });
-    expect(r.ok).toBe(false);
-    expect(r.missing.some((m) => m.includes("כאב"))).toBe(true);
-  });
-
-  it("blocks when fewer than 3 core questions answered, even with goal + pain", () => {
+  it("passes with a goal (q3) alone", () => {
     const r = meetsZoomQualificationFloor({
       ...empty,
       q3_dream_change: "עצמאות פיננסית",
-      q4_blocker: "אין זמן",
     });
-    expect(r.ok).toBe(false);
-    expect(r.missing.some((m) => m.includes("שאלות"))).toBe(true);
+    expect(r.ok).toBe(true);
+    expect(r.missing).toEqual([]);
   });
 
-  it("passes with goal + pain + a third answer", () => {
+  it("passes with a pain (q4) alone", () => {
     const r = meetsZoomQualificationFloor({
       ...empty,
-      q2_motivation: "להגדיל הכנסה",
-      q3_dream_change: "עצמאות פיננסית",
       q4_blocker: "אין זמן",
     });
     expect(r.ok).toBe(true);
     expect(r.missing).toEqual([]);
   });
 
-  it("passes when all five core questions are answered", () => {
+  it("passes with both goal and pain", () => {
     const r = meetsZoomQualificationFloor({
-      q1_age: 30,
-      q2_motivation: "להגדיל הכנסה",
+      ...empty,
       q3_dream_change: "עצמאות פיננסית",
       q4_blocker: "אין זמן",
-      q5_urgency: "החודש",
     });
     expect(r.ok).toBe(true);
-  });
-
-  it("MIN_CORE_ANSWERED is 3 (pain + goal + one more)", () => {
-    expect(MIN_CORE_ANSWERED).toBe(3);
   });
 });

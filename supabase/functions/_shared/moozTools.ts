@@ -51,6 +51,14 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
           minimum: 1,
           maximum: 7,
         },
+        lead_requested_booking: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asked to schedule (e.g. 'תקבע לי שיחה', 'בוא נקבע'), " +
+            "OR signaled they're leaving / that the conversation is too deep/too much for them. " +
+            "This bypasses the warming floor so a ready or at-risk lead is never lost. " +
+            "Do NOT set it just to force a booking — only on a genuine explicit request or exit-risk.",
+        },
       },
       required: ["preferred_date"],
     },
@@ -81,6 +89,13 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
         lead_email: {
           type: "string",
           description: "Lead's email address.",
+        },
+        lead_requested_booking: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asked to schedule, OR signaled they're " +
+            "leaving / that the conversation is too deep for them — bypasses the warming floor. " +
+            "Do NOT set it just to force a booking.",
         },
       },
       required: ["start_time", "end_time", "lead_name", "lead_email"],
@@ -161,7 +176,13 @@ export async function dispatchMoozTool(
  */
 async function checkQualificationGate(
   ctx: MoozDispatchCtx,
+  requestedBooking: boolean,
 ): Promise<MoozDispatchResult | null> {
+  // Explicit lead request / exit-risk — the business priority is the Zoom, so
+  // an explicit "book me" (or a lead signaling they're leaving) bypasses the
+  // warming floor entirely. The prompt is instructed to set this flag ONLY in
+  // those cases, never just to force a booking.
+  if (requestedBooking) return null;
   const { data: mem } = await ctx.admin
     .from("lead_memory")
     .select("q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency")
@@ -197,7 +218,9 @@ async function handleListSlots(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
-  const blocked = await checkQualificationGate(ctx);
+  const requestedBooking =
+    (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
   const parsed = parseListInput(input);
   if (!parsed.ok) {
@@ -329,7 +352,9 @@ async function handleBookMeeting(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
-  const blocked = await checkQualificationGate(ctx);
+  const requestedBooking =
+    (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
   const parsed = parseBookInput(input);
   if (!parsed.ok) {
