@@ -141,6 +141,42 @@ Deno.serve(async (req) => {
   const rows = (candidates ?? []) as unknown as Row[];
   const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
   let auth401AlertSent = false;
+
+  // Per-channel WhatsApp credentials. The dispatcher serves ALL agents, so it
+  // must send each agent's template FROM that agent's own channel — otherwise
+  // Meta rejects the template with #132001 (the template lives on the agent's
+  // WABA, not the global/affiliate one). Keyed by whatsapp_phone_number_id;
+  // any agent whose channel isn't explicitly configured falls back to the
+  // global (affiliate) creds — i.e. unchanged behavior for affiliate.
+  const channelByPhoneId = new Map<string, { apiUrl: string; token: string }>();
+  const addChannel = (pid?: string | null, u?: string | null, t?: string | null) => {
+    if (pid && u && t) channelByPhoneId.set(pid, { apiUrl: u, token: t });
+  };
+  addChannel(phoneId, apiUrl, token); // affiliate / default (unsuffixed env)
+  addChannel(
+    Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
+    Deno.env.get("WHATSAPP_API_URL_DM"),
+    Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
+  );
+  // Map each batch agent_id -> its whatsapp_phone_number_id (from the DB).
+  const agentPhoneById = new Map<string, string>();
+  const batchAgentIds = [...new Set(rows.map((r) => r.agent_id))];
+  if (batchAgentIds.length > 0) {
+    const { data: agentRows } = await admin
+      .from("agents")
+      .select("id, whatsapp_phone_number_id")
+      .in("id", batchAgentIds);
+    for (const a of agentRows ?? []) {
+      const pid = (a as { whatsapp_phone_number_id?: string | null }).whatsapp_phone_number_id;
+      if (pid) agentPhoneById.set(a.id as string, pid);
+    }
+  }
+  // Resolve the sending channel for a row's agent (falls back to global creds).
+  const channelFor = (agentId: string): { apiUrl: string; token: string; phoneId: string } => {
+    const pid = agentPhoneById.get(agentId);
+    const ch = pid ? channelByPhoneId.get(pid) : undefined;
+    return ch ? { apiUrl: ch.apiUrl, token: ch.token, phoneId: pid! } : { apiUrl, token, phoneId };
+  };
   for (const row of rows) {
     // Skip rows whose conversation is paused or in a terminal tag — the template
     // would land in a conversation the agent cannot reply to. Cancel rather than
@@ -166,6 +202,7 @@ Deno.serve(async (req) => {
       results.deferred_quiet_hours++;
       continue;
     }
+    const ch = channelFor(row.agent_id);
     const variables: string[] = Array.isArray(row.template_variables)
       ? (row.template_variables as unknown[]).filter((v) => typeof v === "string") as string[]
       : [];
@@ -185,9 +222,9 @@ Deno.serve(async (req) => {
     const timer = setTimeout(() => ac.abort(), 15_000);
     let res: Response;
     try {
-      res = await fetch(`${apiUrl}/${phoneId}/messages`, {
+      res = await fetch(`${ch.apiUrl}/${ch.phoneId}/messages`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${ch.token}`, "Content-Type": "application/json" },
         body: JSON.stringify(body),
         signal: ac.signal,
       });
@@ -238,9 +275,9 @@ Deno.serve(async (req) => {
           auth401AlertSent = true;
           alertOperators({
             admin,
-            apiUrl,
-            accessToken: token,
-            phoneNumberId: phoneId,
+            apiUrl: ch.apiUrl,
+            accessToken: ch.token,
+            phoneNumberId: ch.phoneId,
             agentId: row.agent_id,
             conversationId: row.conversation_id,
             leadPhone: row.lead_phone,
