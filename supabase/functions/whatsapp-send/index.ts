@@ -114,10 +114,45 @@ Deno.serve(async (req) => {
       throw new HttpError(422, "Conversation has no lead_phone — cannot send");
     }
 
+    // Resolve the sending channel per the conversation's agent. A manual
+    // reply to a digital_marketing lead must go out FROM the DM number, not
+    // the global (affiliate) channel — otherwise the lead gets a message from
+    // the wrong WhatsApp number. Keyed by whatsapp_phone_number_id; falls back
+    // to the global creds (unchanged behavior for affiliate).
+    const channelByPhoneId = new Map<string, { apiUrl: string; token: string }>();
+    const addChannel = (pid?: string | null, u?: string | null, t?: string | null) => {
+      if (pid && u && t) channelByPhoneId.set(pid, { apiUrl: u, token: t });
+    };
+    addChannel(phoneId, apiUrl, accessToken); // global / affiliate default
+    addChannel(
+      Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
+      Deno.env.get("WHATSAPP_API_URL_DM"),
+      Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
+    );
+    let sendApiUrl = apiUrl;
+    let sendToken = accessToken;
+    let sendPhoneId = phoneId;
+    if (conversation.agent_id) {
+      const { data: agentRow } = await admin
+        .from("agents")
+        .select("whatsapp_phone_number_id")
+        .eq("id", conversation.agent_id)
+        .maybeSingle();
+      const agentPhoneId =
+        (agentRow as { whatsapp_phone_number_id?: string | null } | null)
+          ?.whatsapp_phone_number_id ?? null;
+      const ch = agentPhoneId ? channelByPhoneId.get(agentPhoneId) : undefined;
+      if (agentPhoneId && ch) {
+        sendApiUrl = ch.apiUrl;
+        sendToken = ch.token;
+        sendPhoneId = agentPhoneId;
+      }
+    }
+
     const sendResult = await sendWhatsAppText({
-      apiUrl,
-      accessToken,
-      phoneNumberId: phoneId,
+      apiUrl: sendApiUrl,
+      accessToken: sendToken,
+      phoneNumberId: sendPhoneId,
       to: conversation.lead_phone,
       body: content,
     });
