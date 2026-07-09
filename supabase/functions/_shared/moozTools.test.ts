@@ -72,13 +72,19 @@ function makeAdmin(opts?: { leadMemory?: Record<string, unknown> | null }): {
 }
 
 function makeMoozStub(opts: {
-  slots?: MoozAvailableSlot[];
+  /** Either a fixed list, or a function of the query args so a test can
+   *  return different results for the requested window vs. the nearest
+   *  fallback sweep (which queries `from` ≈ now). */
+  slots?:
+    | MoozAvailableSlot[]
+    | ((args: { from: string; to: string }) => MoozAvailableSlot[]);
   slotsError?: Error;
   bookingResult?: MoozCreateBookingResult;
 }): MoozClient {
   return {
-    listAvailableSlots: async () => {
+    listAvailableSlots: async (args: { from: string; to: string }) => {
       if (opts.slotsError) throw opts.slotsError;
+      if (typeof opts.slots === "function") return opts.slots(args);
       return opts.slots ?? [];
     },
     createBooking: async () =>
@@ -179,7 +185,8 @@ describe("dispatchMoozTool — list_available_slots", () => {
     expect(r.offeredTimesIL.length).toBeGreaterThan(0);
   });
 
-  it("empty result yields 'try different day' guidance", async () => {
+  it("truly-empty result steers AWAY from later dates (no negotiation)", async () => {
+    // Both the requested window AND the nearest fallback come back empty.
     const { admin } = makeAdmin();
     const ctx = makeCtx(makeMoozStub({ slots: [] }), admin);
     const r = await dispatchMoozTool(
@@ -189,9 +196,38 @@ describe("dispatchMoozTool — list_available_slots", () => {
     );
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.slot_count).toBe(0);
-    expect(parsed.hint).toContain("different day");
+    expect(parsed.nearest_available_fallback).toBe(false);
+    // The whole point of the fix: never invite a later date.
+    expect(parsed.hint).toContain("do NOT offer or negotiate a later date");
     // No slots → nothing the bot may state.
     expect(r.offeredTimesIL).toEqual([]);
+  });
+
+  it("far-future request falls back to the NEAREST real openings", async () => {
+    // Requested window is far out (Mooz returns [] because it's beyond
+    // max_days_ahead); the fallback sweep from ~now finds real slots.
+    const nearest: MoozAvailableSlot[] = [
+      { start: "2026-05-21T08:00:00.000Z", end: "2026-05-21T08:30:00.000Z" },
+      { start: "2026-05-21T09:00:00.000Z", end: "2026-05-21T09:30:00.000Z" },
+    ];
+    const { admin } = makeAdmin();
+    const stub = makeMoozStub({
+      // Requested window starts on the far-future date → empty.
+      // Fallback sweep starts ≈ now (not "2099-…") → returns nearest.
+      slots: (args) => (args.from.startsWith("2099-") ? [] : nearest),
+    });
+    const ctx = makeCtx(stub, admin);
+    const r = await dispatchMoozTool(
+      "list_available_slots",
+      { preferred_date: "2099-01-01", lookahead_days: 3 },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.nearest_available_fallback).toBe(true);
+    expect(parsed.slot_count).toBe(2);
+    expect(parsed.hint).toContain("NEAREST real openings");
+    // 08:00Z → 11:00 IL (summer, IDT +3). Allow-list must carry it.
+    expect(r.offeredTimesIL).toContain("11:00");
   });
 
   it("Mooz error returns user-facing message", async () => {
@@ -208,10 +244,10 @@ describe("dispatchMoozTool — list_available_slots", () => {
 });
 
 describe("dispatchMoozTool — book_meeting", () => {
-  it("blocks (defense in depth) when the lead has not cleared the floor", async () => {
-    // Only 2 of 5 answered → below the floor.
+  it("blocks (defense in depth) when the lead has neither goal nor pain", async () => {
+    // No q3 (goal) and no q4 (pain) → below the floor.
     const { admin, calls } = makeAdmin({
-      leadMemory: { q3_dream_change: "עצמאות", q4_blocker: "אין זמן" },
+      leadMemory: { q1_age: 30, q2_motivation: "רוצה יותר כסף" },
     });
     const ctx = makeCtx(makeMoozStub({}), admin);
     const r = await dispatchMoozTool(
@@ -229,6 +265,26 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(r.bookingCreated).toBe(false);
     // must NOT have touched the DB
     expect(calls.find((c) => c.table === "conversations")).toBeUndefined();
+  });
+
+  it("bypasses the floor when lead_requested_booking is true (explicit request / exit-risk)", async () => {
+    // Cold lead (no goal, no pain) but explicitly asked to book → must proceed.
+    const { admin } = makeAdmin({ leadMemory: { q1_age: 30 } });
+    const ctx = makeCtx(makeMoozStub({}), admin);
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+        lead_requested_booking: true,
+      },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBeUndefined();
+    expect(r.bookingCreated).toBe(true);
   });
 
   it("happy path updates conversation + lead_memory + returns booking_id", async () => {

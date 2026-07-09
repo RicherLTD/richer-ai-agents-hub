@@ -32,7 +32,9 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
       "Fetches real available zoom meeting slots from Mooz, the booking system. " +
       "Use this when (a) the lead has agreed to schedule, AND (b) you need to offer specific times. " +
       "Never invent or guess times — only mention slots returned by this tool. " +
-      "If the tool returns an empty array, tell the lead you couldn't find slots for that date and ask for an alternative.",
+      "The bookable window is deliberately short (scheduling opens close-in, usually within ~24h, rolling to the next working day after a weekend). " +
+      "When the requested date is outside that window, this tool automatically returns the NEAREST real openings instead — offer those and never push the lead to a later date. " +
+      "Read the returned `hint` and `nearest_available_fallback` fields and follow them.",
     input_schema: {
       type: "object",
       properties: {
@@ -105,6 +107,11 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
 
 const NAMES = new Set(MOOZ_TOOL_DEFS.map((t) => t.name));
 
+/** How far ahead the nearest-available fallback sweep looks (days). The real
+ *  ceiling is Mooz's server-side max_days_ahead, so over-shooting is harmless —
+ *  this just needs to be wide enough to clear a weekend/holiday gap. */
+const NEAREST_FALLBACK_DAYS = 10;
+
 export function isMoozTool(name: string): boolean {
   return NAMES.has(name);
 }
@@ -117,6 +124,12 @@ export interface MoozDispatchCtx {
   conversationId: string;
   agentId: string;
   leadPhone: string;
+  /** Fireberry product code for this agent's track ("B" affiliate / "R"
+   *  digital). Threaded into book_meeting so the Mooz booking carries
+   *  `hidden_fields.product` and reaches the right product downstream.
+   *  Null when the agent has no code configured (booking still succeeds;
+   *  it just won't be product-tagged). */
+  productCode?: string | null;
 }
 
 /** What we hand back to Claude as the tool_result content. */
@@ -263,26 +276,88 @@ async function handleListSlots(
   }
 
   // Cap the surface area Claude sees — too many slots derail the convo.
-  const trimmed = slots.slice(0, 12);
+  let trimmed = slots.slice(0, 12);
+  let usedNearestFallback = false;
+
+  // Nearest-available fallback. The bookable window is enforced server-side by
+  // Mooz (min_notice + max_days_ahead) and is deliberately short — often only
+  // ~24h ahead, rolling to the next working day after a weekend. When the
+  // lead's requested date falls outside that window Mooz returns []. Bouncing
+  // that back as "pick another day" makes the model chase ever-further dates
+  // that are ALSO empty (next week → two weeks → three weeks) until the lead
+  // gives up. Instead, sweep from NOW forward and surface the soonest real
+  // openings so the bot always steers toward a slot that is actually open.
+  if (trimmed.length === 0) {
+    const nowIso = new Date().toISOString();
+    const nearestToIso = new Date(
+      Date.now() + NEAREST_FALLBACK_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    try {
+      const nearest = await ctx.mooz.listAvailableSlots({
+        meetingTypeId: ctx.meetingTypeId,
+        from: nowIso,
+        to: nearestToIso,
+      });
+      if (nearest.length > 0) {
+        trimmed = nearest.slice(0, 12);
+        usedNearestFallback = true;
+      }
+    } catch (err) {
+      // Best-effort: a fallback failure falls through to the genuine
+      // "no openings" path rather than erroring the whole turn.
+      await logError({
+        admin: ctx.admin,
+        source: "mooz-tools",
+        errorType: "list_slots_failed",
+        message: err instanceof Error ? err.message : String(err),
+        context: { phase: "nearest_fallback", nowIso, nearestToIso },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    }
+  }
+
   return {
     resultJson: JSON.stringify({
       preferred_date: parsed.preferredDate,
       lookahead_days: lookaheadDays,
+      nearest_available_fallback: usedNearestFallback,
       slot_count: trimmed.length,
       slots: trimmed.map((s) => ({
         start_utc: s.start,
         end_utc: s.end,
         local_il: formatLocalIL(s.start),
       })),
-      hint:
-        trimmed.length === 0
-          ? "No slots in this window. Ask the lead for a different day."
-          : "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.",
+      hint: buildSlotsHint(trimmed.length, usedNearestFallback),
     }),
     bookingCreated: false,
     // Allow-list for the time guard: only the slots we actually surfaced.
     offeredTimesIL: trimmed.flatMap(slotTimesIL),
   };
+}
+
+/** Guidance handed to Claude alongside the slots. The empty and fallback
+ *  branches both steer the model AWAY from negotiating later dates — the whole
+ *  point of the nearest-available behavior. */
+function buildSlotsHint(count: number, usedNearestFallback: boolean): string {
+  if (count === 0) {
+    return (
+      "No openings in the near-term booking window right now. The calendar only " +
+      "opens close-in, so do NOT offer or negotiate a later date. Tell the lead " +
+      "there's nothing free at the moment and you'll check again shortly."
+    );
+  }
+  if (usedNearestFallback) {
+    return (
+      "The requested date is outside the bookable window (scheduling opens " +
+      "close-in — usually within ~24h, and the next working day after a weekend). " +
+      "These are the NEAREST real openings. Offer 2-3 of them and, if needed, " +
+      "gently note these are the soonest available. Do NOT offer or negotiate " +
+      "dates further out. When the lead picks one, call book_meeting with the " +
+      "exact start_utc/end_utc strings."
+    );
+  }
+  return "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.";
 }
 
 interface ListInputOk {
@@ -373,6 +448,7 @@ async function handleBookMeeting(
     startTime: parsed.startTime,
     endTime: parsed.endTime,
     notes: agentBookingNote(ctx.conversationId),
+    productCode: ctx.productCode ?? null,
   });
 
   if (!result.ok) {
