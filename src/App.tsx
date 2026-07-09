@@ -13,6 +13,7 @@ import Conversations from "./pages/Conversations.tsx";
 import Prompts from "./pages/Prompts.tsx";
 import Coach from "./pages/Coach.tsx";
 import Settings from "./pages/Settings.tsx";
+import Broadcasts from "./pages/Broadcasts.tsx";
 import Login from "./pages/Login.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
@@ -50,6 +51,7 @@ const App = () => (
               <Route path="/prompts" element={<Prompts />} />
               <Route path="/coach" element={<Coach />} />
               <Route path="/settings" element={<Settings />} />
+              <Route path="/broadcasts" element={<Broadcasts />} />
             </Route>
 
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
