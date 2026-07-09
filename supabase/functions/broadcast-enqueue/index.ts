@@ -1,4 +1,3 @@
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
