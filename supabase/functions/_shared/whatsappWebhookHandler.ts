@@ -709,12 +709,13 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
   // so they can step in if they want — the lead is not forgotten.
   const { data: agentCfg } = await ctx.admin
     .from("agents")
-    .select("name, quiet_hours_start_il, quiet_hours_end_il, meeting_type_id")
+    .select("name, quiet_hours_start_il, quiet_hours_end_il, meeting_type_id, mooz_product_code")
     .eq("id", ctx.agentId)
     .maybeSingle();
   const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
   const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
   const meetingTypeId = (agentCfg?.meeting_type_id as string | null | undefined) ?? null;
+  const productCode = (agentCfg?.mooz_product_code as string | null | undefined) ?? null;
   if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
     // Quiet hours = silent for everyone. The operator explicitly does
     // NOT want WhatsApp alerts during the night — the whole point of
@@ -753,6 +754,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
         conversationId: ctx.conversationId,
         agentId: ctx.agentId,
         leadPhone: ctx.leadPhone,
+        productCode,
       }
     : null;
 
