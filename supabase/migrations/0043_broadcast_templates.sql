@@ -3,8 +3,9 @@
 -- A typo in template_name makes Meta reject the WHOLE broadcast silently, so
 -- the UI picks from this table instead of free text. Seeds each agent's
 -- existing first-touch template as an initial option.
+-- Idempotent (applied via scripts/db/apply.ts, which has no migration tracking).
 
-CREATE TABLE public.broadcast_templates (
+CREATE TABLE IF NOT EXISTS public.broadcast_templates (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   agent_id        uuid NOT NULL REFERENCES public.agents(id) ON DELETE CASCADE,
   name            text NOT NULL,
@@ -17,10 +18,11 @@ CREATE TABLE public.broadcast_templates (
   UNIQUE (agent_id, name, language)
 );
 
-CREATE INDEX broadcast_templates_agent_idx ON public.broadcast_templates (agent_id, is_active);
+CREATE INDEX IF NOT EXISTS broadcast_templates_agent_idx ON public.broadcast_templates (agent_id, is_active);
 
 ALTER TABLE public.broadcast_templates ENABLE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS "admin_all_broadcast_templates" ON public.broadcast_templates;
 CREATE POLICY "admin_all_broadcast_templates" ON public.broadcast_templates
   FOR ALL TO authenticated
   USING (public.is_admin())
