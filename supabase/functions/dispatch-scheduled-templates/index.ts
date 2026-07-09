@@ -1,6 +1,8 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
+import { partitionOptedOut } from "../_shared/optOutFilter.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -139,6 +141,24 @@ Deno.serve(async (req) => {
     conversation_manual_mode_since: string | null;
   };
   const rows = (candidates ?? []) as unknown as Row[];
+
+  // Phone-level opt-out re-check (belt-and-suspenders). A lead can opt out
+  // AFTER a row was enqueued (e.g. a broadcast queued minutes ago). The
+  // conversation-tag/status check inside the loop only catches opt-outs already
+  // reflected as a conversation tag; this reads the opt_outs table directly and
+  // cancels — never sends. Non-opted-out rows are untouched (identical path).
+  const optedOutSet = new Set<string>();
+  const batchPhones = [
+    ...new Set(rows.map((r) => toCanonicalPhone(r.lead_phone)).filter((p): p is string => !!p)),
+  ];
+  if (batchPhones.length > 0) {
+    const { data: oo } = await admin.from("opt_outs").select("lead_phone").in("lead_phone", batchPhones);
+    for (const o of oo ?? []) {
+      const c = toCanonicalPhone((o as { lead_phone: string }).lead_phone);
+      if (c) optedOutSet.add(c);
+    }
+  }
+  const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
   const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
   let auth401AlertSent = false;
 
@@ -177,7 +197,11 @@ Deno.serve(async (req) => {
     const ch = pid ? channelByPhoneId.get(pid) : undefined;
     return ch ? { apiUrl: ch.apiUrl, token: ch.token, phoneId: pid! } : { apiUrl, token, phoneId };
   };
-  for (const row of rows) {
+  for (const row of optedOutRows) {
+    await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null, last_error: "opted_out_before_send" }).eq("id", row.id);
+    results.cancelled++;
+  }
+  for (const row of sendableRows) {
     // Skip rows whose conversation is paused or in a terminal tag — the template
     // would land in a conversation the agent cannot reply to. Cancel rather than
     // defer so the row doesn't keep re-claiming.
