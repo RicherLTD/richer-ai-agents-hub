@@ -354,6 +354,116 @@ export type Database = {
           },
         ]
       }
+      broadcast_templates: {
+        Row: {
+          agent_id: string
+          body_preview: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          label: string
+          language: string
+          name: string
+          variable_count: number
+        }
+        Insert: {
+          agent_id: string
+          body_preview?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label: string
+          language?: string
+          name: string
+          variable_count?: number
+        }
+        Update: {
+          agent_id?: string
+          body_preview?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string
+          language?: string
+          name?: string
+          variable_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcast_templates_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      broadcasts: {
+        Row: {
+          agent_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          scheduled_for: string | null
+          status: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown: Json
+          suppressed_count: number
+          template_language: string
+          template_name: string
+          template_variables: Json
+          title: string
+          total_recipients: number
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          scheduled_for?: string | null
+          status?: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown?: Json
+          suppressed_count?: number
+          template_language?: string
+          template_name: string
+          template_variables?: Json
+          title: string
+          total_recipients?: number
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          scheduled_for?: string | null
+          status?: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown?: Json
+          suppressed_count?: number
+          template_language?: string
+          template_name?: string
+          template_variables?: Json
+          title?: string
+          total_recipients?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcasts_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "broadcasts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       coach_messages: {
         Row: {
           agent_id: string
@@ -953,116 +1063,6 @@ export type Database = {
           },
         ]
       }
-      broadcast_templates: {
-        Row: {
-          agent_id: string
-          body_preview: string | null
-          created_at: string
-          id: string
-          is_active: boolean
-          label: string
-          language: string
-          name: string
-          variable_count: number
-        }
-        Insert: {
-          agent_id: string
-          body_preview?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          label: string
-          language?: string
-          name: string
-          variable_count?: number
-        }
-        Update: {
-          agent_id?: string
-          body_preview?: string | null
-          created_at?: string
-          id?: string
-          is_active?: boolean
-          label?: string
-          language?: string
-          name?: string
-          variable_count?: number
-        }
-        Relationships: [
-          {
-            foreignKeyName: "broadcast_templates_agent_id_fkey"
-            columns: ["agent_id"]
-            isOneToOne: false
-            referencedRelation: "agents"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
-      broadcasts: {
-        Row: {
-          agent_id: string
-          created_at: string
-          created_by: string | null
-          id: string
-          scheduled_for: string | null
-          status: Database["public"]["Enums"]["broadcast_status_enum"]
-          suppressed_breakdown: Json
-          suppressed_count: number
-          template_language: string
-          template_name: string
-          template_variables: Json
-          title: string
-          total_recipients: number
-          updated_at: string
-        }
-        Insert: {
-          agent_id: string
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          scheduled_for?: string | null
-          status?: Database["public"]["Enums"]["broadcast_status_enum"]
-          suppressed_breakdown?: Json
-          suppressed_count?: number
-          template_language?: string
-          template_name: string
-          template_variables?: Json
-          title: string
-          total_recipients?: number
-          updated_at?: string
-        }
-        Update: {
-          agent_id?: string
-          created_at?: string
-          created_by?: string | null
-          id?: string
-          scheduled_for?: string | null
-          status?: Database["public"]["Enums"]["broadcast_status_enum"]
-          suppressed_breakdown?: Json
-          suppressed_count?: number
-          template_language?: string
-          template_name?: string
-          template_variables?: Json
-          title?: string
-          total_recipients?: number
-          updated_at?: string
-        }
-        Relationships: [
-          {
-            foreignKeyName: "broadcasts_agent_id_fkey"
-            columns: ["agent_id"]
-            isOneToOne: false
-            referencedRelation: "agents"
-            referencedColumns: ["id"]
-          },
-          {
-            foreignKeyName: "broadcasts_created_by_fkey"
-            columns: ["created_by"]
-            isOneToOne: false
-            referencedRelation: "app_users"
-            referencedColumns: ["id"]
-          },
-        ]
-      }
       scheduled_messages: {
         Row: {
           agent_id: string
@@ -1170,10 +1170,12 @@ export type Database = {
         Returns: {
           agent_id: string
           agent_is_paused: boolean
-          agent_meeting_check_enabled: boolean
-          agent_meeting_check_url: string
+          agent_quiet_hours_end_il: number
+          agent_quiet_hours_start_il: number
           attempts: number
+          conversation_current_tag: string
           conversation_id: string
+          conversation_status: string
           id: string
           lead_name: string
           lead_phone: string
@@ -1189,7 +1191,12 @@ export type Database = {
       ai_provider_enum: "claude" | "gpt" | "pending" | "manual"
       app_role: "admin" | "user"
       brain_extraction_status: "pending" | "ready" | "failed"
-      broadcast_status_enum: "draft" | "queued" | "sending" | "completed" | "cancelled"
+      broadcast_status_enum:
+        | "draft"
+        | "queued"
+        | "sending"
+        | "completed"
+        | "cancelled"
       conversation_status_enum: "active" | "paused" | "completed" | "opted_out"
       funnel_stage_enum: "cold" | "mid" | "done"
       message_direction_enum: "inbound" | "outbound"
@@ -1353,6 +1360,13 @@ export const Constants = {
       ai_provider_enum: ["claude", "gpt", "pending", "manual"],
       app_role: ["admin", "user"],
       brain_extraction_status: ["pending", "ready", "failed"],
+      broadcast_status_enum: [
+        "draft",
+        "queued",
+        "sending",
+        "completed",
+        "cancelled",
+      ],
       conversation_status_enum: ["active", "paused", "completed", "opted_out"],
       funnel_stage_enum: ["cold", "mid", "done"],
       message_direction_enum: ["inbound", "outbound"],
