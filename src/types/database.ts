@@ -953,10 +953,121 @@ export type Database = {
           },
         ]
       }
+      broadcast_templates: {
+        Row: {
+          agent_id: string
+          body_preview: string | null
+          created_at: string
+          id: string
+          is_active: boolean
+          label: string
+          language: string
+          name: string
+          variable_count: number
+        }
+        Insert: {
+          agent_id: string
+          body_preview?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label: string
+          language?: string
+          name: string
+          variable_count?: number
+        }
+        Update: {
+          agent_id?: string
+          body_preview?: string | null
+          created_at?: string
+          id?: string
+          is_active?: boolean
+          label?: string
+          language?: string
+          name?: string
+          variable_count?: number
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcast_templates_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      broadcasts: {
+        Row: {
+          agent_id: string
+          created_at: string
+          created_by: string | null
+          id: string
+          scheduled_for: string | null
+          status: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown: Json
+          suppressed_count: number
+          template_language: string
+          template_name: string
+          template_variables: Json
+          title: string
+          total_recipients: number
+          updated_at: string
+        }
+        Insert: {
+          agent_id: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          scheduled_for?: string | null
+          status?: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown?: Json
+          suppressed_count?: number
+          template_language?: string
+          template_name: string
+          template_variables?: Json
+          title: string
+          total_recipients?: number
+          updated_at?: string
+        }
+        Update: {
+          agent_id?: string
+          created_at?: string
+          created_by?: string | null
+          id?: string
+          scheduled_for?: string | null
+          status?: Database["public"]["Enums"]["broadcast_status_enum"]
+          suppressed_breakdown?: Json
+          suppressed_count?: number
+          template_language?: string
+          template_name?: string
+          template_variables?: Json
+          title?: string
+          total_recipients?: number
+          updated_at?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "broadcasts_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "broadcasts_created_by_fkey"
+            columns: ["created_by"]
+            isOneToOne: false
+            referencedRelation: "app_users"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       scheduled_messages: {
         Row: {
           agent_id: string
           attempts: number
+          broadcast_id: string | null
           claimed_at: string | null
           conversation_id: string | null
           created_at: string
@@ -980,6 +1091,7 @@ export type Database = {
         Insert: {
           agent_id: string
           attempts?: number
+          broadcast_id?: string | null
           claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
@@ -1003,6 +1115,7 @@ export type Database = {
         Update: {
           agent_id?: string
           attempts?: number
+          broadcast_id?: string | null
           claimed_at?: string | null
           conversation_id?: string | null
           created_at?: string
@@ -1029,6 +1142,13 @@ export type Database = {
             columns: ["agent_id"]
             isOneToOne: false
             referencedRelation: "agents"
+            referencedColumns: ["id"]
+          },
+          {
+            foreignKeyName: "scheduled_messages_broadcast_id_fkey"
+            columns: ["broadcast_id"]
+            isOneToOne: false
+            referencedRelation: "broadcasts"
             referencedColumns: ["id"]
           },
           {
@@ -1069,6 +1189,7 @@ export type Database = {
       ai_provider_enum: "claude" | "gpt" | "pending" | "manual"
       app_role: "admin" | "user"
       brain_extraction_status: "pending" | "ready" | "failed"
+      broadcast_status_enum: "draft" | "queued" | "sending" | "completed" | "cancelled"
       conversation_status_enum: "active" | "paused" | "completed" | "opted_out"
       funnel_stage_enum: "cold" | "mid" | "done"
       message_direction_enum: "inbound" | "outbound"
