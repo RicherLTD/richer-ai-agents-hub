@@ -1557,6 +1557,25 @@ async function ingestInboundMessage(
         conversationId,
       });
     }
+    // Also record the phone in the GLOBAL opt_outs suppression list. The
+    // conversation tag above only blocks THIS agent's conversation; opt_outs is
+    // phone-level and cross-agent, and is the list the broadcast feature checks
+    // (including CSV uploads) so a "remove me" here is honored everywhere.
+    // Best-effort: never let it break the opt-out acknowledgement.
+    try {
+      const { data: existing } = await admin
+        .from("opt_outs")
+        .select("id")
+        .eq("lead_phone", phone)
+        .limit(1);
+      if (!existing || existing.length === 0) {
+        await admin
+          .from("opt_outs")
+          .insert({ lead_phone: phone, reason: "whatsapp_reply", opted_out_at: new Date().toISOString() });
+      }
+    } catch (_e) {
+      // opt_outs is best-effort; the conversation tag already blocks this agent.
+    }
     return {
       needsAgentReply: false,
       needsCannedNonTextReply: false,

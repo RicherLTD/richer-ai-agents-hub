@@ -1,6 +1,7 @@
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
+import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
 import { buildRecipientSet, type RawRecipient } from "../_shared/broadcastRecipients.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
@@ -118,14 +119,11 @@ Deno.serve(async (req) => {
       ...new Set(raw.map((r) => toCanonicalPhone(r.phone)).filter((p): p is string => !!p)),
     ];
 
-    const optedOutPhones = new Set<string>();
-    for (const group of chunk(candidatePhones, INSERT_CHUNK)) {
-      const { data: oo } = await admin.from("opt_outs").select("lead_phone").in("lead_phone", group);
-      for (const o of oo ?? []) {
-        const c = toCanonicalPhone((o as { lead_phone: string }).lead_phone);
-        if (c) optedOutPhones.add(c);
-      }
-    }
+    // Critical gate: suppress anyone in opt_outs, tolerant of stored phone
+    // format. A thrown query here must NOT be swallowed — if we can't confirm
+    // opt-out state we must fail the whole broadcast rather than risk messaging
+    // someone who asked to be removed.
+    const optedOutPhones = await fetchOptedOutSet(admin, candidatePhones);
 
     const convByPhone = new Map<string, string>();
     const blockedPhones = new Set<string>();
@@ -197,7 +195,15 @@ Deno.serve(async (req) => {
     }));
     for (const group of chunk(rows, INSERT_CHUNK)) {
       const { error: insErr } = await admin.from("scheduled_messages").insert(group);
-      if (insErr) throw new HttpError(500, `failed to enqueue rows: ${insErr.message}`);
+      if (insErr) {
+        // No cross-statement transaction here, so a mid-way failure would leave
+        // a `broadcasts` row whose total_recipients never got enqueued — and the
+        // 60s idempotency guard would then hand that phantom count back on retry.
+        // Roll it back manually: drop the enqueued rows, then the broadcast.
+        await admin.from("scheduled_messages").delete().eq("broadcast_id", broadcast.id);
+        await admin.from("broadcasts").delete().eq("id", broadcast.id);
+        throw new HttpError(500, `failed to enqueue rows: ${insErr.message}`);
+      }
     }
 
     return jsonResponse(

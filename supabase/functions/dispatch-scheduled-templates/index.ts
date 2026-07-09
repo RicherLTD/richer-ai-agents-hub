@@ -3,6 +3,7 @@ import { isQuietHourNow } from "../_shared/quietHours.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { partitionOptedOut } from "../_shared/optOutFilter.ts";
+import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -147,17 +148,10 @@ Deno.serve(async (req) => {
   // conversation-tag/status check inside the loop only catches opt-outs already
   // reflected as a conversation tag; this reads the opt_outs table directly and
   // cancels — never sends. Non-opted-out rows are untouched (identical path).
-  const optedOutSet = new Set<string>();
   const batchPhones = [
     ...new Set(rows.map((r) => toCanonicalPhone(r.lead_phone)).filter((p): p is string => !!p)),
   ];
-  if (batchPhones.length > 0) {
-    const { data: oo } = await admin.from("opt_outs").select("lead_phone").in("lead_phone", batchPhones);
-    for (const o of oo ?? []) {
-      const c = toCanonicalPhone((o as { lead_phone: string }).lead_phone);
-      if (c) optedOutSet.add(c);
-    }
-  }
+  const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
   const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
   let auth401AlertSent = false;
