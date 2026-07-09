@@ -28,12 +28,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { logError } from "../_shared/logError.ts";
 import { classifyMoozBookingSource } from "../_shared/moozBookingSource.ts";
-import {
-  buildHandoffPayload,
-  fireHandoffWebhook,
-  type HandoffConversation,
-  type HandoffLeadMemory,
-} from "../_shared/fireHandoffWebhook.ts";
 
 const SOURCE = "mooz-webhook";
 
@@ -152,9 +146,6 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   const webhookSecret = Deno.env.get("MOOZ_WEBHOOK_SECRET");
-  const handoffWebhookUrl = Deno.env.get("HANDOFF_WEBHOOK_URL") ?? null;
-  const handoffWebhookSecret = Deno.env.get("HANDOFF_WEBHOOK_SECRET") ?? null;
-  const dashboardBaseUrl = Deno.env.get("DASHBOARD_BASE_URL") ?? null;
 
   if (!supabaseUrl || !serviceRoleKey) {
     return new Response(JSON.stringify({ error: "server misconfigured" }), {
@@ -298,9 +289,6 @@ Deno.serve(async (req) => {
       conversation,
       booking,
       event,
-      handoffWebhookUrl,
-      handoffWebhookSecret,
-      dashboardBaseUrl,
     });
   } else if (event === "booking.cancelled") {
     await handleCancelled({ admin, conversation, booking });
@@ -338,11 +326,8 @@ async function handleCreatedOrRescheduled(args: {
   conversation: ConversationRow;
   booking: NonNullable<MoozBookingPayload["data"]>;
   event: string;
-  handoffWebhookUrl: string | null;
-  handoffWebhookSecret: string | null;
-  dashboardBaseUrl: string | null;
 }): Promise<void> {
-  const { admin, conversation, booking, event, handoffWebhookUrl, handoffWebhookSecret, dashboardBaseUrl } = args;
+  const { admin, conversation, booking, event } = args;
   const scheduledAt =
     normalizeMoozTimestamp(booking.start_time) ?? new Date().toISOString();
   if (booking.start_time && !normalizeMoozTimestamp(booking.start_time)) {
@@ -359,8 +344,6 @@ async function handleCreatedOrRescheduled(args: {
       agentId: conversation.agent_id ?? undefined,
     });
   }
-  const wasAlreadyScheduled = conversation.current_tag === "zoom_scheduled";
-
   // Attribute the booking source for analytics (migration 0033). The bot
   // stamps its own bookings with a marker in the Mooz notes; self-service
   // (and advisor / Make.com-completed) bookings do not carry it.
@@ -417,137 +400,22 @@ async function handleCreatedOrRescheduled(args: {
     });
   }
 
-  // Fire handoff webhook on every booking.created from Mooz — this IS the
-  // canonical "Mooz confirmed the booking" trigger Kfir asked for on
-  // 2026-05-24: only fire to Make.com AFTER Mooz has actually persisted
-  // the booking, never on the bot's optimistic pre-tag.
+  // Handoff to Make.com is intentionally NOT fired from here.
   //
-  // We do NOT skip on `wasAlreadyScheduled` even when the bot already set
-  // current_tag='zoom_scheduled' via the book_meeting tool: the bot's
-  // tool only updates our DB, it does NOT fire any webhook. If we skipped
-  // here, bot-initiated bookings would silently never reach Make.com /
-  // Fireberry / advisor notifications.
+  // Mooz's own native scenario (Make 4491366) is the single, product-scoped
+  // writer into Fireberry — it reads `hidden_fields.product` and creates the
+  // meeting + advisor notification for EVERY Mooz booking (bot or self-serve).
+  // Firing our own handoff (Make 5709133) on the same booking created a
+  // SECOND, product-BLIND Fireberry write that attached the zoom to the
+  // lead's OTHER-product record — the duplicate cross-product zoom seen at
+  // the same time. Removing this fire eliminates the double-write; we keep
+  // only the DB updates above (tag / stage / zoom_booked_by).
   //
-  // Dedup against Mooz retries is handled upstream by the
-  // `mooz_webhook_events` idempotency table (insert with same
-  // X-Idempotency-Key short-circuits before we ever reach this point).
+  // Precondition already shipped: the bot now sends `hidden_fields.product`
+  // on its bookings (see _shared/mooz.ts + migration 0041), so 4491366 also
+  // routes BOT bookings correctly and nothing is lost by dropping this fire.
   //
-  // booking.rescheduled is intentionally NOT a handoff trigger — the
-  // advisor was already announced on the original booking.created; the
-  // reschedule just adjusts zoom_scheduled_at in our DB.
-  if (event === "booking.rescheduled") {
-    return;
-  }
-  if (!handoffWebhookUrl) {
-    await logError({
-      admin,
-      source: SOURCE,
-      errorType: "handoff_webhook_url_missing",
-      level: "warn",
-      message:
-        "Mooz booking.created arrived but HANDOFF_WEBHOOK_URL is not configured — downstream automations will not fire",
-      context: { booking_id: booking.id },
-      conversationId: conversation.id,
-    });
-    return;
-  }
-
-  // Load lead_memory for the handoff payload.
-  const { data: memRow } = await admin
-    .from("lead_memory")
-    .select("*")
-    .eq("conversation_id", conversation.id)
-    .maybeSingle();
-
-  // Load agent meeting config to populate meeting_end_at + payload shape.
-  let meetingTypeId: string | null = null;
-  let meetingDurationMinutes = 30;
-  let agentName = "";
-  if (conversation.agent_id) {
-    const { data: agentRow } = await admin
-      .from("agents")
-      .select("name, meeting_type_id, meeting_duration_minutes")
-      .eq("id", conversation.agent_id)
-      .maybeSingle();
-    if (agentRow) {
-      meetingTypeId = (agentRow.meeting_type_id as string | null | undefined) ?? null;
-      meetingDurationMinutes =
-        (agentRow.meeting_duration_minutes as number | null | undefined) ?? 30;
-      agentName = (agentRow.name as string | undefined) ?? "";
-    }
-  }
-
-  const meetingEndAtIso = new Date(
-    new Date(scheduledAt).getTime() + meetingDurationMinutes * 60_000,
-  ).toISOString();
-  const il = formatJerusalemTime(scheduledAt);
-  const ilEnd = formatJerusalemTime(meetingEndAtIso);
-  const dashboardBase = dashboardBaseUrl?.replace(/\/$/, "") ?? null;
-
-  const handoffConv: HandoffConversation = {
-    id: conversation.id,
-    lead_phone: conversation.lead_phone,
-    lead_name: conversation.lead_name ?? booking.customer_name ?? null,
-    status: "paused",
-    current_tag: "zoom_scheduled",
-    funnel_stage: "done",
-    zoom_scheduled_at: scheduledAt,
-    qualified_at_il_date: il.date,
-    qualified_at_il_time: il.time,
-    qualified_at_il_datetime: il.datetime,
-    meeting_type_id: meetingTypeId,
-    meeting_duration_minutes: meetingDurationMinutes,
-    meeting_end_at: meetingEndAtIso,
-    meeting_end_at_il_datetime: ilEnd.datetime,
-    source_campaign: conversation.source_campaign,
-    source_funnel: conversation.source_funnel,
-    created_at: conversation.created_at,
-    dashboard_url: dashboardBase
-      ? `${dashboardBase}/conversations/${conversation.id}`
-      : null,
-  };
-  const handoffMem: HandoffLeadMemory = {
-    q1_age: (memRow?.q1_age as number | null | undefined) ?? null,
-    q2_motivation: (memRow?.q2_motivation as string | null | undefined) ?? null,
-    q3_dream_change: (memRow?.q3_dream_change as string | null | undefined) ?? null,
-    q4_blocker: (memRow?.q4_blocker as string | null | undefined) ?? null,
-    q5_urgency: (memRow?.q5_urgency as string | null | undefined) ?? null,
-    q6_investment: (memRow?.q6_investment as string | null | undefined) ?? null,
-    q7_email: (memRow?.q7_email as string | null | undefined) ?? booking.customer_email ?? null,
-    meeting_consented_at: new Date().toISOString(),
-    conversation_summary: (memRow?.conversation_summary as string | null | undefined) ?? null,
-    primary_objection: (memRow?.primary_objection as string | null | undefined) ?? null,
-    red_flags: ((memRow?.red_flags as string[] | null | undefined) ?? []),
-    notes_for_advisor: (memRow?.notes_for_advisor as string | null | undefined) ?? null,
-  };
-  const payload = buildHandoffPayload({
-    agentId: conversation.agent_id ?? "",
-    agentName,
-    conversation: handoffConv,
-    leadMemory: handoffMem,
-    now: scheduledAt,
-  });
-  const fireResult = await fireHandoffWebhook({
-    url: handoffWebhookUrl,
-    secret: handoffWebhookSecret,
-    payload,
-  });
-  if (!fireResult.ok) {
-    await logError({
-      admin,
-      source: SOURCE,
-      errorType: "handoff_webhook_failed",
-      message: `handoff webhook failed status=${fireResult.status} attempts=${fireResult.attempts} terminal=${fireResult.terminal}`,
-      context: {
-        status: fireResult.status,
-        body: fireResult.errorBody,
-        attempts: fireResult.attempts,
-        terminal: fireResult.terminal,
-      },
-      conversationId: conversation.id,
-      agentId: conversation.agent_id ?? undefined,
-    });
-  }
+  // See project note: duplicate_zoom_cross_product.
 }
 
 async function handleCancelled(args: {
@@ -577,25 +445,4 @@ async function handleCancelled(args: {
     conversationId: conversation.id,
     agentId: conversation.agent_id ?? undefined,
   });
-}
-
-function formatJerusalemTime(utcIso: string): { date: string; time: string; datetime: string } {
-  try {
-    const d = new Date(utcIso);
-    const opts: Intl.DateTimeFormatOptions = { timeZone: "Asia/Jerusalem" };
-    const date = d.toLocaleDateString("en-CA", { ...opts, year: "numeric", month: "2-digit", day: "2-digit" });
-    const time = d.toLocaleTimeString("he-IL", { ...opts, hour: "2-digit", minute: "2-digit", hour12: false });
-    const datetimeParts = d.toLocaleString("he-IL", {
-      ...opts,
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    });
-    return { date, time, datetime: datetimeParts };
-  } catch {
-    return { date: utcIso, time: utcIso, datetime: utcIso };
-  }
 }

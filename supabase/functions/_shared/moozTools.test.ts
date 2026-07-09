@@ -75,6 +75,9 @@ function makeMoozStub(opts: {
   slots?: MoozAvailableSlot[];
   slotsError?: Error;
   bookingResult?: MoozCreateBookingResult;
+  /** Result of the cross-product dedup lookup. Defaults to not-booked so
+   *  existing happy-path tests proceed into createBooking. */
+  lookup?: Awaited<ReturnType<MoozClient["lookupByPhone"]>>;
 }): MoozClient {
   return {
     listAvailableSlots: async () => {
@@ -83,6 +86,7 @@ function makeMoozStub(opts: {
     },
     createBooking: async () =>
       opts.bookingResult ?? { ok: true, booking: bookingFixture() },
+    lookupByPhone: async () => opts.lookup ?? { booked: false },
   } as unknown as MoozClient;
 }
 
@@ -209,9 +213,10 @@ describe("dispatchMoozTool — list_available_slots", () => {
 
 describe("dispatchMoozTool — book_meeting", () => {
   it("blocks (defense in depth) when the lead has not cleared the floor", async () => {
-    // Only 2 of 5 answered → below the floor.
+    // Neither a goal (q3) nor a pain (q4) surfaced → below the v3 floor
+    // (zoomGate.ts: the lead must have at least one of goal / pain).
     const { admin, calls } = makeAdmin({
-      leadMemory: { q3_dream_change: "עצמאות", q4_blocker: "אין זמן" },
+      leadMemory: { q1_age: 30, q5_urgency: "החודש" },
     });
     const ctx = makeCtx(makeMoozStub({}), admin);
     const r = await dispatchMoozTool(
@@ -268,6 +273,70 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(parsed.next_step).toContain(
       "הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה",
     );
+  });
+
+  it("blocks a second booking when the lead already has a future zoom (any product)", async () => {
+    const { admin, calls } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: true, scheduledAt: VALID_UTC, meetingId: "m-1" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+      },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(parsed.reason).toBe("already_booked");
+    expect(r.bookingCreated).toBe(false);
+    // Guard returns before createBooking → no DB writes at all.
+    expect(calls.find((c) => c.table === "conversations")).toBeUndefined();
+  });
+
+  it("allows the booking on an explicit reschedule, even if already booked", async () => {
+    const { admin } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: true, scheduledAt: VALID_UTC, meetingId: "m-1" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+        lead_requested_reschedule: true,
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
+    expect(JSON.parse(r.resultJson).success).toBe(true);
+  });
+
+  it("fails open — proceeds to book when the dedup lookup errors", async () => {
+    const { admin } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: false, error: "MOOZ_API_TOKEN not configured" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
   });
 
   it("slot_full surfaces slot_unavailable with retry guidance and does NOT update DB", async () => {

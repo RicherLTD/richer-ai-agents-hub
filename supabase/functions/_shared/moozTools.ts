@@ -97,6 +97,13 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
             "leaving / that the conversation is too deep for them — bypasses the warming floor. " +
             "Do NOT set it just to force a booking.",
         },
+        lead_requested_reschedule: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asks to MOVE or CHANGE an existing meeting to a " +
+            "different time. Bypasses the 'already booked' guard so Mooz can replace the prior slot. " +
+            "NEVER set it for a first-time booking, and never just to force a booking through.",
+        },
       },
       required: ["start_time", "end_time", "lead_name", "lead_email"],
     },
@@ -371,6 +378,34 @@ async function handleBookMeeting(
     };
   }
 
+  // Cross-product dedup guard (defense in depth). If this lead already has a
+  // FUTURE confirmed Zoom in ANY product, do NOT create a second one — that
+  // cross-product duplicate is exactly what we are preventing. lookupByPhone
+  // is cross-org (nearest future booking for the phone across all products),
+  // so it also catches a booking made by the other agent or by self-service.
+  // Bypass only on an explicit reschedule (Mooz replaces the prior slot).
+  // Fail-open: on a lookup error / missing MOOZ_API_TOKEN we proceed rather
+  // than block a legitimate first booking.
+  const requestedReschedule =
+    (input as { lead_requested_reschedule?: unknown } | null)?.lead_requested_reschedule === true;
+  if (!requestedReschedule) {
+    const existing = await ctx.mooz.lookupByPhone(ctx.leadPhone);
+    if (existing.booked === true) {
+      return {
+        resultJson: JSON.stringify({
+          blocked: true,
+          reason: "already_booked",
+          existing_scheduled_at: existing.scheduledAt,
+          guidance:
+            "ללִיד כבר יש פגישת זום עתידית מתואמת (בכל מוצר). אל תקבע פגישה נוספת ואל תקרא ל-book_meeting שוב. " +
+            "אשר בקצרה שאתה רואה שכבר קבועה לו פגישה. רק אם הליד מבקש מפורשות להזיז/לשנות מועד — קרא ל-book_meeting עם lead_requested_reschedule=true.",
+        }),
+        bookingCreated: false,
+        offeredTimesIL: [],
+      };
+    }
+  }
+
   const result = await ctx.mooz.createBooking({
     meetingTypeId: ctx.meetingTypeId,
     customerName: parsed.leadName,
@@ -429,9 +464,10 @@ async function handleBookMeeting(
   }
 
   // Success path: tag the conversation so the dashboard reflects reality
-  // immediately. The handoff webhook is fired separately by `mooz-webhook`
-  // when Mooz's own `booking.created` event arrives — that prevents a
-  // double-fire if the bot retries.
+  // immediately. The Fireberry meeting + advisor notification are written by
+  // Mooz's own native scenario (Make 4491366) off the `booking.created` event
+  // — we no longer fire our own handoff for real bookings (that caused the
+  // cross-product double-write; see mooz-webhook + project note).
   await updateConversationOnBooking({
     admin: ctx.admin,
     conversationId: ctx.conversationId,
