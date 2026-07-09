@@ -116,6 +116,63 @@ describe("MoozClient.createBooking", () => {
     expect(sentBody.timezone).toBe("Asia/Jerusalem");
   });
 
+  it("sends hidden_fields.product when a productCode is provided", async () => {
+    const { fetchImpl, calls } = makeFetch(() => ({
+      status: 201,
+      body: JSON.stringify({
+        data: {
+          id: "book-1",
+          meeting_type_id: "uuid-1",
+          customer_name: "Shlomo",
+          customer_email: "s@example.com",
+          start_time: VALID_UTC,
+          end_time: VALID_END,
+          timezone: "Asia/Jerusalem",
+          status: "confirmed",
+        },
+      }),
+    }));
+    const mooz = new MoozClient({ orgApiKey: "k", fetchImpl });
+    await mooz.createBooking({
+      meetingTypeId: "uuid-1",
+      customerName: "Shlomo",
+      customerEmail: "s@example.com",
+      startTime: VALID_UTC,
+      endTime: VALID_END,
+      productCode: "R",
+    });
+    const sentBody = JSON.parse(calls[0].body ?? "{}");
+    expect(sentBody.hidden_fields).toEqual({ product: "R" });
+  });
+
+  it("omits hidden_fields entirely when no productCode is set", async () => {
+    const { fetchImpl, calls } = makeFetch(() => ({
+      status: 201,
+      body: JSON.stringify({
+        data: {
+          id: "book-1",
+          meeting_type_id: "uuid-1",
+          customer_name: "Shlomo",
+          customer_email: "s@example.com",
+          start_time: VALID_UTC,
+          end_time: VALID_END,
+          timezone: "Asia/Jerusalem",
+          status: "confirmed",
+        },
+      }),
+    }));
+    const mooz = new MoozClient({ orgApiKey: "k", fetchImpl });
+    await mooz.createBooking({
+      meetingTypeId: "uuid-1",
+      customerName: "Shlomo",
+      customerEmail: "s@example.com",
+      startTime: VALID_UTC,
+      endTime: VALID_END,
+    });
+    const sentBody = JSON.parse(calls[0].body ?? "{}");
+    expect("hidden_fields" in sentBody).toBe(false);
+  });
+
   it("409 'fully booked' maps to slot_full", async () => {
     const { fetchImpl } = makeFetch(() => ({
       status: 409,

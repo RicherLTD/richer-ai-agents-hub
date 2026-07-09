@@ -117,6 +117,12 @@ export interface MoozDispatchCtx {
   conversationId: string;
   agentId: string;
   leadPhone: string;
+  /** Fireberry product code for this agent's track ("B" affiliate / "R"
+   *  digital). Threaded into book_meeting so the Mooz booking carries
+   *  `hidden_fields.product` and reaches the right product downstream.
+   *  Null when the agent has no code configured (booking still succeeds;
+   *  it just won't be product-tagged). */
+  productCode?: string | null;
 }
 
 /** What we hand back to Claude as the tool_result content. */
@@ -373,6 +379,7 @@ async function handleBookMeeting(
     startTime: parsed.startTime,
     endTime: parsed.endTime,
     notes: agentBookingNote(ctx.conversationId),
+    productCode: ctx.productCode ?? null,
   });
 
   if (!result.ok) {

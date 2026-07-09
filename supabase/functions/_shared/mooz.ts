@@ -56,6 +56,13 @@ export interface MoozCreateBookingArgs {
   /** Optional override; defaults to Asia/Jerusalem on Mooz side. */
   timezone?: string;
   notes?: string;
+  /** Fireberry product code for the booking's track ("B" affiliate / "R"
+   *  digital). Emitted as Mooz `hidden_fields.product` so Mooz's native
+   *  Fireberry scenario (Make 4491366) can route the booking to the correct
+   *  product — the same field the hosted booking page injects for
+   *  self-service. Without it, bot bookings reach Mooz with no product tag
+   *  and the product-scoped lead lookup fails. */
+  productCode?: string | null;
 }
 
 export interface MoozBooking {
@@ -162,6 +169,9 @@ export class MoozClient {
       end_time: args.endTime,
       timezone: args.timezone ?? "Asia/Jerusalem",
       notes: args.notes ?? undefined,
+      // Product tag for downstream Fireberry routing. Only sent when
+      // configured — an unset code must not emit an empty hidden_fields.
+      hidden_fields: args.productCode ? { product: args.productCode } : undefined,
     };
     let res: Response;
     try {
