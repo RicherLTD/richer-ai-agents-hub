@@ -77,3 +77,49 @@ export async function cancelBroadcast(broadcastId: string): Promise<void> {
   const { error } = await supabase.from("broadcasts").update({ status: "cancelled" }).eq("id", broadcastId);
   if (error) throw error;
 }
+
+export interface BroadcastTemplateFull {
+  id: string;
+  agent_id: string;
+  name: string;
+  language: string;
+  label: string;
+  variable_count: number;
+  body_preview: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface NewBroadcastTemplate {
+  agent_id: string;
+  name: string;
+  language: string;
+  label: string;
+  variable_count: number;
+  body_preview: string | null;
+}
+
+export async function listAllBroadcastTemplates(agentId: string): Promise<BroadcastTemplateFull[]> {
+  const { data, error } = await supabase
+    .from("broadcast_templates")
+    .select("id, agent_id, name, language, label, variable_count, body_preview, is_active, created_at")
+    .eq("agent_id", agentId)
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as BroadcastTemplateFull[];
+}
+
+export async function createBroadcastTemplate(input: NewBroadcastTemplate): Promise<void> {
+  const { error } = await supabase.from("broadcast_templates").insert(input);
+  if (error) throw error;
+}
+
+export async function setBroadcastTemplateActive(id: string, isActive: boolean): Promise<void> {
+  const { error } = await supabase.from("broadcast_templates").update({ is_active: isActive }).eq("id", id);
+  if (error) throw error;
+}
+
+export async function deleteBroadcastTemplate(id: string): Promise<void> {
+  const { error } = await supabase.from("broadcast_templates").delete().eq("id", id);
+  if (error) throw error;
+}
