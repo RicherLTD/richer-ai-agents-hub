@@ -261,3 +261,28 @@ export async function getTemplateFunnel(
     range,
   );
 }
+
+export async function getBroadcastFunnel(
+  agentId: string,
+  broadcastId: string,
+): Promise<TemplateFunnelRow[]> {
+  const [sendsRes, convsRes] = await Promise.all([
+    supabase
+      .from("scheduled_messages")
+      .select("template_name, status, sent_at, created_at, delivered_at, read_at, lead_phone")
+      .eq("agent_id", agentId)
+      .eq("broadcast_id", broadcastId)
+      .limit(SAFETY_LIMIT),
+    supabase
+      .from("conversations")
+      .select("lead_phone, last_inbound_at, current_tag, zoom_booked_by")
+      .eq("agent_id", agentId)
+      .limit(SAFETY_LIMIT),
+  ]);
+  if (sendsRes.error) throw new Error(`Failed to load broadcast sends: ${sendsRes.error.message}`);
+  if (convsRes.error) throw new Error(`Failed to load conversations: ${convsRes.error.message}`);
+  return aggregateTemplateFunnel(
+    (sendsRes.data ?? []) as unknown as SendRow[],
+    (convsRes.data ?? []) as unknown as ConversationOutcomeRow[],
+  );
+}
