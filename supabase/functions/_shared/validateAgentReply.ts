@@ -62,13 +62,22 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   // "מתעלה" / "התעלה". The lookbehind says: only match these tokens when
   // they are NOT preceded by another Hebrew letter (i.e. they stand as
   // their own word).
+  //
+  // The trailing number group was tightened to avoid false-positives on
+  // innocent 2-digit numbers (e.g. "התוכנית בנויה מ-12 שלבים", "בני 25"):
+  // either a 4+ digit bare number (likely a price amount) OR a 2+ digit
+  // number that is immediately followed by an explicit currency/unit token.
   {
-    pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}\d{2,}[\s]*(?:אלף|אלפים|K|k)?/,
+    pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}(?:\d{4,}|\d{2,}[\s]*(?:אלף|אלפים|K\b|k\b|₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
   },
   // Standalone large numbers paired with money words (אלף / K / אלפים).
+  // Tightened to avoid false-positives on non-price contexts like
+  // "2 אלף לידים" or "300 אלף בוגרים": we require EITHER a price-context
+  // word before the number (Alt A) OR an explicit currency symbol immediately
+  // after (Alt B). A bare "X אלף" with no price anchor is allowed through.
   {
-    pattern: /\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)/,
+    pattern: /(?:(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,60}\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)|\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)\s*(?:₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
   },
   // Income guarantees — narrow set of legally-binding terms ONLY.
@@ -81,8 +90,20 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     pattern: /מובטח(?:ת|ים|ות)?|ערבות/,
     reason: "income_guarantee",
   },
+  // Income-verb + time-window without a concrete number: only fire when an
+  // income-related word (כסף / הכנסה / סכום / הרבה / טוב / גדול) appears
+  // between the verb and the time-window.  This prevents false-positives on
+  // conditional/motivational language like "אם תעשה את זה כמו שצריך תראה
+  // שינוי בחודש-חודשיים" (no income noun → not blocked) while still catching
+  // qualitative promises like "תעשה הרבה כסף בשנה" or "תרוויחי טוב בחודש".
   {
-    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
+    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}(?:כסף|הכנסה|סכום|הרבה|טוב|גדול)[^.!?\n]{0,20}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
+    reason: "income_guarantee",
+  },
+  // Income-verb + explicit number + time-window: catches "תרוויח 5000 בחודש"
+  // regardless of what words appear around the number.
+  {
+    pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}\d+[^.!?\n]{0,20}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
     reason: "income_guarantee",
   },
 ];
@@ -97,15 +118,30 @@ export function findHallucinationReason(text: string): string | null {
 /** HH:MM time pattern. Catches "12:45", "14:30", "9:00", "09:30", and the
  *  most common forms an Israeli speaker would write. Bare time only — we
  *  do NOT block day names ("מחר", "ראשון") because the bot legitimately
- *  needs to ask "when is good?" without committing to a slot. */
-const TIME_HH_MM_RE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/;
+ *  needs to ask "when is good?" without committing to a slot.
+ *
+ *  `g` flag so we can enumerate EVERY time mentioned in a reply (the bot
+ *  may offer two slots in one message) and check each one against the
+ *  grounded allow-list. */
+const TIME_HH_MM_RE = /\b(?:[01]?\d|2[0-3]):[0-5]\d\b/g;
+
+/** Canonicalise an "HH:MM" token so "09:30" and "9:30" compare equal.
+ *  Drops a leading zero on the hour; keeps the minute 2-digit. */
+function normalizeHHMM(token: string): string {
+  const m = /(\d{1,2}):([0-5]\d)/.exec(token);
+  if (!m) return token;
+  return `${parseInt(m[1], 10)}:${m[2]}`;
+}
 
 export interface ValidateOptions {
-  /** True when the assistant called a Mooz tool (list_available_slots or
-   *  book_meeting) in this turn. When false, mentions of specific HH:MM
-   *  times are blocked — the bot may not invent meeting times without
-   *  a tool call backing them. */
-  hasMoozToolUseThisTurn?: boolean;
+  /** The set of meeting times (Asia/Jerusalem "HH:MM") the bot is allowed
+   *  to state THIS turn — every slot that came back from
+   *  list_available_slots / book_meeting this turn, plus any existing
+   *  booking time from the Mooz pre-check lookup. Any HH:MM in the reply
+   *  that is NOT in this set is treated as an invented meeting time and
+   *  blocked. Defaults to empty, so a reply that names a time without any
+   *  tool grounding is always rejected — the bot may never invent times. */
+  allowedMeetingTimes?: ReadonlyArray<string>;
 }
 
 export function validateAgentReply(
@@ -129,8 +165,21 @@ export function validateAgentReply(
   if (hallucination) {
     return { ok: false, reason: `hallucination_${hallucination}` };
   }
-  if (!opts.hasMoozToolUseThisTurn && TIME_HH_MM_RE.test(text)) {
-    return { ok: false, reason: "invented_meeting_time" };
+  // Invented-meeting-time guard. Grounded in the real Mooz tool results:
+  // every HH:MM the bot states must be a slot that list_available_slots /
+  // book_meeting actually returned this turn (or an existing booking from
+  // the pre-check). A tool merely *running* is not enough — the model can
+  // call list_available_slots, get [] or a set that excludes 21:30, and
+  // then state 21:30 anyway. We compare each mentioned time against the
+  // allow-list and reject any that wasn't offered.
+  const stated = text.match(TIME_HH_MM_RE);
+  if (stated && stated.length > 0) {
+    const allowed = new Set((opts.allowedMeetingTimes ?? []).map(normalizeHHMM));
+    for (const t of stated) {
+      if (!allowed.has(normalizeHHMM(t))) {
+        return { ok: false, reason: "invented_meeting_time" };
+      }
+    }
   }
   return { ok: true, text };
 }

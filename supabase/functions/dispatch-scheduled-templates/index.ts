@@ -1,5 +1,11 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
+import { alertOperators } from "../_shared/alertOperators.ts";
+import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
+import { partitionOptedOut } from "../_shared/optOutFilter.ts";
+import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
+
+const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
 function j(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
@@ -116,40 +122,105 @@ Deno.serve(async (req) => {
   const limit = Number.isFinite(limitRaw) && limitRaw > 0 && limitRaw <= 200 ? limitRaw : 50;
   const nowIso = new Date().toISOString();
   const { data: candidates, error: pickErr } = await admin
-    .from("scheduled_messages")
-    .select("id, agent_id, conversation_id, lead_phone, template_name, template_language, template_variables, attempts, agents!inner(is_paused, quiet_hours_start_il, quiet_hours_end_il), conversations(manual_mode_since)")
-    .eq("status", "pending")
-    .lte("scheduled_for", nowIso)
-    .eq("agents.is_paused", false)
-    .order("scheduled_for", { ascending: true })
-    .limit(limit);
+    .rpc("claim_scheduled_messages", { p_limit: limit, p_now: nowIso });
   if (pickErr) return j({ error: pickErr.message }, 500);
   type Row = {
     id: string;
     agent_id: string;
     conversation_id: string | null;
     lead_phone: string;
+    lead_name: string | null;
     template_name: string;
     template_language: string;
     template_variables: unknown;
     attempts: number;
-    agents: { is_paused: boolean; quiet_hours_start_il: number | null; quiet_hours_end_il: number | null };
-    conversations: { manual_mode_since: string | null } | null;
+    agent_is_paused: boolean;
+    agent_quiet_hours_start_il: number | null;
+    agent_quiet_hours_end_il: number | null;
+    conversation_status: string | null;
+    conversation_current_tag: string | null;
+    conversation_manual_mode_since: string | null;
   };
   const rows = (candidates ?? []) as unknown as Row[];
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0 };
-  for (const row of rows) {
-    if (isQuietHourNow({ startIl: row.agents.quiet_hours_start_il, endIl: row.agents.quiet_hours_end_il })) {
-      results.deferred_quiet_hours++;
+
+  // Phone-level opt-out re-check (belt-and-suspenders). A lead can opt out
+  // AFTER a row was enqueued (e.g. a broadcast queued minutes ago). The
+  // conversation-tag/status check inside the loop only catches opt-outs already
+  // reflected as a conversation tag; this reads the opt_outs table directly and
+  // cancels — never sends. Non-opted-out rows are untouched (identical path).
+  const batchPhones = [
+    ...new Set(rows.map((r) => toCanonicalPhone(r.lead_phone)).filter((p): p is string => !!p)),
+  ];
+  const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
+  const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
+  let auth401AlertSent = false;
+
+  // Per-channel WhatsApp credentials. The dispatcher serves ALL agents, so it
+  // must send each agent's template FROM that agent's own channel — otherwise
+  // Meta rejects the template with #132001 (the template lives on the agent's
+  // WABA, not the global/affiliate one). Keyed by whatsapp_phone_number_id;
+  // any agent whose channel isn't explicitly configured falls back to the
+  // global (affiliate) creds — i.e. unchanged behavior for affiliate.
+  const channelByPhoneId = new Map<string, { apiUrl: string; token: string }>();
+  const addChannel = (pid?: string | null, u?: string | null, t?: string | null) => {
+    if (pid && u && t) channelByPhoneId.set(pid, { apiUrl: u, token: t });
+  };
+  addChannel(phoneId, apiUrl, token); // affiliate / default (unsuffixed env)
+  addChannel(
+    Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
+    Deno.env.get("WHATSAPP_API_URL_DM"),
+    Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
+  );
+  // Map each batch agent_id -> its whatsapp_phone_number_id (from the DB).
+  const agentPhoneById = new Map<string, string>();
+  const batchAgentIds = [...new Set(rows.map((r) => r.agent_id))];
+  if (batchAgentIds.length > 0) {
+    const { data: agentRows } = await admin
+      .from("agents")
+      .select("id, whatsapp_phone_number_id")
+      .in("id", batchAgentIds);
+    for (const a of agentRows ?? []) {
+      const pid = (a as { whatsapp_phone_number_id?: string | null }).whatsapp_phone_number_id;
+      if (pid) agentPhoneById.set(a.id as string, pid);
+    }
+  }
+  // Resolve the sending channel for a row's agent (falls back to global creds).
+  const channelFor = (agentId: string): { apiUrl: string; token: string; phoneId: string } => {
+    const pid = agentPhoneById.get(agentId);
+    const ch = pid ? channelByPhoneId.get(pid) : undefined;
+    return ch ? { apiUrl: ch.apiUrl, token: ch.token, phoneId: pid! } : { apiUrl, token, phoneId };
+  };
+  for (const row of optedOutRows) {
+    await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null, last_error: "opted_out_before_send" }).eq("id", row.id);
+    results.cancelled++;
+  }
+  for (const row of sendableRows) {
+    // Skip rows whose conversation is paused or in a terminal tag — the template
+    // would land in a conversation the agent cannot reply to. Cancel rather than
+    // defer so the row doesn't keep re-claiming.
+    if (
+      (row.conversation_status !== null && row.conversation_status !== "active") ||
+      (row.conversation_current_tag !== null && BLOCKING_TAGS.has(row.conversation_current_tag))
+    ) {
+      await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null }).eq("id", row.id);
+      results.cancelled = (results.cancelled ?? 0) + 1;
       continue;
     }
-    if (row.conversations?.manual_mode_since) {
+    if (row.conversation_manual_mode_since) {
       // Operator took manual control of this conversation — don't fire a
-      // queued template into an active human-handled chat. Row stays
-      // pending; next tick retries once the operator hands back to AI.
+      // queued template into an active human-handled chat. DEFER (not
+      // cancel): release the claim so the row stays pending and retries
+      // once the operator hands the conversation back to AI.
+      await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
       results.deferred_manual_mode++;
       continue;
     }
+    if (isQuietHourNow({ startIl: row.agent_quiet_hours_start_il, endIl: row.agent_quiet_hours_end_il })) {
+      results.deferred_quiet_hours++;
+      continue;
+    }
+    const ch = channelFor(row.agent_id);
     const variables: string[] = Array.isArray(row.template_variables)
       ? (row.template_variables as unknown[]).filter((v) => typeof v === "string") as string[]
       : [];
@@ -165,11 +236,24 @@ Deno.serve(async (req) => {
           : [{ type: "body", parameters: variables.map((v) => ({ type: "text", text: v })) }],
       },
     };
-    const res = await fetch(`${apiUrl}/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const ac = new AbortController();
+    const timer = setTimeout(() => ac.abort(), 15_000);
+    let res: Response;
+    try {
+      res = await fetch(`${ch.apiUrl}/${ch.phoneId}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${ch.token}`, "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+        signal: ac.signal,
+      });
+    } catch (fetchErr) {
+      clearTimeout(timer);
+      // Timeout or network error — clear claim so next tick can retry.
+      await admin.from("scheduled_messages").update({ claimed_at: null, attempts: row.attempts + 1 }).eq("id", row.id);
+      results.failed++;
+      continue;
+    }
+    clearTimeout(timer);
     const text = await res.text().catch(() => "");
     if (res.ok) {
       let wamid: string | null = null;
@@ -203,8 +287,33 @@ Deno.serve(async (req) => {
         agent_id: row.agent_id,
         conversation_id: row.conversation_id,
       });
+      // 401/403 = auth failure — retrying won't help; fail immediately and alert once per tick
+      if (res.status === 401 || res.status === 403) {
+        if (!auth401AlertSent && row.conversation_id) {
+          auth401AlertSent = true;
+          alertOperators({
+            admin,
+            apiUrl: ch.apiUrl,
+            accessToken: ch.token,
+            phoneNumberId: ch.phoneId,
+            agentId: row.agent_id,
+            conversationId: row.conversation_id,
+            leadPhone: row.lead_phone,
+            failureType: `template_auth_${res.status}`,
+            failureDetail: `WHATSAPP_ACCESS_TOKEN לא תקין — יש לחדש ב-Supabase Secrets`,
+          }).catch(() => {});
+        }
+        await admin.from("scheduled_messages").update({
+          status: "failed",
+          claimed_at: null,
+          last_error: `auth_error_${res.status}`,
+        }).eq("id", row.id);
+        results.failed++;
+        continue;
+      }
       await admin.from("scheduled_messages").update({
         status: row.attempts + 1 >= 3 ? "failed" : "pending",
+        claimed_at: row.attempts + 1 >= 3 ? undefined : null,  // release claim for retry
         attempts: row.attempts + 1,
         last_error: sanitised,
       }).eq("id", row.id);

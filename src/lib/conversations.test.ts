@@ -144,4 +144,27 @@ describe("getConversationById", () => {
 
     await expect(getConversationById("c1")).rejects.toThrow("Failed to load conversation: boom");
   });
+
+  it("filters by agent_id when expectedAgentId is provided", async () => {
+    const chain = makeChain({ data: null, error: null }, "maybeSingle");
+    fromMock.mockReturnValue(chain);
+
+    await getConversationById("c1", "agent-1");
+
+    const eqCalls = chain.calls.filter((c) => c.method === "eq");
+    expect(eqCalls).toEqual([
+      { method: "eq", args: ["id", "c1"] },
+      { method: "eq", args: ["agent_id", "agent-1"] },
+    ]);
+  });
+
+  it("does not filter by agent_id when expectedAgentId is omitted", async () => {
+    const chain = makeChain({ data: null, error: null }, "maybeSingle");
+    fromMock.mockReturnValue(chain);
+
+    await getConversationById("c1");
+
+    const eqCalls = chain.calls.filter((c) => c.method === "eq");
+    expect(eqCalls).toEqual([{ method: "eq", args: ["id", "c1"] }]);
+  });
 });

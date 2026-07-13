@@ -57,12 +57,15 @@ export async function getActiveConversations(
   return data ?? [];
 }
 
-export async function getConversationById(id: string): Promise<Conversation | null> {
-  const { data, error } = await supabase
-    .from("conversations")
-    .select("*")
-    .eq("id", id)
-    .maybeSingle();
+export async function getConversationById(
+  id: string,
+  expectedAgentId?: string,
+): Promise<Conversation | null> {
+  let query = supabase.from("conversations").select("*").eq("id", id);
+  if (expectedAgentId) {
+    query = query.eq("agent_id", expectedAgentId);
+  }
+  const { data, error } = await query.maybeSingle();
   if (error) {
     throw new Error(`Failed to load conversation: ${error.message}`);
   }

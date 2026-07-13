@@ -1,4 +1,4 @@
-import { Bot, FileText, Home, LogOut, MessageCircle, Settings, Users } from "lucide-react";
+import { Bot, FileText, Home, LogOut, MessageCircle, Send, Settings, Users } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -41,6 +41,7 @@ const NAV_ITEMS: NavItem[] = [
   { title: "שיחות פעילות", url: "/conversations", icon: MessageCircle, end: false },
   { title: "ניהול Prompts", url: "/prompts", icon: FileText, end: false },
   { title: "מאמן הבוט", url: "/coach", icon: Bot, end: false, adminOnly: true },
+  { title: "דיוור", url: "/broadcasts", icon: Send, end: false, adminOnly: true },
   { title: "הגדרות", url: "/settings", icon: Settings, end: false },
 ];
 

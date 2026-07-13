@@ -17,9 +17,12 @@
 // truth, no double-fire even if the bot retries.
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { agentBookingNote } from "./moozBookingSource.ts";
 import type Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
 import { logError } from "./logError.ts";
+import { meetsZoomQualificationFloor } from "./zoomGate.ts";
+import { formatIlHHMM } from "./ilTime.ts";
 
 /** Anthropic tool definitions — passed verbatim to messages.create({tools}). */
 export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
@@ -47,6 +50,14 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
             "3 when they said 'sometime this week', up to 7 maximum.",
           minimum: 1,
           maximum: 7,
+        },
+        lead_requested_booking: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asked to schedule (e.g. 'תקבע לי שיחה', 'בוא נקבע'), " +
+            "OR signaled they're leaving / that the conversation is too deep/too much for them. " +
+            "This bypasses the warming floor so a ready or at-risk lead is never lost. " +
+            "Do NOT set it just to force a booking — only on a genuine explicit request or exit-risk.",
         },
       },
       required: ["preferred_date"],
@@ -79,6 +90,13 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
           type: "string",
           description: "Lead's email address.",
         },
+        lead_requested_booking: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asked to schedule, OR signaled they're " +
+            "leaving / that the conversation is too deep for them — bypasses the warming floor. " +
+            "Do NOT set it just to force a booking.",
+        },
       },
       required: ["start_time", "end_time", "lead_name", "lead_email"],
     },
@@ -99,6 +117,12 @@ export interface MoozDispatchCtx {
   conversationId: string;
   agentId: string;
   leadPhone: string;
+  /** Fireberry product code for this agent's track ("B" affiliate / "R"
+   *  digital). Threaded into book_meeting so the Mooz booking carries
+   *  `hidden_fields.product` and reaches the right product downstream.
+   *  Null when the agent has no code configured (booking still succeeds;
+   *  it just won't be product-tagged). */
+  productCode?: string | null;
 }
 
 /** What we hand back to Claude as the tool_result content. */
@@ -108,6 +132,20 @@ export interface MoozDispatchResult {
   /** True only when book_meeting succeeded — caller can use this to
    *  short-circuit further loop iterations / log a milestone. */
   bookingCreated: boolean;
+  /** Asia/Jerusalem "HH:MM" times this tool call legitimately surfaced —
+   *  the start+end of every slot returned by list_available_slots, or the
+   *  booked slot from book_meeting. The agent loop unions these across the
+   *  turn and feeds them to validateAgentReply as the allow-list, so the
+   *  model can only state times that Mooz actually offered. Empty on every
+   *  blocked / error / no-slot path — there is nothing legitimate to say. */
+  offeredTimesIL: string[];
+}
+
+/** Collect the IL HH:MM of a slot's start AND end. The bot usually states
+ *  the start, but a confirmation can mention the end too — both are
+ *  grounded in real Mooz data, so both are safe to allow. */
+function slotTimesIL(s: { start: string; end: string }): string[] {
+  return [formatIlHHMM(s.start), formatIlHHMM(s.end)].filter((t) => t.length > 0);
 }
 
 /**
@@ -129,6 +167,54 @@ export async function dispatchMoozTool(
   return {
     resultJson: JSON.stringify({ error: `unknown tool: ${name}` }),
     bookingCreated: false,
+    offeredTimesIL: [],
+  };
+}
+
+// ─── qualification gate ──────────────────────────────────────────────
+
+/**
+ * Deterministic backstop that stops the bot from offering or booking a Zoom
+ * before the lead is warm enough. Reads lead_memory (as of the last
+ * extraction — a one-turn lag is fine, it errs toward more warming) and runs
+ * the floor: goal (q3) + pain (q4) + >=3 of the 5 core questions. Returns a
+ * blocking tool_result when unmet, or null to let the tool proceed.
+ */
+async function checkQualificationGate(
+  ctx: MoozDispatchCtx,
+  requestedBooking: boolean,
+): Promise<MoozDispatchResult | null> {
+  // Explicit lead request / exit-risk — the business priority is the Zoom, so
+  // an explicit "book me" (or a lead signaling they're leaving) bypasses the
+  // warming floor entirely. The prompt is instructed to set this flag ONLY in
+  // those cases, never just to force a booking.
+  if (requestedBooking) return null;
+  const { data: mem } = await ctx.admin
+    .from("lead_memory")
+    .select("q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency")
+    .eq("conversation_id", ctx.conversationId)
+    .maybeSingle();
+  const row = (mem ?? {}) as Record<string, unknown>;
+  const gate = meetsZoomQualificationFloor({
+    q1_age: (row.q1_age as number | null) ?? null,
+    q2_motivation: (row.q2_motivation as string | null) ?? null,
+    q3_dream_change: (row.q3_dream_change as string | null) ?? null,
+    q4_blocker: (row.q4_blocker as string | null) ?? null,
+    q5_urgency: (row.q5_urgency as string | null) ?? null,
+  });
+  if (gate.ok) return null;
+  return {
+    resultJson: JSON.stringify({
+      blocked: true,
+      reason: "lead_not_qualified_yet",
+      missing: gate.missing,
+      guidance:
+        "עוד מוקדם להציע או לקבוע פגישה. עדיין חסר: " +
+        gate.missing.join("; ") +
+        ". תמשיך לחמם בטבעיות — תחפור בכאב ובמה שהליד באמת רוצה לשנות, ואל תזכיר פגישה עד שזה מתמלא.",
+    }),
+    bookingCreated: false,
+    offeredTimesIL: [],
   };
 }
 
@@ -138,11 +224,16 @@ async function handleListSlots(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
+  const requestedBooking =
+    (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const blocked = await checkQualificationGate(ctx, requestedBooking);
+  if (blocked) return blocked;
   const parsed = parseListInput(input);
   if (!parsed.ok) {
     return {
       resultJson: JSON.stringify({ error: parsed.error }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
   const { fromIso, toIso, lookaheadDays } = computeRange(
@@ -173,6 +264,7 @@ async function handleListSlots(
         error: "Couldn't reach Mooz right now. Tell the lead the scheduling system is briefly down and you'll come back to them shortly.",
       }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -194,6 +286,8 @@ async function handleListSlots(
           : "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.",
     }),
     bookingCreated: false,
+    // Allow-list for the time guard: only the slots we actually surfaced.
+    offeredTimesIL: trimmed.flatMap(slotTimesIL),
   };
 }
 
@@ -264,11 +358,16 @@ async function handleBookMeeting(
   input: unknown,
   ctx: MoozDispatchCtx,
 ): Promise<MoozDispatchResult> {
+  const requestedBooking =
+    (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const blocked = await checkQualificationGate(ctx, requestedBooking);
+  if (blocked) return blocked;
   const parsed = parseBookInput(input);
   if (!parsed.ok) {
     return {
       resultJson: JSON.stringify({ error: parsed.error }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -279,7 +378,8 @@ async function handleBookMeeting(
     customerPhone: ctx.leadPhone,
     startTime: parsed.startTime,
     endTime: parsed.endTime,
-    notes: `WhatsApp lead — conversation ${ctx.conversationId}`,
+    notes: agentBookingNote(ctx.conversationId),
+    productCode: ctx.productCode ?? null,
   });
 
   if (!result.ok) {
@@ -293,6 +393,7 @@ async function handleBookMeeting(
             "Slot was taken since you last looked. Apologize briefly, call list_available_slots again with the same preferred_date, and offer fresh options.",
         }),
         bookingCreated: false,
+        offeredTimesIL: [],
       };
     }
     if (result.kind === "invalid_input") {
@@ -304,6 +405,7 @@ async function handleBookMeeting(
             "Likely an invalid email. Ask the lead to confirm the address (אימייל) and try again.",
         }),
         bookingCreated: false,
+        offeredTimesIL: [],
       };
     }
     await logError({
@@ -322,6 +424,7 @@ async function handleBookMeeting(
           "Mooz couldn't complete the booking. Tell the lead the system is briefly down and a human will reach out shortly. Do not retry book_meeting in this turn.",
       }),
       bookingCreated: false,
+      offeredTimesIL: [],
     };
   }
 
@@ -349,6 +452,11 @@ async function handleBookMeeting(
         "Confirm the booking to the lead in one short message. Include the time in Israel timezone in natural Hebrew. ALWAYS include the line verbatim: \"הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה\". A short closing word ('בהצלחה!' or a single emoji) is fine after the line, but nothing more.",
     }),
     bookingCreated: true,
+    // The confirmed slot is the only time the bot should state now.
+    offeredTimesIL: slotTimesIL({
+      start: result.booking.start_time,
+      end: result.booking.end_time,
+    }),
   };
 }
 
@@ -399,6 +507,11 @@ async function updateConversationOnBooking(args: {
     .from("conversations")
     .update({
       current_tag: "zoom_scheduled",
+      // The bot itself booked this meeting in-chat — the only route that
+      // counts as an agent conversion. Set directly at the source so the
+      // attribution does not depend on the Mooz webhook arriving (migration
+      // 0033). 'agent' is the top of the never-downgrade precedence.
+      zoom_booked_by: "agent",
       funnel_stage: "done",
       status: "paused",
       zoom_scheduled_at: args.scheduledAt,

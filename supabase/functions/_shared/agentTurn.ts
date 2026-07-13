@@ -77,6 +77,10 @@ export interface AgentTurnResult {
   iterations: number;
   hadToolUse: boolean;
   bookingCreated: boolean;
+  /** Asia/Jerusalem "HH:MM" times surfaced by Mooz tools this turn (union
+   *  across all tool calls). The caller passes these to validateAgentReply
+   *  as the allow-list so the model can only state times Mooz offered. */
+  offeredTimesIL: string[];
   /** Final messages array (with assistant + tool_result blocks appended)
    *  — useful for Langfuse tracing the actual turn shape. */
   finalMessages: ClaudeMessage[];
@@ -93,6 +97,7 @@ export async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnRes
   let iterations = 0;
   let hadToolUse = false;
   let bookingCreated = false;
+  const offeredTimesIL = new Set<string>();
   let response: AnthropicTurnResponse = { content: [] };
 
   while (iterations < MAX_TOOL_ITERATIONS) {
@@ -136,6 +141,7 @@ export async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnRes
     for (const tu of toolUses) {
       const out = await dispatchMoozTool(tu.name, tu.input, args.moozCtx);
       if (out.bookingCreated) bookingCreated = true;
+      for (const t of out.offeredTimesIL) offeredTimesIL.add(t);
       toolResults.push({
         type: "tool_result",
         tool_use_id: tu.id,
@@ -149,7 +155,15 @@ export async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnRes
     throw new Error(`agentTurn: tool iteration cap (${MAX_TOOL_ITERATIONS}) reached without final reply`);
   }
 
-  return { response, totalUsage, iterations, hadToolUse, bookingCreated, finalMessages: messages };
+  return {
+    response,
+    totalUsage,
+    iterations,
+    hadToolUse,
+    bookingCreated,
+    offeredTimesIL: Array.from(offeredTimesIL),
+    finalMessages: messages,
+  };
 }
 
 function accumulateUsage(acc: AgentTurnUsage, u: AnthropicTurnResponse["usage"]): void {

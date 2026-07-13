@@ -291,6 +291,8 @@
 | Handoff | `meeting_consented_at` + `q7_email` חובה | handoff מוקדם לפני שהליד הסכים |
 | Dispatcher | Mooz pre-check (fail-closed) | קביעת זום כפולה / מספר לא ישראלי |
 | Dispatcher | `claimed_by_cron_id` atomic claim | race בין ticks אם tick גולש מעל 60s |
+| Dispatcher | opt-out re-check לפני שליחה (`opt_outs`) | ליד שביקש הסרה אחרי enqueue של דיוור — מבוטל, לא נשלח |
+| Broadcast | suppression ב־enqueue (opt_outs + tags חוסמים) | דיוור למי שביקש הסרה / כבר קבע זום — גם מ־CSV |
 | Brain | `injectionScan` | prompt injection ב־PDF שאופרטור מעלה |
 | RLS | מ־migration 0018: admin-only reads | אופרטור רגיל לא רואה נתוני לידים |
 
@@ -342,8 +344,9 @@
 |---|---|---|
 | **whatsapp-webhook** | HookMyApp POST | inbound + agent loop + memory + handoff (no-jwt, HMAC) |
 | **whatsapp-send** | Dashboard ReplyBox | שליחה ידנית של אופרטור (admin) |
+| **broadcast-enqueue** | Dashboard "דיוור" (admin) | דיוור רחב: בונה קהל (לידים קיימים ± CSV) + suppression (opt-out/tags חוסמים) → מזריק ל־scheduled_messages |
 | **lead-register** | Make.com (landing page) | קליטת ליד + enqueue first-touch template |
-| **dispatch-scheduled-templates** | pg_cron כל דקה | שליחת templates מתוזמנים (Mooz check + quiet hours) |
+| **dispatch-scheduled-templates** | pg_cron כל דקה | שליחת templates מתוזמנים (quiet hours + opt-out re-check לפני שליחה) |
 | **re-engage-cold-leads** | pg_cron | התראה ללידים cold ששתקו |
 | **brain-ingest** | Admin upload | חילוץ טקסט מ־PDF/תמונה (Sonnet) + injection scan |
 | **brain-sweep-stale** | pg_cron כל 10 דק׳ | מסמן brain documents תקועים כ־failed |
@@ -523,6 +526,17 @@
 | # | מה |
 |---|---|
 | 0028 | `coach_messages` ל־supabase_realtime publication |
+
+> הערה: migrations 0029–0041 (delivery status, mooz uuid/webhook, dedup, claim v2/v3, manual mode, digital-marketing agent, drop global phone unique, mooz product code) הוחלו בפרוד אך טרם תועדו כאן פרטנית.
+
+### Phase N: Broadcast (0042-0044)
+| # | מה |
+|---|---|
+| 0042 | `broadcasts` table + `broadcast_status_enum` (additive; דיוור כיחידה) |
+| 0043 | `broadcast_templates` registry (dropdown של templates מאושרים) + seed מ־`agents.first_touch_template_name` |
+| 0044 | `scheduled_messages.broadcast_id` (nullable FK; הזרימה הקיימת נשארת NULL) |
+
+**דיוור רחב**: אדמין בונה דיוור דרך דף "דיוור" → `broadcast-enqueue` מזריק שורות ל־`scheduled_messages` וה־dispatcher הקיים שולח. **Suppression דו-שלבי**: ב־enqueue (opt_outs + tags חוסמים) וב־dispatcher לפני שליחה (opt_outs re-check). אפיון + תוכנית: `docs/superpowers/`.
 
 ---
 

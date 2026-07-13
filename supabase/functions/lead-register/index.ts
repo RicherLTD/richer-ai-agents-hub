@@ -28,6 +28,7 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
+import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 
 const SOURCE = "lead-register";
 
@@ -54,18 +55,6 @@ function asTrimmedString(v: unknown): string | null {
   return t.length === 0 ? null : t;
 }
 
-/** Strict-ish E.164 normalisation. We accept three formats from Make:
- *  +972551234567 (E.164), 0551234567 (Israeli local), 972551234567 (no plus).
- *  Anything else → null and we 400.
- */
-function normaliseIsraeliPhone(raw: string): string | null {
-  const t = raw.trim().replace(/[\s\-()]/g, "");
-  if (/^\+972\d{8,9}$/.test(t)) return t;
-  if (/^972\d{8,9}$/.test(t)) return `+${t}`;
-  if (/^0\d{8,9}$/.test(t)) return `+972${t.slice(1)}`;
-  return null;
-}
-
 /** Email coercion mirrors extractMemory.asEmail. */
 function coerceEmail(v: unknown): string | null {
   if (typeof v !== "string") return null;
@@ -85,7 +74,7 @@ function coercePayload(raw: unknown): LeadRegisterPayload | null {
   const lead_phone_raw = asTrimmedString(o.lead_phone);
   const lead_name = asTrimmedString(o.lead_name);
   if (!agent_slug || !lead_phone_raw || !lead_name) return null;
-  const lead_phone = normaliseIsraeliPhone(lead_phone_raw);
+  const lead_phone = toCanonicalPhone(lead_phone_raw);
   if (!lead_phone) return null;
   return {
     agent_slug,
@@ -134,25 +123,66 @@ async function upsertConversation(
   agentId: string,
   payload: LeadRegisterPayload,
 ): Promise<string> {
-  const { data, error } = await admin
+  // UPDATE-first: touch only safe fields, never overwrite status/funnel stage.
+  // source_campaign / source_funnel are only set when the existing value is null
+  // (coalesce semantics via .is("source_campaign", null) guard is impractical in
+  // a single UPDATE — we rely on the DB defaults; if already set we skip them).
+  const updateSet: Record<string, string | null> = {};
+  if (payload.lead_name !== null) updateSet.lead_name = payload.lead_name;
+
+  const { count: updateCount, error: updateError } = await admin
     .from("conversations")
-    .upsert(
-      {
-        agent_id: agentId,
-        lead_phone: payload.lead_phone,
-        lead_name: payload.lead_name,
-        // First touch is OUTBOUND — conversation starts "active" because the
-        // bot is expected to handle the reply when it lands.
-        status: "active",
-        source_campaign: payload.source_campaign,
-        source_funnel: payload.source_funnel ?? payload.product,
-      },
-      { onConflict: "agent_id,lead_phone", ignoreDuplicates: false },
-    )
+    .update(updateSet)
+    .eq("agent_id", agentId)
+    .eq("lead_phone", payload.lead_phone)
+    .select("id", { count: "exact", head: true });
+
+  if (updateError) throw new Error(`update conversation failed: ${updateError.message}`);
+
+  if ((updateCount ?? 0) > 0) {
+    // Row already existed — fetch its id.
+    const { data: existing, error: selectError } = await admin
+      .from("conversations")
+      .select("id")
+      .eq("agent_id", agentId)
+      .eq("lead_phone", payload.lead_phone)
+      .single();
+    if (selectError) throw new Error(`select conversation failed: ${selectError.message}`);
+    return existing.id as string;
+  }
+
+  // Row did not exist — INSERT with status: "active".
+  // First touch is OUTBOUND — conversation starts "active" because the
+  // bot is expected to handle the reply when it lands.
+  const { data: inserted, error: insertError } = await admin
+    .from("conversations")
+    .insert({
+      agent_id: agentId,
+      lead_phone: payload.lead_phone,
+      lead_name: payload.lead_name,
+      status: "active",
+      source_campaign: payload.source_campaign,
+      source_funnel: payload.source_funnel ?? payload.product,
+    })
     .select("id")
     .single();
-  if (error) throw new Error(`upsert conversation failed: ${error.message}`);
-  return data.id as string;
+
+  if (insertError) {
+    // Race: another request inserted the row between our UPDATE and INSERT.
+    if (insertError.code === "23505") {
+      const { data: raceRow, error: raceSelectError } = await admin
+        .from("conversations")
+        .select("id")
+        .eq("agent_id", agentId)
+        .eq("lead_phone", payload.lead_phone)
+        .single();
+      if (raceSelectError) throw new Error(`fallback select failed: ${raceSelectError.message}`);
+      return raceRow.id as string;
+    }
+    throw new Error(`insert conversation failed: ${insertError.message}`);
+  }
+
+  return inserted.id as string;
 }
 
 async function upsertLeadMemoryEmail(
@@ -187,13 +217,16 @@ async function enqueueScheduledTemplate(
     delayMinutes: number;
   },
 ): Promise<{ enqueued: boolean; scheduledFor: string }> {
-  // Idempotency: if a pending row already exists for this conversation
-  // (re-registration within the window), do NOT enqueue a second send.
+  // Idempotency: skip enqueue if a pending template exists, OR if a template
+  // was already sent within the last 24 hours (re-registration guard).
+  const cutoff24h = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
   const { data: existing } = await admin
     .from("scheduled_messages")
-    .select("id, scheduled_for")
+    .select("id, scheduled_for, status")
     .eq("conversation_id", args.conversationId)
-    .eq("status", "pending")
+    .or(
+      `status.eq.pending,and(status.eq.sent,scheduled_for.gte.${cutoff24h})`,
+    )
     .order("scheduled_for", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -202,10 +235,13 @@ async function enqueueScheduledTemplate(
   }
 
   const scheduledFor = new Date(Date.now() + args.delayMinutes * 60_000).toISOString();
-  const variables: string[] = [
-    args.payload.lead_name.split(" ")[0] ?? args.payload.lead_name,
-    args.payload.product ?? "התכנית שלנו",
-  ];
+  // The first-touch template (as approved in Meta) has NO body placeholders,
+  // so we MUST send zero parameters — any param triggers Meta error #132000
+  // ("number of params does not match the expected number"). Name/product
+  // personalization belongs in the Make→Fireberry flow, NOT the WhatsApp
+  // template. (If a future template adds {{1}}/{{2}}, source them from
+  // agents.first_touch_template_variables_template — never hardcode here.)
+  const variables: string[] = [];
   const { error } = await admin
     .from("scheduled_messages")
     .insert({

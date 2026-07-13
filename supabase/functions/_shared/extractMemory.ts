@@ -202,12 +202,19 @@ export function decideConversationTag(
 
 export type FunnelStage = "cold" | "mid" | "done";
 
+/** The 5 core qualification questions — the subset of ExtractedMemory that
+ *  the funnel logic and the zoom-qualification gate reason about. */
+export type CoreQuestionFields = Pick<
+  ExtractedMemory,
+  "q1_age" | "q2_motivation" | "q3_dream_change" | "q4_blocker" | "q5_urgency"
+>;
+
 /**
  * Count of the 5 core qualification questions answered. q6_investment is
  * a bonus signal — it does NOT count towards the "done" trigger, because
  * the agent's brief is to advance based on q1-q5.
  */
-function countCoreAnswered(memory: ExtractedMemory): number {
+export function countCoreAnswered(memory: CoreQuestionFields): number {
   let n = 0;
   if (memory.q1_age !== null) n++;
   if (memory.q2_motivation !== null) n++;
@@ -545,6 +552,12 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     conversationUpdate.current_tag = "zoom_scheduled";
     conversationUpdate.status = "paused";
     conversationUpdate.zoom_scheduled_at = new Date().toISOString();
+    // Consent observed + handed off, but no actual Mooz booking was made by
+    // the bot here — classify separately so it is NOT counted as an agent
+    // conversion (migration 0033). This block only runs when the conversation
+    // is not already in NON_HANDOFF_TAGS (incl. zoom_scheduled), so it can
+    // never clobber an 'agent' attribution written by the book_meeting tool.
+    conversationUpdate.zoom_booked_by = "consent_handoff";
   }
   if (Object.keys(conversationUpdate).length > 0) {
     const { error: updErr } = await input.admin

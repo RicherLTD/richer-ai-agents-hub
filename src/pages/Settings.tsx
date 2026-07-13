@@ -1,6 +1,7 @@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AdminOnly } from "@/components/auth/AdminOnly";
 import { AgentsTab } from "@/components/settings/AgentsTab";
+import { BroadcastTemplatesTab } from "@/components/settings/BroadcastTemplatesTab";
 import { DlqTab } from "@/components/settings/DlqTab";
 import { UsersTab } from "@/components/settings/UsersTab";
 
@@ -18,6 +19,7 @@ const Settings = () => (
           <TabsTrigger value="agents" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">סוכנים</TabsTrigger>
           <TabsTrigger value="users" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">משתמשים</TabsTrigger>
           <TabsTrigger value="dlq" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">תקלות</TabsTrigger>
+          <TabsTrigger value="broadcast-templates" className="rounded-sm px-3 text-sm data-[state=active]:bg-primary data-[state=active]:text-primary-foreground data-[state=active]:shadow-none">תבניות דיוור</TabsTrigger>
         </TabsList>
         <TabsContent value="agents" className="pt-4">
           <AgentsTab />
@@ -27,6 +29,9 @@ const Settings = () => (
         </TabsContent>
         <TabsContent value="dlq" className="pt-4">
           <DlqTab />
+        </TabsContent>
+        <TabsContent value="broadcast-templates" className="pt-4">
+          <BroadcastTemplatesTab />
         </TabsContent>
       </Tabs>
     </AdminOnly>
