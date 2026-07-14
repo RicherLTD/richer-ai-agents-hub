@@ -29,6 +29,7 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
+import { buildEmbedUrl } from "../_shared/embedLink.ts";
 
 const SOURCE = "lead-register";
 
@@ -90,6 +91,7 @@ function coercePayload(raw: unknown): LeadRegisterPayload | null {
 interface AgentConfig {
   id: string;
   is_paused: boolean;
+  mooz_product_code: string | null;
   first_touch_template_name: string | null;
   first_touch_template_language: string;
   first_touch_delay_minutes: number;
@@ -102,7 +104,7 @@ async function loadAgent(
   const { data } = await admin
     .from("agents")
     .select(
-      "id, is_paused, first_touch_template_name, first_touch_template_language, first_touch_delay_minutes",
+      "id, is_paused, mooz_product_code, first_touch_template_name, first_touch_template_language, first_touch_delay_minutes",
     )
     .eq("name", agentSlug)
     .maybeSingle();
@@ -110,12 +112,34 @@ async function loadAgent(
   return {
     id: data.id as string,
     is_paused: (data.is_paused as boolean | null) ?? false,
+    mooz_product_code: (data.mooz_product_code as string | null) ?? null,
     first_touch_template_name: (data.first_touch_template_name as string | null) ?? null,
     first_touch_template_language:
       (data.first_touch_template_language as string | null) ?? "he",
     first_touch_delay_minutes:
       (data.first_touch_delay_minutes as number | null) ?? 40,
   };
+}
+
+/**
+ * Deterministic, non-expiring link to this lead's conversation view.
+ * Written by Make into the Fireberry field `pcfconveraiagent`.
+ * Best-effort: never throws, never blocks registration. Returns null if
+ * EMBED_LINK_SECRET / DASHBOARD_BASE_URL aren't configured or the agent has
+ * no mooz_product_code set.
+ */
+async function computeConversationViewUrl(
+  agent: AgentConfig,
+  leadPhone: string,
+): Promise<string | null> {
+  const embedSecret = Deno.env.get("EMBED_LINK_SECRET");
+  const dashboardBase = Deno.env.get("DASHBOARD_BASE_URL");
+  if (!embedSecret || !dashboardBase || !agent.mooz_product_code) return null;
+  try {
+    return await buildEmbedUrl(dashboardBase, leadPhone, agent.mooz_product_code, embedSecret);
+  } catch {
+    return null;
+  }
 }
 
 async function upsertConversation(
@@ -344,7 +368,13 @@ Deno.serve(async (req) => {
     try {
       const conversationId = await upsertConversation(admin, agent.id, payload);
       await upsertLeadMemoryEmail(admin, conversationId, payload.lead_email ?? null);
-      return jsonResponse({ ok: true, paused: true, conversation_id: conversationId });
+      const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
+      return jsonResponse({
+        ok: true,
+        paused: true,
+        conversation_id: conversationId,
+        conversation_view_url: conversationViewUrl,
+      });
     } catch (err) {
       await logError({
         admin,
@@ -371,10 +401,12 @@ Deno.serve(async (req) => {
     try {
       const conversationId = await upsertConversation(admin, agent.id, payload);
       await upsertLeadMemoryEmail(admin, conversationId, payload.lead_email ?? null);
+      const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
       return jsonResponse({
         ok: true,
         template_not_configured: true,
         conversation_id: conversationId,
+        conversation_view_url: conversationViewUrl,
       });
     } catch (err) {
       await logError({
@@ -401,9 +433,11 @@ Deno.serve(async (req) => {
       templateLanguage: agent.first_touch_template_language,
       delayMinutes: agent.first_touch_delay_minutes,
     });
+    const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
     return jsonResponse({
       ok: true,
       conversation_id: conversationId,
+      conversation_view_url: conversationViewUrl,
       ...queueResult,
     });
   } catch (err) {
