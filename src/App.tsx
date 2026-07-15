@@ -16,6 +16,7 @@ import Settings from "./pages/Settings.tsx";
 import Broadcasts from "./pages/Broadcasts.tsx";
 import Login from "./pages/Login.tsx";
 import NotFound from "./pages/NotFound.tsx";
+import EmbedConversation from "@/pages/EmbedConversation";
 
 const queryClient = new QueryClient();
 
@@ -31,6 +32,9 @@ const App = () => (
           <Routes>
             {/* Public route — login lives outside the protected layout. */}
             <Route path="/login" element={<Login />} />
+
+            {/* Public embed — no auth. Rendered inside a Fireberry lead card via iframe. */}
+            <Route path="/embed/c" element={<EmbedConversation />} />
 
             {/* Protected routes — wrapped in AppLayout (sidebar + header)
                 and gated by ProtectedRoute. */}
