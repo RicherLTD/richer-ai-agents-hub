@@ -342,7 +342,15 @@ async function handleCreatedOrRescheduled(args: {
   handoffWebhookSecret: string | null;
   dashboardBaseUrl: string | null;
 }): Promise<void> {
-  const { admin, conversation, booking, event, handoffWebhookUrl, handoffWebhookSecret, dashboardBaseUrl } = args;
+  const {
+    admin,
+    conversation,
+    booking,
+    event,
+    handoffWebhookUrl,
+    handoffWebhookSecret,
+    dashboardBaseUrl,
+  } = args;
   const scheduledAt =
     normalizeMoozTimestamp(booking.start_time) ?? new Date().toISOString();
   if (booking.start_time && !normalizeMoozTimestamp(booking.start_time)) {
@@ -359,8 +367,6 @@ async function handleCreatedOrRescheduled(args: {
       agentId: conversation.agent_id ?? undefined,
     });
   }
-  const wasAlreadyScheduled = conversation.current_tag === "zoom_scheduled";
-
   // Attribute the booking source for analytics (migration 0033). The bot
   // stamps its own bookings with a marker in the Mooz notes; self-service
   // (and advisor / Make.com-completed) bookings do not carry it.
@@ -417,25 +423,27 @@ async function handleCreatedOrRescheduled(args: {
     });
   }
 
-  // Fire handoff webhook on every booking.created from Mooz — this IS the
-  // canonical "Mooz confirmed the booking" trigger Kfir asked for on
-  // 2026-05-24: only fire to Make.com AFTER Mooz has actually persisted
-  // the booking, never on the bot's optimistic pre-tag.
+  // ── Handoff → Make.com (the "AI zoom" writer, scenario 5709133) ─────
   //
-  // We do NOT skip on `wasAlreadyScheduled` even when the bot already set
-  // current_tag='zoom_scheduled' via the book_meeting tool: the bot's
-  // tool only updates our DB, it does NOT fire any webhook. If we skipped
-  // here, bot-initiated bookings would silently never reach Make.com /
-  // Fireberry / advisor notifications.
+  // Split-by-source, single-writer design (fixes the cross-product double
+  // write WITHOUT losing the AI-attributed Fireberry zoom):
   //
-  // Dedup against Mooz retries is handled upstream by the
-  // `mooz_webhook_events` idempotency table (insert with same
-  // X-Idempotency-Key short-circuits before we ever reach this point).
+  //   • BOT bookings  → we fire the handoff here → 5709133 writes the rich
+  //     "פגישת זום שבוט ווצאפ קבע" meeting + the lead_memory Q&A summary the
+  //     advisor reads. 5709133 is product-scoped (it derives the product
+  //     from `agent.id`, which the payload carries), so it attaches the
+  //     meeting to the CORRECT product's lead.
+  //   • SELF-SERVE bookings → we do NOT fire; Mooz's own native scenario
+  //     (Make 4491366) remains the writer for those.
   //
-  // booking.rescheduled is intentionally NOT a handoff trigger — the
-  // advisor was already announced on the original booking.created; the
-  // reschedule just adjusts zoom_scheduled_at in our DB.
-  if (event === "booking.rescheduled") {
+  // 4491366 skips bot bookings (filtered on the "WhatsApp lead" notes
+  // marker), so each Mooz booking produces exactly ONE Fireberry meeting.
+  //
+  // Only booking.created fires. booking.rescheduled just adjusts
+  // zoom_scheduled_at in our DB — the advisor was already announced on the
+  // original create. Mooz retries are deduped upstream by the
+  // mooz_webhook_events idempotency table before we reach this point.
+  if (event !== "booking.created" || bookedBy !== "agent") {
     return;
   }
   if (!handoffWebhookUrl) {
@@ -445,14 +453,14 @@ async function handleCreatedOrRescheduled(args: {
       errorType: "handoff_webhook_url_missing",
       level: "warn",
       message:
-        "Mooz booking.created arrived but HANDOFF_WEBHOOK_URL is not configured — downstream automations will not fire",
+        "bot Mooz booking.created arrived but HANDOFF_WEBHOOK_URL is not configured — the AI zoom will not reach Fireberry",
       context: { booking_id: booking.id },
       conversationId: conversation.id,
     });
     return;
   }
 
-  // Load lead_memory for the handoff payload.
+  // Load lead_memory for the handoff payload (the advisor-facing Q&A dump).
   const { data: memRow } = await admin
     .from("lead_memory")
     .select("*")
