@@ -30,6 +30,10 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { buildEmbedUrl } from "../_shared/embedLink.ts";
+import {
+  buildConversationOpenedPayload,
+  fireConversationOpenedWebhook,
+} from "../_shared/fireConversationOpenedWebhook.ts";
 
 const SOURCE = "lead-register";
 
@@ -90,6 +94,7 @@ function coercePayload(raw: unknown): LeadRegisterPayload | null {
 
 interface AgentConfig {
   id: string;
+  name: string | null;
   is_paused: boolean;
   mooz_product_code: string | null;
   first_touch_template_name: string | null;
@@ -104,13 +109,14 @@ async function loadAgent(
   const { data } = await admin
     .from("agents")
     .select(
-      "id, is_paused, mooz_product_code, first_touch_template_name, first_touch_template_language, first_touch_delay_minutes",
+      "id, name, is_paused, mooz_product_code, first_touch_template_name, first_touch_template_language, first_touch_delay_minutes",
     )
     .eq("name", agentSlug)
     .maybeSingle();
   if (!data) return null;
   return {
     id: data.id as string,
+    name: (data.name as string | null) ?? null,
     is_paused: (data.is_paused as boolean | null) ?? false,
     mooz_product_code: (data.mooz_product_code as string | null) ?? null,
     first_touch_template_name: (data.first_touch_template_name as string | null) ?? null,
@@ -142,11 +148,17 @@ async function computeConversationViewUrl(
   }
 }
 
+interface UpsertConversationResult {
+  id: string;
+  /** True only on the genuine INSERT path — false on UPDATE-matched rows and on the 23505 race fallback. */
+  inserted: boolean;
+}
+
 async function upsertConversation(
   admin: SupabaseClient,
   agentId: string,
   payload: LeadRegisterPayload,
-): Promise<string> {
+): Promise<UpsertConversationResult> {
   // UPDATE-first: touch only safe fields, never overwrite status/funnel stage.
   // source_campaign / source_funnel are only set when the existing value is null
   // (coalesce semantics via .is("source_campaign", null) guard is impractical in
@@ -172,13 +184,13 @@ async function upsertConversation(
       .eq("lead_phone", payload.lead_phone)
       .single();
     if (selectError) throw new Error(`select conversation failed: ${selectError.message}`);
-    return existing.id as string;
+    return { id: existing.id as string, inserted: false };
   }
 
   // Row did not exist — INSERT with status: "active".
   // First touch is OUTBOUND — conversation starts "active" because the
   // bot is expected to handle the reply when it lands.
-  const { data: inserted, error: insertError } = await admin
+  const { data: insertedRow, error: insertError } = await admin
     .from("conversations")
     .insert({
       agent_id: agentId,
@@ -201,12 +213,54 @@ async function upsertConversation(
         .eq("lead_phone", payload.lead_phone)
         .single();
       if (raceSelectError) throw new Error(`fallback select failed: ${raceSelectError.message}`);
-      return raceRow.id as string;
+      // Race fallback: some other request won the genuine insert — we did not.
+      return { id: raceRow.id as string, inserted: false };
     }
     throw new Error(`insert conversation failed: ${insertError.message}`);
   }
 
-  return inserted.id as string;
+  return { id: insertedRow.id as string, inserted: true };
+}
+
+/**
+ * Fire the "conversation opened" webhook exactly once, only for a
+ * brand-new conversation (never on updates or the 23505 race fallback).
+ * Best-effort: never throws, never blocks the response. A missing
+ * CONVERSATION_OPENED_WEBHOOK_URL or a payload-build failure just means
+ * no event fires — registration itself must always succeed regardless.
+ */
+function fireNewConversationWebhookBestEffort(args: {
+  agent: AgentConfig;
+  payload: LeadRegisterPayload;
+  conversationId: string;
+  inserted: boolean;
+  conversationViewUrl: string | null;
+}): void {
+  if (!args.inserted) return;
+  const convWebhookUrl = Deno.env.get("CONVERSATION_OPENED_WEBHOOK_URL");
+  if (!convWebhookUrl) return;
+  try {
+    const webhookPayload = buildConversationOpenedPayload({
+      agentId: args.agent.id,
+      agentName: args.agent.name,
+      product: args.agent.mooz_product_code,
+      conversationId: args.conversationId,
+      leadPhone: args.payload.lead_phone,
+      leadName: args.payload.lead_name,
+      status: "active",
+      sourceCampaign: args.payload.source_campaign,
+      sourceFunnel: args.payload.source_funnel ?? args.payload.product,
+      createdAt: null,
+      conversationViewUrl: args.conversationViewUrl,
+    });
+    // Fire-and-forget: never await in a way that blocks the response, and
+    // never let a rejected promise escape as an unhandled rejection.
+    void fireConversationOpenedWebhook({ url: convWebhookUrl, payload: webhookPayload }).catch(
+      () => {},
+    );
+  } catch {
+    // Payload build failed for some reason — swallow, registration must not fail.
+  }
 }
 
 async function upsertLeadMemoryEmail(
@@ -366,9 +420,16 @@ Deno.serve(async (req) => {
     // Still create the conversation row so the lead is visible in the
     // dashboard — just skip the scheduled send.
     try {
-      const conversationId = await upsertConversation(admin, agent.id, payload);
+      const { id: conversationId, inserted } = await upsertConversation(admin, agent.id, payload);
       await upsertLeadMemoryEmail(admin, conversationId, payload.lead_email ?? null);
       const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
+      fireNewConversationWebhookBestEffort({
+        agent,
+        payload,
+        conversationId,
+        inserted,
+        conversationViewUrl,
+      });
       return jsonResponse({
         ok: true,
         paused: true,
@@ -399,9 +460,16 @@ Deno.serve(async (req) => {
       agentId: agent.id,
     });
     try {
-      const conversationId = await upsertConversation(admin, agent.id, payload);
+      const { id: conversationId, inserted } = await upsertConversation(admin, agent.id, payload);
       await upsertLeadMemoryEmail(admin, conversationId, payload.lead_email ?? null);
       const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
+      fireNewConversationWebhookBestEffort({
+        agent,
+        payload,
+        conversationId,
+        inserted,
+        conversationViewUrl,
+      });
       return jsonResponse({
         ok: true,
         template_not_configured: true,
@@ -423,7 +491,7 @@ Deno.serve(async (req) => {
 
   // Happy path.
   try {
-    const conversationId = await upsertConversation(admin, agent.id, payload);
+    const { id: conversationId, inserted } = await upsertConversation(admin, agent.id, payload);
     await upsertLeadMemoryEmail(admin, conversationId, payload.lead_email ?? null);
     const queueResult = await enqueueScheduledTemplate(admin, {
       agentId: agent.id,
@@ -434,6 +502,13 @@ Deno.serve(async (req) => {
       delayMinutes: agent.first_touch_delay_minutes,
     });
     const conversationViewUrl = await computeConversationViewUrl(agent, payload.lead_phone);
+    fireNewConversationWebhookBestEffort({
+      agent,
+      payload,
+      conversationId,
+      inserted,
+      conversationViewUrl,
+    });
     return jsonResponse({
       ok: true,
       conversation_id: conversationId,
