@@ -223,6 +223,24 @@ async function upsertConversation(
 }
 
 /**
+ * Run a promise past the response without blocking it. On Supabase's edge
+ * runtime the isolate can be torn down right after we return the HTTP
+ * response, cancelling any in-flight fetch — EdgeRuntime.waitUntil keeps
+ * the background task alive. Mirrors whatsappWebhookHandler's fireAndForget.
+ * Guards for the runtime being absent (e.g. in local tests).
+ */
+function fireAndForget(promise: Promise<unknown>): void {
+  const wrapped = Promise.resolve(promise).catch((err) =>
+    console.error("lead-register background task crashed", err)
+  );
+  const runtime =
+    (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } }).EdgeRuntime;
+  if (runtime && typeof runtime.waitUntil === "function") {
+    runtime.waitUntil(wrapped);
+  }
+}
+
+/**
  * Fire the "conversation opened" webhook exactly once, only for a
  * brand-new conversation (never on updates or the 23505 race fallback).
  * Best-effort: never throws, never blocks the response. A missing
@@ -253,11 +271,9 @@ function fireNewConversationWebhookBestEffort(args: {
       createdAt: null,
       conversationViewUrl: args.conversationViewUrl,
     });
-    // Fire-and-forget: never await in a way that blocks the response, and
-    // never let a rejected promise escape as an unhandled rejection.
-    void fireConversationOpenedWebhook({ url: convWebhookUrl, payload: webhookPayload }).catch(
-      () => {},
-    );
+    // Fire-and-forget, but survive past the response: EdgeRuntime.waitUntil
+    // keeps the POST alive after the isolate would otherwise be torn down.
+    fireAndForget(fireConversationOpenedWebhook({ url: convWebhookUrl, payload: webhookPayload }));
   } catch {
     // Payload build failed for some reason — swallow, registration must not fail.
   }
