@@ -75,6 +75,12 @@ import {
   Langfuse,
   langfuseFromEnv,
 } from "./langfuse.ts";
+import { toCanonicalPhone } from "./normalizePhone.ts";
+import { buildEmbedUrl } from "./embedLink.ts";
+import {
+  buildConversationOpenedPayload,
+  fireConversationOpenedWebhook,
+} from "./fireConversationOpenedWebhook.ts";
 
 const SOURCE = "whatsapp-webhook";
 
@@ -1327,6 +1333,61 @@ async function ingestDeliveryStatus(
   });
 }
 
+/**
+ * Fire the "conversation_opened" event the moment a BRAND-NEW conversation
+ * row is created (never on the UPDATE hot path, never on the 23505 race
+ * branch — those aren't new conversations). Lets Make.com write the
+ * conversation-view iframe into the Fireberry card as soon as a lead
+ * exists, instead of waiting for the handoff webhook (which may never
+ * fire if the lead never reaches the 'done' funnel stage).
+ *
+ * Called via fireAndForget from the genuine-insert branch — this function
+ * itself must never throw and must never be awaited synchronously in the
+ * inbound-message hot path. Every failure mode (missing env, DB miss,
+ * webhook failure) is swallowed and logged; it can only ever cost the CRM
+ * iframe embed, never the WhatsApp reply.
+ */
+async function fireConversationOpened(
+  admin: SupabaseClient,
+  agentId: string,
+  rawPhone: string,
+  leadName: string | null,
+): Promise<void> {
+  const url = Deno.env.get("CONVERSATION_OPENED_WEBHOOK_URL");
+  if (!url) return;
+
+  const canonicalPhone = toCanonicalPhone(rawPhone);
+  if (!canonicalPhone) return;
+
+  const { data: agent } = await admin
+    .from("agents")
+    .select("name, mooz_product_code")
+    .eq("id", agentId)
+    .maybeSingle();
+  const product = (agent?.mooz_product_code as string | null | undefined) ?? null;
+  const agentName = (agent?.name as string | null | undefined) ?? null;
+
+  const secret = Deno.env.get("EMBED_LINK_SECRET");
+  const base = Deno.env.get("DASHBOARD_BASE_URL");
+  let conversationViewUrl: string | null = null;
+  if (secret && base && product) {
+    conversationViewUrl = await buildEmbedUrl(base, canonicalPhone, product, secret);
+  }
+
+  const payload = buildConversationOpenedPayload({
+    leadPhone: canonicalPhone,
+    leadName,
+    product,
+    agentName,
+    conversationViewUrl,
+  });
+
+  const res = await fireConversationOpenedWebhook({ url, payload });
+  if (!res.ok) {
+    console.error("conversation_opened webhook failed", res.status, res.errorBody);
+  }
+}
+
 async function ingestInboundMessage(
   admin: SupabaseClient,
   agentId: string,
@@ -1422,6 +1483,9 @@ async function ingestInboundMessage(
       return null;
     } else {
       conversationId = inserted.id as string;
+      fireAndForget(
+        fireConversationOpened(admin, agentId, phone, leadName),
+      );
     }
   }
   if (!conversationId) {
