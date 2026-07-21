@@ -1350,10 +1350,8 @@ async function ingestDeliveryStatus(
 async function fireConversationOpened(
   admin: SupabaseClient,
   agentId: string,
-  conversationId: string,
   rawPhone: string,
   leadName: string | null,
-  createdAt: string,
 ): Promise<void> {
   const url = Deno.env.get("CONVERSATION_OPENED_WEBHOOK_URL");
   if (!url) return;
@@ -1377,16 +1375,10 @@ async function fireConversationOpened(
   }
 
   const payload = buildConversationOpenedPayload({
-    agentId,
-    agentName,
-    product,
-    conversationId,
     leadPhone: canonicalPhone,
     leadName,
-    status: "active",
-    sourceCampaign: null,
-    sourceFunnel: "whatsapp_sandbox",
-    createdAt,
+    product,
+    agentName,
     conversationViewUrl,
   });
 
@@ -1492,7 +1484,7 @@ async function ingestInboundMessage(
     } else {
       conversationId = inserted.id as string;
       fireAndForget(
-        fireConversationOpened(admin, agentId, conversationId, phone, leadName, ts),
+        fireConversationOpened(admin, agentId, phone, leadName),
       );
     }
   }

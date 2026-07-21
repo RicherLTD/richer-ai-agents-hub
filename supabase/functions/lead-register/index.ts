@@ -259,16 +259,10 @@ function fireNewConversationWebhookBestEffort(args: {
   if (!convWebhookUrl) return;
   try {
     const webhookPayload = buildConversationOpenedPayload({
-      agentId: args.agent.id,
-      agentName: args.agent.name,
-      product: args.agent.mooz_product_code,
-      conversationId: args.conversationId,
       leadPhone: args.payload.lead_phone,
       leadName: args.payload.lead_name,
-      status: "active",
-      sourceCampaign: args.payload.source_campaign,
-      sourceFunnel: args.payload.source_funnel ?? args.payload.product,
-      createdAt: null,
+      product: args.agent.mooz_product_code ?? null,
+      agentName: args.agent.name ?? null,
       conversationViewUrl: args.conversationViewUrl,
     });
     // Fire-and-forget, but survive past the response: EdgeRuntime.waitUntil

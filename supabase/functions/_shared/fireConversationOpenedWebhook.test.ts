@@ -5,51 +5,40 @@ import {
 } from "./fireConversationOpenedWebhook.ts";
 
 describe("buildConversationOpenedPayload", () => {
-  it("produces the canonical flat shape with event=conversation_opened", () => {
+  it("produces the canonical flat shape with exactly the 6 payload fields", () => {
     const payload = buildConversationOpenedPayload({
-      agentId: "agent-1",
-      agentName: "affiliate_marketing",
-      product: "B",
-      conversationId: "conv-1",
       leadPhone: "+972551234567",
       leadName: "ישראל ישראלי",
-      status: "active",
-      sourceCampaign: "fb-may-13",
-      sourceFunnel: "whatsapp_sandbox",
-      createdAt: "2026-05-13T10:25:00.000Z",
+      product: "B",
+      agentName: "affiliate_marketing",
       conversationViewUrl: "https://view.example.com/conv-1",
     });
 
     expect(payload).toEqual({
-      event: "conversation_opened",
-      agent_id: "agent-1",
-      agent_name: "affiliate_marketing",
-      product: "B",
-      conversation_id: "conv-1",
       lead_phone: "+972551234567",
       lead_name: "ישראל ישראלי",
-      status: "active",
-      source_campaign: "fb-may-13",
-      source_funnel: "whatsapp_sandbox",
-      created_at: "2026-05-13T10:25:00.000Z",
+      product: "B",
+      agent_name: "affiliate_marketing",
       conversation_view_url: "https://view.example.com/conv-1",
       iframe:
         '<iframe src="https://view.example.com/conv-1" style="width:100%;height:720px;border:0;border-radius:12px;" title="שיחה עם הליד"></iframe>',
     });
+    expect(Object.keys(payload).sort()).toEqual([
+      "agent_name",
+      "conversation_view_url",
+      "iframe",
+      "lead_name",
+      "lead_phone",
+      "product",
+    ]);
   });
 
   it("sets iframe to null when conversationViewUrl is null", () => {
     const payload = buildConversationOpenedPayload({
-      agentId: "agent-1",
-      agentName: null,
-      product: null,
-      conversationId: "conv-1",
       leadPhone: "+972551234567",
       leadName: null,
-      status: null,
-      sourceCampaign: null,
-      sourceFunnel: null,
-      createdAt: null,
+      product: null,
+      agentName: null,
       conversationViewUrl: null,
     });
 
@@ -60,16 +49,10 @@ describe("buildConversationOpenedPayload", () => {
 
 describe("fireConversationOpenedWebhook", () => {
   const payload = buildConversationOpenedPayload({
-    agentId: "agent-1",
-    agentName: "affiliate_marketing",
-    product: "B",
-    conversationId: "conv-1",
     leadPhone: "+972551234567",
     leadName: "ישראל ישראלי",
-    status: "active",
-    sourceCampaign: "fb-may-13",
-    sourceFunnel: "whatsapp_sandbox",
-    createdAt: "2026-05-13T10:25:00.000Z",
+    product: "B",
+    agentName: "affiliate_marketing",
     conversationViewUrl: "https://view.example.com/conv-1",
   });
 

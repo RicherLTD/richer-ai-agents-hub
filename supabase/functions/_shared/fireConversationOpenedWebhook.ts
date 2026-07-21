@@ -14,7 +14,6 @@
 // the time this fires. A failed webhook just means the CRM iframe embed
 // doesn't get written; recoverable, must not block the caller.
 
-const CONVERSATION_OPENED_EVENT = "conversation_opened";
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS: ReadonlyArray<number> = [1000, 2000];
 const FETCH_TIMEOUT_MS = 8000;
@@ -29,32 +28,19 @@ if (RETRY_DELAYS_MS.length !== MAX_ATTEMPTS - 1) {
 
 /** Flat payload sent to the consumer. */
 export interface ConversationOpenedPayload {
-  event: "conversation_opened";
-  agent_id: string;
-  agent_name: string | null;
-  product: string | null;
-  conversation_id: string;
   lead_phone: string;
   lead_name: string | null;
-  status: string | null;
-  source_campaign: string | null;
-  source_funnel: string | null;
-  created_at: string | null;
-  conversation_view_url: string | null;
   iframe: string | null;
+  product: string | null;
+  agent_name: string | null;
+  conversation_view_url: string | null;
 }
 
 export interface BuildConversationOpenedInput {
-  agentId: string;
-  agentName: string | null;
-  product: string | null;
-  conversationId: string;
   leadPhone: string;
   leadName: string | null;
-  status: string | null;
-  sourceCampaign: string | null;
-  sourceFunnel: string | null;
-  createdAt: string | null;
+  product: string | null;
+  agentName: string | null;
   conversationViewUrl: string | null;
 }
 
@@ -116,17 +102,10 @@ export function buildConversationOpenedPayload(
   input: BuildConversationOpenedInput,
 ): ConversationOpenedPayload {
   return {
-    event: CONVERSATION_OPENED_EVENT,
-    agent_id: input.agentId,
-    agent_name: input.agentName,
-    product: input.product,
-    conversation_id: input.conversationId,
     lead_phone: input.leadPhone,
     lead_name: input.leadName,
-    status: input.status,
-    source_campaign: input.sourceCampaign,
-    source_funnel: input.sourceFunnel,
-    created_at: input.createdAt,
+    product: input.product,
+    agent_name: input.agentName,
     conversation_view_url: input.conversationViewUrl,
     iframe: input.conversationViewUrl == null
       ? null
