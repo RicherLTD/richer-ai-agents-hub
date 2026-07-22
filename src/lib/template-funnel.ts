@@ -29,8 +29,6 @@
 import { supabase } from "./supabase/client";
 import type { DateRange } from "@/components/leads/DateRangeFilter";
 
-const SAFETY_LIMIT = 2000;
-
 /** A template send (one `scheduled_messages` row). */
 export interface SendRow {
   template_name: string;
@@ -151,6 +149,13 @@ function emptyBucket(): Bucket {
  * Pure aggregation. One row per `template_name`, sorted by `sent` desc (then
  * name asc). People are de-duplicated per template by NORMALIZED phone, and
  * outcomes are looked up from the conversation set by the same key.
+ *
+ * NOTE: the live widgets no longer call this — they call the `template_funnel()`
+ * Postgres RPC (migration 0045), which aggregates server-side so the result is
+ * correct at any table size (the old client-side path silently truncated at
+ * SAFETY_LIMIT rows and mis-reported answered/zoom as ~0). This function is
+ * retained as the reference spec: its unit tests document the exact semantics
+ * the RPC mirrors 1:1, and it's used to verify parity.
  */
 export function aggregateTemplateFunnel(
   sends: SendRow[],
@@ -237,52 +242,71 @@ export function aggregateTemplateFunnel(
   return out;
 }
 
+/** Shape returned by the `template_funnel()` RPC (snake_case, numeric rates). */
+interface FunnelRpcRow {
+  template_name: string;
+  sent: number;
+  delivered: number;
+  read: number;
+  answered: number;
+  agent_zoom: number;
+  self_zoom: number;
+  consent_handoff: number;
+  legacy_zoom: number;
+  failed: number;
+  delivered_rate_pct: number | string;
+  read_rate_pct: number | string;
+  answered_rate_pct: number | string;
+  agent_zoom_per_answered_pct: number | string;
+  agent_zoom_per_sent_pct: number | string;
+}
+
+/** Map an RPC row → the camelCase `TemplateFunnelRow` the UI consumes. Rates
+ *  are `numeric` in Postgres and may arrive as strings, so coerce defensively. */
+function mapRpcRow(r: FunnelRpcRow): TemplateFunnelRow {
+  return {
+    templateName: r.template_name,
+    sent: r.sent,
+    delivered: r.delivered,
+    read: r.read,
+    answered: r.answered,
+    agentZoom: r.agent_zoom,
+    selfZoom: r.self_zoom,
+    consentHandoff: r.consent_handoff,
+    legacyZoom: r.legacy_zoom,
+    failed: r.failed,
+    deliveredRatePct: Number(r.delivered_rate_pct),
+    readRatePct: Number(r.read_rate_pct),
+    answeredRatePct: Number(r.answered_rate_pct),
+    agentZoomPerAnsweredPct: Number(r.agent_zoom_per_answered_pct),
+    agentZoomPerSentPct: Number(r.agent_zoom_per_sent_pct),
+  };
+}
+
 export async function getTemplateFunnel(
   agentId: string,
   range: DateRange,
 ): Promise<TemplateFunnelRow[]> {
-  const [sendsRes, convsRes] = await Promise.all([
-    supabase
-      .from("scheduled_messages")
-      .select("template_name, status, sent_at, created_at, delivered_at, read_at, lead_phone")
-      .eq("agent_id", agentId)
-      .limit(SAFETY_LIMIT),
-    supabase
-      .from("conversations")
-      .select("lead_phone, last_inbound_at, current_tag, zoom_booked_by")
-      .eq("agent_id", agentId)
-      .limit(SAFETY_LIMIT),
-  ]);
-  if (sendsRes.error) throw new Error(`Failed to load template sends: ${sendsRes.error.message}`);
-  if (convsRes.error) throw new Error(`Failed to load conversations: ${convsRes.error.message}`);
-  return aggregateTemplateFunnel(
-    (sendsRes.data ?? []) as unknown as SendRow[],
-    (convsRes.data ?? []) as unknown as ConversationOutcomeRow[],
-    range,
-  );
+  const { data, error } = await supabase.rpc("template_funnel", {
+    p_agent_id: agentId,
+    p_from: range.from,
+    p_to: range.to,
+    p_broadcast_id: null,
+  });
+  if (error) throw new Error(`Failed to load template funnel: ${error.message}`);
+  return ((data ?? []) as FunnelRpcRow[]).map(mapRpcRow);
 }
 
 export async function getBroadcastFunnel(
   agentId: string,
   broadcastId: string,
 ): Promise<TemplateFunnelRow[]> {
-  const [sendsRes, convsRes] = await Promise.all([
-    supabase
-      .from("scheduled_messages")
-      .select("template_name, status, sent_at, created_at, delivered_at, read_at, lead_phone")
-      .eq("agent_id", agentId)
-      .eq("broadcast_id", broadcastId)
-      .limit(SAFETY_LIMIT),
-    supabase
-      .from("conversations")
-      .select("lead_phone, last_inbound_at, current_tag, zoom_booked_by")
-      .eq("agent_id", agentId)
-      .limit(SAFETY_LIMIT),
-  ]);
-  if (sendsRes.error) throw new Error(`Failed to load broadcast sends: ${sendsRes.error.message}`);
-  if (convsRes.error) throw new Error(`Failed to load conversations: ${convsRes.error.message}`);
-  return aggregateTemplateFunnel(
-    (sendsRes.data ?? []) as unknown as SendRow[],
-    (convsRes.data ?? []) as unknown as ConversationOutcomeRow[],
-  );
+  const { data, error } = await supabase.rpc("template_funnel", {
+    p_agent_id: agentId,
+    p_from: null,
+    p_to: null,
+    p_broadcast_id: broadcastId,
+  });
+  if (error) throw new Error(`Failed to load broadcast funnel: ${error.message}`);
+  return ((data ?? []) as FunnelRpcRow[]).map(mapRpcRow);
 }
