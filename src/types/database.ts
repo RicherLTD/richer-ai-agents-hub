@@ -1185,6 +1185,31 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      template_funnel: {
+        Args: {
+          p_agent_id: string
+          p_from?: string | null
+          p_to?: string | null
+          p_broadcast_id?: string | null
+        }
+        Returns: {
+          template_name: string
+          sent: number
+          delivered: number
+          read: number
+          answered: number
+          agent_zoom: number
+          self_zoom: number
+          consent_handoff: number
+          legacy_zoom: number
+          failed: number
+          delivered_rate_pct: number
+          read_rate_pct: number
+          answered_rate_pct: number
+          agent_zoom_per_answered_pct: number
+          agent_zoom_per_sent_pct: number
+        }[]
+      }
     }
     Enums: {
       agent_status_enum: "active" | "paused" | "archived"
