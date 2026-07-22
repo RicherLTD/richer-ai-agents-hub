@@ -75,6 +75,9 @@ function makeMoozStub(opts: {
   slots?: MoozAvailableSlot[];
   slotsError?: Error;
   bookingResult?: MoozCreateBookingResult;
+  /** Result of the cross-product dedup lookup. Defaults to not-booked so
+   *  existing happy-path tests proceed into createBooking. */
+  lookup?: Awaited<ReturnType<MoozClient["lookupByPhone"]>>;
 }): MoozClient {
   return {
     listAvailableSlots: async () => {
@@ -83,6 +86,7 @@ function makeMoozStub(opts: {
     },
     createBooking: async () =>
       opts.bookingResult ?? { ok: true, booking: bookingFixture() },
+    lookupByPhone: async () => opts.lookup ?? { booked: false },
   } as unknown as MoozClient;
 }
 
@@ -209,9 +213,10 @@ describe("dispatchMoozTool — list_available_slots", () => {
 
 describe("dispatchMoozTool — book_meeting", () => {
   it("blocks (defense in depth) when the lead has not cleared the floor", async () => {
-    // Only 2 of 5 answered → below the floor.
+    // Neither a goal (q3) nor a pain (q4) surfaced → below the v3 floor
+    // (zoomGate.ts: the lead must have at least one of goal / pain).
     const { admin, calls } = makeAdmin({
-      leadMemory: { q3_dream_change: "עצמאות", q4_blocker: "אין זמן" },
+      leadMemory: { q1_age: 30, q5_urgency: "החודש" },
     });
     const ctx = makeCtx(makeMoozStub({}), admin);
     const r = await dispatchMoozTool(
@@ -256,7 +261,10 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(update).toBeDefined();
     expect(update!.payload.current_tag).toBe("zoom_scheduled");
     expect(update!.payload.funnel_stage).toBe("done");
-    expect(update!.payload.status).toBe("paused");
+    // Intentionally NOT paused — the bot stays active after booking so it
+    // can answer the lead's follow-up questions (the booked-status block
+    // prevents re-offering slots). See updateConversationOnBooking.
+    expect(update!.payload.status).toBeUndefined();
     expect(update!.payload.lead_name).toBe("Shlomo Piven");
 
     const memoryUpsert = calls.find((c) => c.table === "lead_memory" && c.op === "upsert");
@@ -268,6 +276,70 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(parsed.next_step).toContain(
       "הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה",
     );
+  });
+
+  it("blocks a second booking when the lead already has a future zoom (any product)", async () => {
+    const { admin, calls } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: true, scheduledAt: VALID_UTC, meetingId: "m-1" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+      },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(parsed.reason).toBe("already_booked");
+    expect(r.bookingCreated).toBe(false);
+    // Guard returns before createBooking → no DB writes at all.
+    expect(calls.find((c) => c.table === "conversations")).toBeUndefined();
+  });
+
+  it("allows the booking on an explicit reschedule, even if already booked", async () => {
+    const { admin } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: true, scheduledAt: VALID_UTC, meetingId: "m-1" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+        lead_requested_reschedule: true,
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
+    expect(JSON.parse(r.resultJson).success).toBe(true);
+  });
+
+  it("fails open — proceeds to book when the dedup lookup errors", async () => {
+    const { admin } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({ lookup: { booked: false, error: "MOOZ_API_TOKEN not configured" } }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo Piven",
+        lead_email: "shlomo@example.com",
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
   });
 
   it("slot_full surfaces slot_unavailable with retry guidance and does NOT update DB", async () => {
@@ -362,5 +434,89 @@ describe("dispatchMoozTool — book_meeting", () => {
     const r = await dispatchMoozTool("hax0r", {}, ctx);
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.error).toContain("unknown tool");
+  });
+});
+
+// ── Fireberry existing-customer / blacklist gate ─────────────────────
+
+function makeFireberry(
+  outcome: { blocked: boolean; statuscode: number | null } | Error,
+): NonNullable<MoozDispatchCtx["fireberry"]> {
+  return {
+    lookupBlockingStatus: async () => {
+      if (outcome instanceof Error) throw outcome;
+      return outcome;
+    },
+  };
+}
+
+describe("dispatchMoozTool — Fireberry status gate", () => {
+  it("book_meeting: blocks a registered student (statuscode 2), does not book, tags requires_human", async () => {
+    const { admin, calls } = makeAdmin();
+    const mooz = makeMoozStub({});
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(mooz, admin),
+      fireberry: makeFireberry({ blocked: true, statuscode: 2 }),
+    };
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      { start_time: VALID_UTC, end_time: VALID_END, lead_name: "אילנה", lead_email: "a@b.com" },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(parsed.reason).toBe("existing_customer_or_blacklist");
+    expect(parsed.fireberry_statuscode).toBe(2);
+    expect(r.bookingCreated).toBe(false);
+    expect(r.offeredTimesIL).toEqual([]);
+    // Tagged for a human; never tagged zoom_scheduled.
+    const tagUpdate = calls.find(
+      (c) => c.table === "conversations" && c.op === "update",
+    );
+    expect(tagUpdate?.payload.current_tag).toBe("requires_human");
+    expect(
+      calls.some((c) => c.table === "conversations" && c.payload.current_tag === "zoom_scheduled"),
+    ).toBe(false);
+  });
+
+  it("list_available_slots: blocks a blacklisted lead (statuscode 11), offers nothing", async () => {
+    const { admin } = makeAdmin();
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(makeMoozStub({ slots: [{ start: VALID_UTC, end: VALID_END }] }), admin),
+      fireberry: makeFireberry({ blocked: true, statuscode: 11 }),
+    };
+    const r = await dispatchMoozTool("list_available_slots", { preferred_date: "2026-05-21" }, ctx);
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.blocked).toBe(true);
+    expect(parsed.fireberry_statuscode).toBe(11);
+    expect(r.offeredTimesIL).toEqual([]);
+  });
+
+  it("proceeds normally when the lead is not in a blocking status", async () => {
+    const { admin } = makeAdmin();
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(makeMoozStub({}), admin),
+      fireberry: makeFireberry({ blocked: false, statuscode: null }),
+    };
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      { start_time: VALID_UTC, end_time: VALID_END, lead_name: "דנה", lead_email: "d@b.com" },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
+  });
+
+  it("fails open (books) when the Fireberry lookup throws", async () => {
+    const { admin } = makeAdmin();
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(makeMoozStub({}), admin),
+      fireberry: makeFireberry(new Error("fireberry 500")),
+    };
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      { start_time: VALID_UTC, end_time: VALID_END, lead_name: "דנה", lead_email: "d@b.com" },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(true);
   });
 });
