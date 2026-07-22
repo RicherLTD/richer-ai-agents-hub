@@ -499,14 +499,37 @@ async function handleBookMeeting(
   });
 
   if (!result.ok) {
-    if (result.kind === "slot_full" || result.kind === "duplicate") {
+    // Mooz 409 "Duplicate" = a booking with THIS exact email + meeting type +
+    // start time already exists. In practice that means this lead already has
+    // this very slot (our own earlier book_meeting succeeded, or a retry). This
+    // is NOT a "the time got taken" situation — it means the meeting the lead
+    // asked for is already set. Do NOT re-offer alternative times (that is the
+    // bug where the bot said "13:00 is taken, here's 13:30/14:00" while 13:00
+    // was in fact already booked). Treat it as booked and confirm.
+    if (result.kind === "duplicate") {
+      return {
+        resultJson: JSON.stringify({
+          error: "already_booked_this_slot",
+          mooz_kind: result.kind,
+          mooz_message: result.message,
+          guidance:
+            "הפגישה בשעה הזו כבר קבועה ללִיד — אל תיצור קביעה נוספת, אל תקרא ל-book_meeting או ל-list_available_slots שוב, ואל תגיד שהשעה תפוסה ואל תציע שעות אחרות. פשוט אשר ללִיד בקצרה שהזום שלו קבוע לשעה שביקש.",
+        }),
+        bookingCreated: false,
+        offeredTimesIL: [],
+      };
+    }
+    // Genuine capacity race — the slot filled between list and book. Per the
+    // product decision we do NOT loop re-offering fresh slots (that dance
+    // confused leads). Acknowledge briefly; a human will confirm the time.
+    if (result.kind === "slot_full") {
       return {
         resultJson: JSON.stringify({
           error: "slot_unavailable",
           mooz_kind: result.kind,
           mooz_message: result.message,
           guidance:
-            "Slot was taken since you last looked. Apologize briefly, call list_available_slots again with the same preferred_date, and offer fresh options.",
+            "לא הצלחנו לתפוס את השעה הזו. אל תיכנס ללולאת הצעות: אל תקרא ל-list_available_slots שוב ואל תציע שעות חלופיות בתור הזה. אשר ללִיד בקצרה שאתה מסדר את המועד ושנציג יחזור אליו לאשר את השעה.",
         }),
         bookingCreated: false,
         offeredTimesIL: [],

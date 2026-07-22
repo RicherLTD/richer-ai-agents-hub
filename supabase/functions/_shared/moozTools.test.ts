@@ -342,7 +342,7 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(r.bookingCreated).toBe(true);
   });
 
-  it("slot_full surfaces slot_unavailable with retry guidance and does NOT update DB", async () => {
+  it("slot_full surfaces slot_unavailable WITHOUT re-offer guidance and does NOT update DB", async () => {
     const { admin, calls } = makeAdmin();
     const ctx = makeCtx(
       makeMoozStub({
@@ -364,7 +364,39 @@ describe("dispatchMoozTool — book_meeting", () => {
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.error).toBe("slot_unavailable");
     expect(parsed.mooz_kind).toBe("slot_full");
-    expect(parsed.guidance).toContain("Apologize");
+    // The re-offer loop was removed on purpose — the bot is explicitly told
+    // NOT to re-list slots or offer alternatives, and to hand off to a human.
+    expect(parsed.guidance).toContain("אל תקרא ל-list_available_slots");
+    expect(parsed.guidance).toContain("נציג");
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update).toBeUndefined();
+  });
+
+  it("duplicate is treated as already-booked-this-slot, not as a taken slot, and does NOT update DB", async () => {
+    const { admin, calls } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({
+        bookingResult: { ok: false, kind: "duplicate", message: "Duplicate booking" },
+      }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo",
+        lead_email: "s@example.com",
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(false);
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.error).toBe("already_booked_this_slot");
+    expect(parsed.mooz_kind).toBe("duplicate");
+    // Treated as already-booked: confirm the existing time, do not re-offer.
+    expect(parsed.guidance).toContain("כבר קבועה");
+    expect(parsed.guidance).toContain("אל תקרא ל-book_meeting או ל-list_available_slots שוב");
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update).toBeUndefined();
   });
