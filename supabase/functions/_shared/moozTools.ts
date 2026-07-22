@@ -8,8 +8,10 @@
 //
 //   book_meeting(start_time, end_time, lead_name, lead_email)
 //     → creates a confirmed booking; on success the dispatcher updates
-//       the conversation row (current_tag='zoom_scheduled' + status='paused'
-//       + zoom_scheduled_at + meeting_consented_at).
+//       the conversation row (current_tag='zoom_scheduled' + funnel_stage=
+//       'done' + zoom_scheduled_at + meeting_consented_at). The row is left
+//       ACTIVE (not paused) so the bot can keep answering the lead's
+//       follow-up questions after the booking — see updateConversationOnBooking.
 //
 // The handoff webhook (the broadcast to Make.com / advisors) is NOT
 // fired from here. It's fired from `mooz-webhook` after Mooz confirms
@@ -20,6 +22,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 import { agentBookingNote } from "./moozBookingSource.ts";
 import type Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
+import { type FireberryChecker, type FireberryBlockResult } from "./fireberry.ts";
 import { logError } from "./logError.ts";
 import { meetsZoomQualificationFloor } from "./zoomGate.ts";
 import { formatIlHHMM } from "./ilTime.ts";
@@ -97,6 +100,13 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
             "leaving / that the conversation is too deep for them — bypasses the warming floor. " +
             "Do NOT set it just to force a booking.",
         },
+        lead_requested_reschedule: {
+          type: "boolean",
+          description:
+            "Set true ONLY when the lead EXPLICITLY asks to MOVE or CHANGE an existing meeting to a " +
+            "different time. Bypasses the 'already booked' guard so Mooz can replace the prior slot. " +
+            "NEVER set it for a first-time booking, and never just to force a booking through.",
+        },
       },
       required: ["start_time", "end_time", "lead_name", "lead_email"],
     },
@@ -123,6 +133,11 @@ export interface MoozDispatchCtx {
    *  Null when the agent has no code configured (booking still succeeds;
    *  it just won't be product-tagged). */
   productCode?: string | null;
+  /** Optional Fireberry status checker. When present, the dispatcher refuses
+   *  to offer slots or book for a lead already registered as a student
+   *  (statuscode 2 = נרשם) or blacklisted (11 = רשימה שחורה). Absent/null →
+   *  gate disabled (fail-open). */
+  fireberry?: FireberryChecker | null;
 }
 
 /** What we hand back to Claude as the tool_result content. */
@@ -218,6 +233,75 @@ async function checkQualificationGate(
   };
 }
 
+// ─── existing-customer / blacklist gate (Fireberry) ──────────────────
+
+/**
+ * Deterministic backstop that stops the bot from offering or booking a Zoom
+ * for a lead who is already a registered student (statuscode 2 = נרשם) or
+ * blacklisted (11 = רשימה שחורה) in Fireberry. The actual Mooz booking is
+ * created here in the bot — BEFORE any Make scenario runs — so this is the
+ * only place a booking can be prevented for such a person.
+ *
+ * Fail-open by design: no checker wired (missing token) or any lookup error
+ * → returns null (proceed). A false "proceed" is recoverable downstream; a
+ * false "block" would silently drop a legitimate lead. On a real block we
+ * also tag the conversation `requires_human` so an operator picks it up.
+ */
+async function checkFireberryStatusGate(
+  ctx: MoozDispatchCtx,
+): Promise<MoozDispatchResult | null> {
+  if (!ctx.fireberry) return null;
+  let result: FireberryBlockResult;
+  try {
+    result = await ctx.fireberry.lookupBlockingStatus(ctx.leadPhone);
+  } catch (err) {
+    await logError({
+      admin: ctx.admin,
+      source: "mooz-tools",
+      errorType: "fireberry_lookup_failed",
+      message: err instanceof Error ? err.message : String(err),
+      context: { leadPhone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+      level: "warn",
+    });
+    return null; // fail-open
+  }
+  if (!result.blocked) return null;
+
+  // Flag for a human — the bot must not auto-book this person.
+  const { error } = await ctx.admin
+    .from("conversations")
+    .update({ current_tag: "requires_human" })
+    .eq("id", ctx.conversationId);
+  if (error) {
+    await logError({
+      admin: ctx.admin,
+      source: "mooz-tools",
+      errorType: "conversation_update_failed_fireberry_block",
+      message: error.message,
+      context: { conversationId: ctx.conversationId, statuscode: result.statuscode },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+      level: "warn",
+    });
+  }
+
+  return {
+    resultJson: JSON.stringify({
+      blocked: true,
+      reason: "existing_customer_or_blacklist",
+      fireberry_statuscode: result.statuscode,
+      guidance:
+        "הליד הזה כבר קיים ב-CRM כלקוח/תלמיד רשום או ברשימה שחורה. אל תקבע לו פגישה, " +
+        "ואל תקרא ל-book_meeting או ל-list_available_slots. ענה בהודעה קצרה ואדיבה בעברית " +
+        "שנציג אישי ימשיך איתו מכאן — בלי להיכנס לפרטים, בלי לשאול שאלות המשך ובלי להציע זמנים.",
+    }),
+    bookingCreated: false,
+    offeredTimesIL: [],
+  };
+}
+
 // ─── list_available_slots ────────────────────────────────────────────
 
 async function handleListSlots(
@@ -228,6 +312,8 @@ async function handleListSlots(
     (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
   const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
+  const fbBlocked = await checkFireberryStatusGate(ctx);
+  if (fbBlocked) return fbBlocked;
   const parsed = parseListInput(input);
   if (!parsed.ok) {
     return {
@@ -362,6 +448,8 @@ async function handleBookMeeting(
     (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
   const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
+  const fbBlocked = await checkFireberryStatusGate(ctx);
+  if (fbBlocked) return fbBlocked;
   const parsed = parseBookInput(input);
   if (!parsed.ok) {
     return {
@@ -369,6 +457,34 @@ async function handleBookMeeting(
       bookingCreated: false,
       offeredTimesIL: [],
     };
+  }
+
+  // Cross-product dedup guard (defense in depth). If this lead already has a
+  // FUTURE confirmed Zoom in ANY product, do NOT create a second one — that
+  // cross-product duplicate is exactly what we are preventing. lookupByPhone
+  // is cross-org (nearest future booking for the phone across all products),
+  // so it also catches a booking made by the other agent or by self-service.
+  // Bypass only on an explicit reschedule (Mooz replaces the prior slot).
+  // Fail-open: on a lookup error / missing MOOZ_API_TOKEN we proceed rather
+  // than block a legitimate first booking.
+  const requestedReschedule =
+    (input as { lead_requested_reschedule?: unknown } | null)?.lead_requested_reschedule === true;
+  if (!requestedReschedule) {
+    const existing = await ctx.mooz.lookupByPhone(ctx.leadPhone);
+    if (existing.booked === true) {
+      return {
+        resultJson: JSON.stringify({
+          blocked: true,
+          reason: "already_booked",
+          existing_scheduled_at: existing.scheduledAt,
+          guidance:
+            "ללִיד כבר יש פגישת זום עתידית מתואמת (בכל מוצר). אל תקבע פגישה נוספת ואל תקרא ל-book_meeting שוב. " +
+            "אשר בקצרה שאתה רואה שכבר קבועה לו פגישה. רק אם הליד מבקש מפורשות להזיז/לשנות מועד — קרא ל-book_meeting עם lead_requested_reschedule=true.",
+        }),
+        bookingCreated: false,
+        offeredTimesIL: [],
+      };
+    }
   }
 
   const result = await ctx.mooz.createBooking({
@@ -429,9 +545,10 @@ async function handleBookMeeting(
   }
 
   // Success path: tag the conversation so the dashboard reflects reality
-  // immediately. The handoff webhook is fired separately by `mooz-webhook`
-  // when Mooz's own `booking.created` event arrives — that prevents a
-  // double-fire if the bot retries.
+  // immediately. The Fireberry meeting + advisor notification are written by
+  // Mooz's own native scenario (Make 4491366) off the `booking.created` event
+  // — we no longer fire our own handoff for real bookings (that caused the
+  // cross-product double-write; see mooz-webhook + project note).
   await updateConversationOnBooking({
     admin: ctx.admin,
     conversationId: ctx.conversationId,
@@ -513,7 +630,14 @@ async function updateConversationOnBooking(args: {
       // 0033). 'agent' is the top of the never-downgrade precedence.
       zoom_booked_by: "agent",
       funnel_stage: "done",
-      status: "paused",
+      // Deliberately NOT paused. The lead may keep asking questions after a
+      // booking ("where's the link?", "what will we cover?", "can we move
+      // it?") and going silent makes the bot look like it vanished. The
+      // conversation stays active; the Mooz pre-check finds the confirmed
+      // booking on the next inbound and injects the booked-status block
+      // (bookingStatusBlock.ts renderBookedBranch), which lets the bot answer
+      // follow-ups without ever re-offering slots. Operator pause + the
+      // requires_human/opted_out/underage tags still stop the loop.
       zoom_scheduled_at: args.scheduledAt,
       lead_name: args.leadName,
     })
