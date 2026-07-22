@@ -40,10 +40,16 @@ export interface ShouldPreCheckArgs {
   /** Raw text of the latest inbound user message. Empty string if
    *  unavailable. */
   lastInboundText: string;
+  /** True when the conversation is already tagged zoom_scheduled — a
+   *  confirmed booking is expected. We must re-load the booked-status block
+   *  EVERY turn (regardless of keywords), otherwise the bot could re-offer a
+   *  slot to a lead who is already booked. */
+  alreadyBooked?: boolean;
 }
 
 export function shouldPreCheckMooz(args: ShouldPreCheckArgs): boolean {
   if (!args.moozClientPresent) return false;
+  if (args.alreadyBooked) return true;
   if (args.claudeMessageCount === 1) return true;
   return BOOKING_KEYWORD_RE.test(args.lastInboundText);
 }
@@ -64,12 +70,21 @@ function renderBookedBranch(scheduledAtIso: string): string {
 
 This lead HAS a confirmed Zoom meeting at ${ilTime}.
 
+THE WARMING PHASE IS OVER. This lead is already booked. Do NOT resume the
+discovery/warming flow: no qualification questions (the 5 questions), no
+dream/pain digging, no "agitation", and DO NOT steer toward booking another
+meeting. That job is done.
+
+Your ONLY job now is to talk to them like a helpful, warm human and answer
+whatever they actually ask — directly, briefly, naturally. Treat it like a
+normal conversation with someone who's coming to a meeting, so they never
+feel you vanished after booking.
+
 Behavior rules for this turn:
 - DO NOT call list_available_slots or book_meeting unless the lead explicitly asks to reschedule.
-- Respond in ONE short Hebrew message following this pattern:
-  1. Briefly acknowledge what the lead actually said (paraphrase their content, not just "תודה").
-  2. Note that you can see they already have a meeting with the advisor.
-  3. Encourage preparation: "תבוא עם שאלות והמטרות שלך".
+- Answer the lead's actual question / respond to what they actually said. Don't deflect everything to "the advisor will explain" — answer what you reasonably can, warmly and concisely.
+- The hard limits still apply: no prices, no income promises, no invented facts (advisors, success rates, meeting length). For those specific things, and ONLY those, it's fine to say the advisor will cover it in the meeting.
+- If they're just making small talk or saying thanks, respond warmly and naturally. You can gently mention they can bring their questions and goals to the meeting — but only when it fits, not as a scripted line every message.
 
 - If the lead asks about the link or "where is the link" / "didn't get a link":
   Reply exactly: "הקישור יישלח אליך בוואטסאפ 5 דקות לפני הפגישה".
