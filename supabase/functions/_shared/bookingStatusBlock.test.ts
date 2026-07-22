@@ -32,6 +32,8 @@ describe("renderBookingStatusBlock", () => {
     expect(block).toContain("DO NOT call list_available_slots");
     expect(block).toContain("RESCHEDULE");
     expect(block).toContain("CANCEL");
+    // Post-booking the bot must stop warming and just answer the lead.
+    expect(block).toContain("WARMING PHASE IS OVER");
   });
 
   it("not booked branch — instructs gentle correction if lead claims booking", () => {
@@ -130,6 +132,30 @@ describe("shouldPreCheckMooz", () => {
         moozClientPresent: true,
         claudeMessageCount: 7,
         lastInboundText: "אני בעבודה עכשיו, אדבר אחר כך",
+      }),
+    ).toBe(false);
+  });
+
+  it("returns true when already booked, even without keywords", () => {
+    // A lead who already has a confirmed Zoom must get the booked-status
+    // block on every turn so the bot never re-offers a slot.
+    expect(
+      shouldPreCheckMooz({
+        moozClientPresent: true,
+        claudeMessageCount: 12,
+        lastInboundText: "מגניב תודה רבה",
+        alreadyBooked: true,
+      }),
+    ).toBe(true);
+  });
+
+  it("still returns false when already booked but moozClient is absent", () => {
+    expect(
+      shouldPreCheckMooz({
+        moozClientPresent: false,
+        claudeMessageCount: 12,
+        lastInboundText: "מגניב תודה רבה",
+        alreadyBooked: true,
       }),
     ).toBe(false);
   });

@@ -58,6 +58,7 @@ import { validateAgentReply } from "./validateAgentReply.ts";
 import { runMemoryExtraction } from "./extractMemory.ts";
 import { runAgentTurn } from "./agentTurn.ts";
 import { moozClientFromEnv } from "./mooz.ts";
+import { fireberryClientFromEnv } from "./fireberry.ts";
 import { type MoozDispatchCtx } from "./moozTools.ts";
 import { formatIlHHMM } from "./ilTime.ts";
 import { buildGuardHint } from "./guardHint.ts";
@@ -579,8 +580,14 @@ async function sendAndRecordReply(
 // Tags that mean "do not auto-reply to this conversation". Either the
 // lead has been handed off to a human, opted out, escalated, or is
 // underage. The agent loop must skip these even if status='active'.
+//
+// Note: `zoom_scheduled` is intentionally NOT here. A lead who booked a
+// Zoom in-chat stays active so the bot can keep answering follow-up
+// questions ("where's the link?", "can we move it?"). The Mooz pre-check
+// loads the booked-status block (bookingStatusBlock.ts) which prevents any
+// re-offer of slots. The `consent_handoff` path (extractMemory.ts) still
+// sets status='paused' separately, so those leads stay silent for the human.
 const BLOCKING_TAGS: ReadonlySet<string> = new Set([
-  "zoom_scheduled",
   "opted_out",
   "requires_human",
   "underage",
@@ -697,7 +704,14 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   }
 
   try {
-    await generateAndSendAgentResponseLocked(ctx);
+    await generateAndSendAgentResponseLocked(ctx, {
+      // The conversation is already tagged zoom_scheduled → a confirmed
+      // booking is expected. Force the Mooz pre-check every turn so the
+      // booked-status block loads even when the lead's message has no
+      // scheduling keyword — otherwise the bot could re-offer a slot to a
+      // lead who is already booked.
+      alreadyZoomScheduled: claimedTag === "zoom_scheduled",
+    });
   } finally {
     // Always release the lock — even on error — so the next inbound from
     // this lead is not stuck waiting for the 60s expiry.
@@ -708,7 +722,10 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   }
 }
 
-async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<void> {
+async function generateAndSendAgentResponseLocked(
+  ctx: AgentLoopCtx,
+  opts: { alreadyZoomScheduled?: boolean } = {},
+): Promise<void> {
   // Quiet-hours check. Operator-configured window in Asia/Jerusalem during
   // which the agent stays silent. Inbound row is already persisted; we
   // just don't generate or send a reply. Operator gets a WhatsApp alert
@@ -761,6 +778,13 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
         agentId: ctx.agentId,
         leadPhone: ctx.leadPhone,
         productCode,
+        // Existing-customer / blacklist gate. Null when FIREBERRY_API_TOKEN
+        // is unset — the gate then fails open (booking proceeds).
+        fireberry: fireberryClientFromEnv({
+          admin: ctx.admin,
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        }),
       }
     : null;
 
@@ -779,6 +803,7 @@ async function generateAndSendAgentResponseLocked(ctx: AgentLoopCtx): Promise<vo
     moozClientPresent: moozClient !== null,
     claudeMessageCount: turn.claudeMessages.length,
     lastInboundText,
+    alreadyBooked: opts.alreadyZoomScheduled === true,
   };
   let bookingStatusBlock = "";
   // When the lead already has a confirmed meeting, the bot may restate
