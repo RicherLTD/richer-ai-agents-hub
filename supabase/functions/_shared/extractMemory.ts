@@ -310,16 +310,83 @@ export function shouldTriggerZoomHandoff(
 interface AnthropicContentBlock {
   type: string;
   text?: unknown;
+  name?: unknown;
+  input?: unknown;
+}
+
+/**
+ * Render the conversation as a labelled transcript inside ONE user message.
+ *
+ * Why this exists — the bug it fixes (2026-07-29):
+ * The extractor used to receive `claudeMessages` verbatim, i.e. the same
+ * alternating user/assistant array the agent itself uses, plus a bare `{`
+ * assistant prefill. That structure told Haiku "you are the bot in this
+ * WhatsApp chat, continue your turn", while the system prompt said "you
+ * are an analyst, emit JSON". Structure won: the model completed the `{`
+ * as an invented control directive — `{wait_for_response}`,
+ * `{template:series_marketing_1}`, `{end_conversation}` — 6–29 characters
+ * of pseudo-syntax that failed JSON.parse on ~95% of calls for a month.
+ *
+ * Flattening the chat into a transcript the model *reads* removes the
+ * conversational role-play entirely: there is no assistant turn to
+ * continue, so the model can only describe what it sees.
+ */
+export function renderTranscript(
+  messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+): string {
+  return messages
+    .map((m) => `${m.role === "user" ? "Lead" : "Agent"}: ${m.content.trim()}`)
+    .join("\n");
+}
+
+/** Field schema for the forced tool call. Mirrors `ExtractedMemory`; the
+ *  model fills it in directly, so there is no JSON text to parse and no
+ *  parse-failure class at all. */
+export const EXTRACT_MEMORY_TOOL = {
+  name: "extract_memory",
+  description:
+    "Record the structured facts the lead has explicitly stated in the conversation. " +
+    "Use null for anything the lead has not said. Never guess or invent values.",
+  input_schema: {
+    type: "object",
+    properties: {
+      q1_age: { type: ["integer", "null"], description: "Lead's age, if stated." },
+      q2_motivation: { type: ["string", "null"], description: "Why they are interested." },
+      q3_dream_change: { type: ["string", "null"], description: "What they want to change." },
+      q4_blocker: { type: ["string", "null"], description: "What is stopping them." },
+      q5_urgency: { type: ["string", "null"], description: "How soon they want to start." },
+      q6_investment: { type: ["string", "null"], description: "What they can invest (time/money) if stated." },
+      q7_email: { type: ["string", "null"], description: "Email address, only if the lead gave one." },
+      meeting_consented: {
+        type: "boolean",
+        description:
+          "True ONLY if the lead explicitly agreed to a meeting (accepted a time, asked when, said let's schedule). " +
+          "A friendly reply is not consent.",
+      },
+      conversation_summary: { type: ["string", "null"], description: "Two or three sentences." },
+      primary_objection: { type: ["string", "null"], description: "Main hesitation, if any." },
+      red_flags: {
+        type: "array",
+        items: { type: "string" },
+        description: "Short codes for concerns, e.g. underage. Empty array when none.",
+      },
+      notes_for_advisor: { type: ["string", "null"], description: "Anything useful for the human advisor." },
+    },
+    required: ["meeting_consented", "red_flags"],
+  },
+} as const;
+
+/** Pull the forced tool call's arguments out of the response. */
+function extractToolInput(response: AnthropicMessageResponse): unknown | null {
+  const block = response.content.find(
+    (b) => b.type === "tool_use" && b.name === EXTRACT_MEMORY_TOOL.name,
+  );
+  if (!block || typeof block.input !== "object" || block.input === null) return null;
+  return block.input;
 }
 interface AnthropicMessageResponse {
   content: ReadonlyArray<AnthropicContentBlock>;
   usage?: { input_tokens?: number; output_tokens?: number };
-}
-
-function extractAssistantTextBlock(response: AnthropicMessageResponse): string | null {
-  const block = response.content.find((b) => b.type === "text");
-  if (!block || typeof block.text !== "string") return null;
-  return block.text;
 }
 
 export interface RunMemoryExtractionInput {
@@ -380,15 +447,23 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
 
-  // 2. Call Claude in JSON mode via assistant prefill. We append a
-  //    `{` opening brace to the conversation as the assistant's
-  //    pending message, then Claude continues the JSON. Most reliable
-  //    way to get pure JSON out of Anthropic without OpenAI-style
-  //    response_format.
-  const prefillOpen = "{";
+  // 2. Ask for the memory via a FORCED TOOL CALL over a flat transcript.
+  //
+  //    Two deliberate choices, both fixing the same historical failure
+  //    (see renderTranscript for the full story):
+  //      a. the chat is flattened into one user message the model READS,
+  //         so it is positioned as an analyst, not as the bot mid-chat;
+  //      b. tool_choice forces `extract_memory`, so the model fills a
+  //         schema instead of writing JSON text — there is no string to
+  //         parse, hence no parse-failure class to handle.
   const messagesForExtractor: Array<{ role: "user" | "assistant"; content: string }> = [
-    ...input.claudeMessages,
-    { role: "assistant", content: prefillOpen },
+    {
+      role: "user",
+      content: `Here is the full WhatsApp conversation so far.\n\n` +
+        `<conversation>\n${renderTranscript(input.claudeMessages)}\n</conversation>\n\n` +
+        `Call the ${EXTRACT_MEMORY_TOOL.name} tool with everything the Lead has ` +
+        `explicitly stated. Use null for anything not stated.`,
+    },
   ];
 
   // Observability for this step. Until 2026-07-29 the extractor emitted
@@ -427,7 +502,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     ]);
   };
 
-  let rawJson: string;
+  let parsed: unknown;
   try {
     const raw = await input.anthropic.messages.create({
       model: MEMORY_EXTRACTOR_MODEL,
@@ -435,27 +510,39 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       // No thinking — this is a fast structured extraction, not reasoning.
       system: prompt.content as string,
       messages: messagesForExtractor,
-    });
+      tools: [EXTRACT_MEMORY_TOOL],
+      // Forced: the model MUST call extract_memory. It cannot reply with
+      // prose, and it cannot invent a control token.
+      tool_choice: { type: "tool", name: EXTRACT_MEMORY_TOOL.name },
+      // deno-lint-ignore no-explicit-any
+    } as any);
     const response = raw as unknown as AnthropicMessageResponse;
     extractUsage = {
       inputTokens: response.usage?.input_tokens,
       outputTokens: response.usage?.output_tokens,
     };
-    const text = extractAssistantTextBlock(response);
-    if (!text) {
+    const toolInput = extractToolInput(response);
+    if (!toolInput) {
+      // Should be unreachable with a forced tool_choice; happens only if
+      // the response was truncated at max_tokens mid-tool-call.
       await logError({
         admin: input.admin,
         source: "memory-extractor",
-        errorType: "claude_empty_response",
-        message: "Claude returned no text block for memory extraction",
-        context: { agentId: input.agentId },
+        errorType: "claude_no_tool_use",
+        message: `Forced tool call missing from response (blocks: ${
+          response.content.map((b) => b.type).join(",") || "none"
+        })`,
+        context: {
+          agentId: input.agentId,
+          block_types: response.content.map((b) => b.type),
+        },
         agentId: input.agentId,
         conversationId: input.conversationId,
       });
-      await traceExtraction("claude_empty_response", null, false);
+      await traceExtraction("claude_no_tool_use", null, false);
       return;
     }
-    rawJson = prefillOpen + text;
+    parsed = toolInput;
   } catch (err) {
     await logError({
       admin: input.admin,
@@ -474,38 +561,21 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     return;
   }
 
-  // 3. Parse + validate. Claude often adds trailing prose; clip to the
-  //    last closing brace for robustness.
-  const closeIdx = rawJson.lastIndexOf("}");
-  const candidate = closeIdx === -1 ? rawJson : rawJson.slice(0, closeIdx + 1);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate);
-  } catch (parseErr) {
-    await logError({
-      admin: input.admin,
-      source: "memory-extractor",
-      errorType: "claude_invalid_json",
-      message: parseErr instanceof Error ? parseErr.message : String(parseErr),
-      context: { raw_length: rawJson.length, raw_head: rawJson.slice(0, 200) },
-      agentId: input.agentId,
-      conversationId: input.conversationId,
-    });
-    await traceExtraction("claude_invalid_json", rawJson.slice(0, 500), false);
-    return;
-  }
+  // 3. Validate the tool arguments. No JSON.parse step exists any more —
+  //    the SDK hands us a structured object — so `claude_invalid_json`
+  //    is no longer reachable from this path.
   const memory = coerceExtractedMemory(parsed);
   if (!memory) {
     await logError({
       admin: input.admin,
       source: "memory-extractor",
       errorType: "claude_unrecognised_shape",
-      message: "Parsed JSON was not an object",
-      context: { raw_head: rawJson.slice(0, 200) },
+      message: "Tool arguments were not an object",
+      context: { raw_head: JSON.stringify(parsed).slice(0, 200) },
       agentId: input.agentId,
       conversationId: input.conversationId,
     });
-    await traceExtraction("claude_unrecognised_shape", rawJson.slice(0, 500), false);
+    await traceExtraction("claude_unrecognised_shape", parsed, false);
     return;
   }
   await traceExtraction("ok", memory, true);
