@@ -23,6 +23,7 @@ import {
   type HandoffConversation,
   type HandoffLeadMemory,
 } from "./fireHandoffWebhook.ts";
+import type { Langfuse } from "./langfuse.ts";
 
 
 // Format an ISO timestamp into Asia/Jerusalem date / time / datetime
@@ -312,6 +313,7 @@ interface AnthropicContentBlock {
 }
 interface AnthropicMessageResponse {
   content: ReadonlyArray<AnthropicContentBlock>;
+  usage?: { input_tokens?: number; output_tokens?: number };
 }
 
 function extractAssistantTextBlock(response: AnthropicMessageResponse): string | null {
@@ -339,6 +341,12 @@ export interface RunMemoryExtractionInput {
    *  When present, the handoff payload's `conversation.dashboard_url` will be set to
    *  `<base>/conversations/<id>` so advisors can click straight into the chat. */
   dashboardBaseUrl?: string | null;
+  /** Optional Langfuse handle. When present, the extraction model call is
+   *  recorded as a step inside the turn's trace and an `extraction_ok`
+   *  score is attached. Absent → extraction runs untraced, exactly as
+   *  before. This step was invisible until 2026-07-29, which is how a
+   *  ~95% failure rate survived for a month. */
+  langfuse?: { client: Langfuse; traceId: string } | null;
 }
 
 /**
@@ -383,6 +391,42 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     { role: "assistant", content: prefillOpen },
   ];
 
+  // Observability for this step. Until 2026-07-29 the extractor emitted
+  // nothing to Langfuse, which is how a ~95% failure rate went unnoticed
+  // for a month while its failures sat in error_logs behind ~8,900 rows
+  // of delivery telemetry. Never throws — tracing must not break extraction.
+  const extractStart = new Date();
+  let extractUsage: { inputTokens?: number; outputTokens?: number } | undefined;
+  const traceExtraction = async (
+    outcome: string,
+    output: unknown,
+    ok: boolean,
+  ): Promise<void> => {
+    const lf = input.langfuse;
+    if (!lf) return;
+    const observationId = await lf.client.recordChildGeneration({
+      traceId: lf.traceId,
+      name: "memory-extractor",
+      model: MEMORY_EXTRACTOR_MODEL,
+      startTime: extractStart,
+      endTime: new Date(),
+      input: { system: prompt.content, messages: messagesForExtractor },
+      output,
+      usage: extractUsage,
+      level: ok ? "DEFAULT" : "ERROR",
+      statusMessage: ok ? undefined : outcome,
+    });
+    await lf.client.recordScores({ traceId: lf.traceId }, [
+      {
+        name: "extraction_ok",
+        value: ok ? 1 : 0,
+        dataType: "BOOLEAN",
+        comment: ok ? undefined : outcome,
+        ...(observationId ? { observationId } : {}),
+      },
+    ]);
+  };
+
   let rawJson: string;
   try {
     const raw = await input.anthropic.messages.create({
@@ -393,6 +437,10 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       messages: messagesForExtractor,
     });
     const response = raw as unknown as AnthropicMessageResponse;
+    extractUsage = {
+      inputTokens: response.usage?.input_tokens,
+      outputTokens: response.usage?.output_tokens,
+    };
     const text = extractAssistantTextBlock(response);
     if (!text) {
       await logError({
@@ -404,6 +452,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         agentId: input.agentId,
         conversationId: input.conversationId,
       });
+      await traceExtraction("claude_empty_response", null, false);
       return;
     }
     rawJson = prefillOpen + text;
@@ -417,6 +466,11 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       agentId: input.agentId,
       conversationId: input.conversationId,
     });
+    await traceExtraction(
+      "claude_api_error",
+      { error: err instanceof Error ? err.message : String(err) },
+      false,
+    );
     return;
   }
 
@@ -437,6 +491,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       agentId: input.agentId,
       conversationId: input.conversationId,
     });
+    await traceExtraction("claude_invalid_json", rawJson.slice(0, 500), false);
     return;
   }
   const memory = coerceExtractedMemory(parsed);
@@ -450,8 +505,10 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
       agentId: input.agentId,
       conversationId: input.conversationId,
     });
+    await traceExtraction("claude_unrecognised_shape", rawJson.slice(0, 500), false);
     return;
   }
+  await traceExtraction("ok", memory, true);
 
   // 4. Resolve meeting_consented_at. Read the existing row's value first
   //    so we can "lock in" the timestamp the FIRST time Claude observes

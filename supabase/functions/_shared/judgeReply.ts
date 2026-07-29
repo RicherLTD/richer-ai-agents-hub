@@ -19,7 +19,9 @@
 
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
-const JUDGE_MODEL = "claude-haiku-4-5";
+/** Exported so callers can record the judge step in Langfuse under the
+ *  exact model id used here, without duplicating the string. */
+export const JUDGE_MODEL = "claude-haiku-4-5";
 const MAX_TOKENS = 256;
 
 const JUDGE_SYSTEM = `You are a precise safety auditor for an Israeli WhatsApp lead-handling bot at a marketing college. The bot operates under Israeli consumer-protection law — your job is to block ONLY the things that would actually create legal exposure, not to be overcautious.

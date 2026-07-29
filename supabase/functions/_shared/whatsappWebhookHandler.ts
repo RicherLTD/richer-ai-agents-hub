@@ -49,7 +49,7 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "./anthropicRetry.ts";
-import { judgeReply } from "./judgeReply.ts";
+import { JUDGE_MODEL, judgeReply } from "./judgeReply.ts";
 import { transcribeVoiceNote } from "./transcribeVoice.ts";
 import { logError } from "./logError.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
@@ -75,6 +75,7 @@ import {
   computeSonnet46Cost,
   Langfuse,
   langfuseFromEnv,
+  type LangfuseScore,
 } from "./langfuse.ts";
 import { toCanonicalPhone } from "./normalizePhone.ts";
 import { buildEmbedUrl } from "./embedLink.ts";
@@ -925,6 +926,65 @@ async function generateAndSendAgentResponseLocked(
   let guardHint = "";
   let langfuseTraceId: string | null = null;
 
+  // Deferred observability.
+  //
+  // Guard/judge verdicts and the judge's own model call are buffered here
+  // and flushed to Langfuse only AFTER the reply has reached the lead, so
+  // instrumentation never adds latency to a lead-facing send. Flushed on
+  // the success path and on both terminal-failure paths; a missed flush
+  // costs one data point and can never cost a reply.
+  const turnScores: LangfuseScore[] = [];
+  let judgeStep: {
+    startTime: Date;
+    endTime: Date;
+    input: string;
+    verdict: { ok: boolean; reason: string; tokensInput: number; tokensOutput: number };
+  } | null = null;
+
+  const flushTurnObservability = async (): Promise<void> => {
+    const traceId = langfuseTraceId;
+    if (!ctx.langfuse || !traceId) return;
+    const onFailure = async (detail: { status: number; body: string }) => {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "langfuse_ingestion_failed",
+        level: "warn",
+        message: `Langfuse observability flush failed status=${detail.status}`,
+        context: { status: detail.status, body: detail.body, prompt_version: turn.promptVersion },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    };
+    const step = judgeStep;
+    const scores = turnScores.slice();
+    // Clear first: a retry of the loop must not re-post the same rows.
+    turnScores.length = 0;
+    judgeStep = null;
+    const jobs: Array<Promise<unknown>> = [];
+    if (step) {
+      jobs.push(ctx.langfuse.recordChildGeneration({
+        traceId,
+        name: "judge-reply",
+        model: JUDGE_MODEL,
+        startTime: step.startTime,
+        endTime: step.endTime,
+        input: step.input,
+        output: { ok: step.verdict.ok, reason: step.verdict.reason },
+        usage: {
+          inputTokens: step.verdict.tokensInput,
+          outputTokens: step.verdict.tokensOutput,
+        },
+        level: step.verdict.ok ? "DEFAULT" : "WARNING",
+        statusMessage: step.verdict.ok ? undefined : step.verdict.reason,
+      }, onFailure));
+    }
+    if (scores.length > 0) {
+      jobs.push(ctx.langfuse.recordScores({ traceId }, scores, onFailure));
+    }
+    await Promise.all(jobs);
+  };
+
   for (let attempt = 0; attempt < 2; attempt++) {
     const systemPromptThisAttempt = fullSystemPrompt + guardHint;
 
@@ -1044,6 +1104,15 @@ async function generateAndSendAgentResponseLocked(
       );
     }
 
+    // Buffered, not posted — flushed after the reply reaches the lead.
+    if (attempt === 0) {
+      turnScores.push(
+        validation.ok
+          ? { name: "guard_passed", value: 1, dataType: "BOOLEAN" }
+          : { name: "guard_passed", value: 0, dataType: "BOOLEAN", comment: validation.reason },
+      );
+    }
+
     if (!validation.ok) {
       if (attempt === 0) {
         // Log a warn-level entry so the operator can spot it in error_logs,
@@ -1085,6 +1154,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await flushTurnObservability();
       return;
     }
 
@@ -1092,6 +1162,7 @@ async function generateAndSendAgentResponseLocked(
     // rules the regex validator can't enforce ("5 אלף בחודש", subtle AI
     // disclosure, income hints without "מובטח"). Degrades open on
     // judge failure so a Haiku outage doesn't stop legitimate traffic.
+    const judgeStart = new Date();
     const verdict = await judgeReply(ctx.anthropic, validation.text, async (msg) => {
       await logError({
         admin: ctx.admin,
@@ -1104,6 +1175,22 @@ async function generateAndSendAgentResponseLocked(
         conversationId: ctx.conversationId,
       });
     });
+    // Buffered — the judge's own model call becomes a step inside this
+    // turn's trace, and its verdict becomes a score on the turn.
+    if (attempt === 0) {
+      judgeStep = {
+        startTime: judgeStart,
+        endTime: new Date(),
+        input: validation.text,
+        verdict,
+      };
+      turnScores.push({
+        name: "judge_passed",
+        value: verdict.ok ? 1 : 0,
+        dataType: "BOOLEAN",
+        comment: verdict.ok ? undefined : verdict.reason,
+      });
+    }
     if (!verdict.ok) {
       if (attempt === 0) {
         // Log a warn-level entry so the operator can spot it in error_logs,
@@ -1146,6 +1233,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await flushTurnObservability();
       return;
     }
 
@@ -1159,6 +1247,9 @@ async function generateAndSendAgentResponseLocked(
       costUsd,
       latencyMs,
     });
+
+    // Reply is with the lead — now it is free to spend time on tracing.
+    await flushTurnObservability();
 
     // Capture reply text for the memory extractor (used after the loop).
     // We need to break out of the loop scope carrying these values.
@@ -1178,6 +1269,12 @@ async function generateAndSendAgentResponseLocked(
       handoffWebhookUrl: ctx.handoffWebhookUrl,
       handoffWebhookSecret: ctx.handoffWebhookSecret,
       dashboardBaseUrl: ctx.dashboardBaseUrl,
+      // Records the extraction as a step inside this turn's trace, with an
+      // extraction_ok score. Null when tracing is disabled or the trace
+      // failed to create — extraction behaviour is unchanged either way.
+      langfuse: ctx.langfuse && langfuseTraceId
+        ? { client: ctx.langfuse, traceId: langfuseTraceId }
+        : null,
     });
     return;
   }
