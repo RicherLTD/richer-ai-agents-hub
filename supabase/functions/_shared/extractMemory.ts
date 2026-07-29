@@ -384,6 +384,98 @@ function extractToolInput(response: AnthropicMessageResponse): unknown | null {
   if (!block || typeof block.input !== "object" || block.input === null) return null;
   return block.input;
 }
+
+export type ExtractorUsage = { inputTokens?: number; outputTokens?: number };
+
+export type MemoryExtractionResult =
+  | { ok: true; memory: ExtractedMemory; raw: unknown; usage: ExtractorUsage }
+  | {
+    ok: false;
+    outcome: "claude_api_error" | "claude_no_tool_use" | "claude_unrecognised_shape";
+    detail: string;
+    raw?: unknown;
+    usage?: ExtractorUsage;
+  };
+
+/** The exact prompt payload sent to the extractor. Exported so an offline
+ *  validator can reproduce production input byte-for-byte. */
+export function buildExtractorMessages(
+  claudeMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+): Array<{ role: "user" | "assistant"; content: string }> {
+  return [
+    {
+      role: "user",
+      content: `Here is the full WhatsApp conversation so far.\n\n` +
+        `<conversation>\n${renderTranscript(claudeMessages)}\n</conversation>\n\n` +
+        `Call the ${EXTRACT_MEMORY_TOOL.name} tool with everything the Lead has ` +
+        `explicitly stated. Use null for anything not stated.`,
+    },
+  ];
+}
+
+/**
+ * The extraction model call, with NO database writes and NO side effects.
+ *
+ * Factored out of `runMemoryExtraction` so that an offline validator can
+ * exercise the exact production code path without touching `lead_memory`,
+ * without changing tags, and — critically — without any chance of firing
+ * the handoff webhook for a historical lead.
+ */
+export async function callMemoryExtractor(args: {
+  anthropic: Anthropic;
+  systemPrompt: string;
+  claudeMessages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>;
+}): Promise<MemoryExtractionResult> {
+  let usage: ExtractorUsage | undefined;
+  try {
+    const raw = await args.anthropic.messages.create({
+      model: MEMORY_EXTRACTOR_MODEL,
+      max_tokens: 1024,
+      // No thinking — this is a fast structured extraction, not reasoning.
+      system: args.systemPrompt,
+      messages: buildExtractorMessages(args.claudeMessages),
+      tools: [EXTRACT_MEMORY_TOOL],
+      // Forced: the model MUST call extract_memory. It cannot reply with
+      // prose, and it cannot invent a control token.
+      tool_choice: { type: "tool", name: EXTRACT_MEMORY_TOOL.name },
+      // deno-lint-ignore no-explicit-any
+    } as any);
+    const response = raw as unknown as AnthropicMessageResponse;
+    usage = {
+      inputTokens: response.usage?.input_tokens,
+      outputTokens: response.usage?.output_tokens,
+    };
+    const toolInput = extractToolInput(response);
+    if (!toolInput) {
+      // Should be unreachable with a forced tool_choice; happens only if
+      // the response was truncated at max_tokens mid-tool-call.
+      return {
+        ok: false,
+        outcome: "claude_no_tool_use",
+        detail: `blocks: ${response.content.map((b) => b.type).join(",") || "none"}`,
+        usage,
+      };
+    }
+    const memory = coerceExtractedMemory(toolInput);
+    if (!memory) {
+      return {
+        ok: false,
+        outcome: "claude_unrecognised_shape",
+        detail: "Tool arguments were not an object",
+        raw: toolInput,
+        usage,
+      };
+    }
+    return { ok: true, memory, raw: toolInput, usage };
+  } catch (err) {
+    return {
+      ok: false,
+      outcome: "claude_api_error",
+      detail: err instanceof Error ? err.message : String(err),
+      usage,
+    };
+  }
+}
 interface AnthropicMessageResponse {
   content: ReadonlyArray<AnthropicContentBlock>;
   usage?: { input_tokens?: number; output_tokens?: number };
@@ -456,15 +548,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   //      b. tool_choice forces `extract_memory`, so the model fills a
   //         schema instead of writing JSON text — there is no string to
   //         parse, hence no parse-failure class to handle.
-  const messagesForExtractor: Array<{ role: "user" | "assistant"; content: string }> = [
-    {
-      role: "user",
-      content: `Here is the full WhatsApp conversation so far.\n\n` +
-        `<conversation>\n${renderTranscript(input.claudeMessages)}\n</conversation>\n\n` +
-        `Call the ${EXTRACT_MEMORY_TOOL.name} tool with everything the Lead has ` +
-        `explicitly stated. Use null for anything not stated.`,
-    },
-  ];
+  const messagesForExtractor = buildExtractorMessages(input.claudeMessages);
 
   // Observability for this step. Until 2026-07-29 the extractor emitted
   // nothing to Langfuse, which is how a ~95% failure rate went unnoticed
@@ -502,82 +586,37 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
     ]);
   };
 
-  let parsed: unknown;
-  try {
-    const raw = await input.anthropic.messages.create({
-      model: MEMORY_EXTRACTOR_MODEL,
-      max_tokens: 1024,
-      // No thinking — this is a fast structured extraction, not reasoning.
-      system: prompt.content as string,
-      messages: messagesForExtractor,
-      tools: [EXTRACT_MEMORY_TOOL],
-      // Forced: the model MUST call extract_memory. It cannot reply with
-      // prose, and it cannot invent a control token.
-      tool_choice: { type: "tool", name: EXTRACT_MEMORY_TOOL.name },
-      // deno-lint-ignore no-explicit-any
-    } as any);
-    const response = raw as unknown as AnthropicMessageResponse;
-    extractUsage = {
-      inputTokens: response.usage?.input_tokens,
-      outputTokens: response.usage?.output_tokens,
-    };
-    const toolInput = extractToolInput(response);
-    if (!toolInput) {
-      // Should be unreachable with a forced tool_choice; happens only if
-      // the response was truncated at max_tokens mid-tool-call.
-      await logError({
-        admin: input.admin,
-        source: "memory-extractor",
-        errorType: "claude_no_tool_use",
-        message: `Forced tool call missing from response (blocks: ${
-          response.content.map((b) => b.type).join(",") || "none"
-        })`,
-        context: {
-          agentId: input.agentId,
-          block_types: response.content.map((b) => b.type),
-        },
-        agentId: input.agentId,
-        conversationId: input.conversationId,
-      });
-      await traceExtraction("claude_no_tool_use", null, false);
-      return;
-    }
-    parsed = toolInput;
-  } catch (err) {
-    await logError({
-      admin: input.admin,
-      source: "memory-extractor",
-      errorType: "claude_api_error",
-      message: err instanceof Error ? err.message : String(err),
-      context: { model: MEMORY_EXTRACTOR_MODEL },
-      agentId: input.agentId,
-      conversationId: input.conversationId,
-    });
-    await traceExtraction(
-      "claude_api_error",
-      { error: err instanceof Error ? err.message : String(err) },
-      false,
-    );
-    return;
-  }
+  // 3. One shared call — `callMemoryExtractor` is also what the offline
+  //    validator runs, so what we validate is exactly what production does.
+  //    No JSON.parse step exists any more (the SDK hands back a structured
+  //    object), so `claude_invalid_json` is unreachable from this path.
+  const result = await callMemoryExtractor({
+    anthropic: input.anthropic,
+    systemPrompt: prompt.content as string,
+    claudeMessages: input.claudeMessages,
+  });
+  extractUsage = result.usage;
 
-  // 3. Validate the tool arguments. No JSON.parse step exists any more —
-  //    the SDK hands us a structured object — so `claude_invalid_json`
-  //    is no longer reachable from this path.
-  const memory = coerceExtractedMemory(parsed);
-  if (!memory) {
+  if (!result.ok) {
     await logError({
       admin: input.admin,
       source: "memory-extractor",
-      errorType: "claude_unrecognised_shape",
-      message: "Tool arguments were not an object",
-      context: { raw_head: JSON.stringify(parsed).slice(0, 200) },
+      errorType: result.outcome,
+      message: result.detail,
+      context: {
+        agentId: input.agentId,
+        model: MEMORY_EXTRACTOR_MODEL,
+        ...(result.raw !== undefined
+          ? { raw_head: JSON.stringify(result.raw).slice(0, 200) }
+          : {}),
+      },
       agentId: input.agentId,
       conversationId: input.conversationId,
     });
-    await traceExtraction("claude_unrecognised_shape", parsed, false);
+    await traceExtraction(result.outcome, result.raw ?? { detail: result.detail }, false);
     return;
   }
+  const memory = result.memory;
   await traceExtraction("ok", memory, true);
 
   // 4. Resolve meeting_consented_at. Read the existing row's value first
