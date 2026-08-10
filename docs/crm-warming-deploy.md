@@ -110,41 +110,22 @@ being recorded for the dashboard, but nothing is queued and the prompt goes back
 
 ---
 
-## Make side — the contract Izak builds against
+## Make side
 
-`POST https://juoglkqtmjsziieqgmhf.supabase.co/functions/v1/crm-status-webhook`
-`Authorization: Bearer <CRM_STATUS_SHARED_SECRET>`
+Owned by Izak, and written up separately for him in
+**[`crm-warming-make-contract.md`](./crm-warming-make-contract.md)** (Hebrew) — endpoint, payload
+fields, the 33 statuses to send, response codes, and the `rep_note` ask. Kept in one place so the
+two documents cannot drift.
 
-```json
-{
-  "product": "B",
-  "lead_phone": "0501234567",
-  "status_sub": 60,
-  "status_main": 5,
-  "lead_name": "ישראל",
-  "rep_note": "אמר שהוא בתהליך גירושין וזה לא הזמן",
-  "fireberry_lead_id": "abc-123"
-}
-```
+The parts that concern deployment: he needs the value of `CRM_STATUS_SHARED_SECRET` from step 2, and
+warming should be enabled for `affiliate_marketing` (`product = B`) first. Make can start sending `R`
+events immediately regardless — they are recorded and simply not sent until that agent is switched on.
 
-| Field | Required | Notes |
-|---|---|---|
-| `product` | ✅ | `B` = affiliate_marketing, `R` = digital_marketing. Matched against `agents.mooz_product_code`. |
-| `lead_phone` | ✅ | Any Israeli format; normalised our side. |
-| `status_sub` | ✅ | `pcfsystemfield103`. **This is the decision key.** Accepts a number or a numeric string. |
-| `status_main` | — | Context only. |
-| `lead_name` | — | Also used as template parameter 1 when the opener declares one. |
-| `rep_note` | — | The rep's free-text note. Optional, and worth chasing: it is the single biggest quality lever in the feature — it's the difference between the bot knowing the category of objection and knowing the specifics. Treated as untrusted input and wrapped so it can't act as an instruction. |
-| `fireberry_lead_id` | — | Stored if present. **Not** an identity key — the phone is. |
-
-**Filtering is Make's job, not ours.** There is deliberately no allow-list on our side: every event
-that arrives warms the lead. Blocking statuses (blacklist / invalid lead / wrong number) must simply
-never be sent. A status that arrives with no rule row falls back to an immediate warm and is logged
-as `crm_status_rule_missing`.
-
-Responses are always `200` with a JSON body describing what happened (`enqueued`, `cooldown_skipped`,
-`warming_enabled: false`, `superseded`, …), except `401` on a bad secret, `400` on a malformed
-payload, `404` on an unknown product.
+One rule worth repeating out loud, because it is the only way a lead gets messaged who shouldn't be:
+**filtering is Make's job.** There is deliberately no allow-list on our side, so every event that
+arrives warms the lead. Blocking statuses (blacklist / invalid lead / wrong number) must never be
+sent. A status that arrives with no rule row falls back to an immediate warm and is logged as
+`crm_status_rule_missing`.
 
 ---
 
