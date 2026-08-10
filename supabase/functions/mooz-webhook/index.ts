@@ -28,6 +28,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { logError } from "../_shared/logError.ts";
 import { classifyMoozBookingSource } from "../_shared/moozBookingSource.ts";
+import { langfuseFromEnv } from "../_shared/langfuse.ts";
 import {
   buildHandoffPayload,
   fireHandoffWebhook,
@@ -392,6 +393,53 @@ async function handleCreatedOrRescheduled(args: {
       .update({ zoom_booked_by: "self" })
       .eq("id", conversation.id)
       .is("zoom_booked_by", null);
+  }
+
+  // CRM warming reached its goal. Guarded on the current value so this only
+  // ever touches a lead that was actually being warmed — every other
+  // conversation keeps crm_warming_status NULL and is untouched. Flipping out
+  // of 'warming' also stops the warming block being injected from here on:
+  // the objection that started this is now spent.
+  await admin
+    .from("conversations")
+    .update({ crm_warming_status: "warming_converted" })
+    .eq("id", conversation.id)
+    .eq("crm_warming_status", "warming");
+
+  // Session-level outcome score. CONTEXT.md has named `bot_booked_zoom` as a
+  // session score since the Langfuse client was written, but nothing ever
+  // called recordScores({sessionId}) in production — this is that call.
+  //
+  // Booked-ness is only knowable days after the turns that produced it, which
+  // is exactly what a session score is for: it lands on the Conversation, so
+  // every trace in it becomes filterable by whether the lead ultimately booked.
+  // Only 'agent' counts as a bot conversion (migration 0033) — self-service
+  // bookings score 0 rather than being dropped, so the ratio stays computable.
+  if (event === "booking.created" && !wasAlreadyScheduled) {
+    const langfuse = langfuseFromEnv();
+    if (langfuse) {
+      await langfuse.recordScores(
+        { sessionId: conversation.id },
+        [{
+          name: "bot_booked_zoom",
+          value: bookedBy === "agent" ? 1 : 0,
+          dataType: "BOOLEAN",
+          comment: `booked_by=${bookedBy}`,
+        }],
+        async (detail) => {
+          await logError({
+            admin,
+            source: SOURCE,
+            errorType: "langfuse_ingestion_failed",
+            level: "warn",
+            message: `score ingestion failed (${detail.status}): ${detail.body.slice(0, 200)}`,
+            context: { score: "bot_booked_zoom" },
+            conversationId: conversation.id,
+            agentId: conversation.agent_id ?? undefined,
+          });
+        },
+      );
+    }
   }
   // Mirror the consent + email into lead_memory; that's where the handoff
   // pipeline reads them from.

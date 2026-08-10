@@ -42,6 +42,11 @@ export interface AgentTurnTraceInput {
   usage: AnthropicUsage;
   /** Tag the trace as a failure mode (validation reason, API error, etc.). */
   failureTag?: string;
+  /** Extra trace tags appended after the success/failure tag. Used by CRM
+   *  warming to stamp `warming`, `status:<n>` and `objection:<key>` so an
+   *  operator can filter Langfuse to "every conversation triggered by status
+   *  60" and read what the bot actually said. Empty for a normal lead. */
+  extraTags?: ReadonlyArray<string>;
 }
 
 /** A verdict attached after the fact to a trace, an observation, or a
@@ -127,7 +132,10 @@ export class Langfuse {
     const generationId = crypto.randomUUID();
     const lastUserMessage = input.claudeMessages[input.claudeMessages.length - 1]?.content
       ?? null;
-    const tags = input.failureTag ? [input.failureTag] : ["success"];
+    const tags = [
+      input.failureTag ? input.failureTag : "success",
+      ...(input.extraTags ?? []),
+    ];
 
     const events = [
       {

@@ -4,6 +4,7 @@ import { alertOperators } from "../_shared/alertOperators.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { partitionOptedOut } from "../_shared/optOutFilter.ts";
 import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
+import { isRecentInbound } from "../_shared/warmingDefer.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -153,8 +154,34 @@ Deno.serve(async (req) => {
   ];
   const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, cancelled: 0 };
   let auth401AlertSent = false;
+
+  // CRM-warming rows need two facts the claim RPC doesn't return: whether the
+  // row IS a warming row, and when the lead last wrote to us.
+  //
+  // Deliberately a supplementary query rather than a v4 of
+  // claim_scheduled_messages: changing that function's RETURNS TABLE needs a
+  // DROP + CREATE (Postgres 42P13), which would couple this deploy to the
+  // existing first-touch/broadcast path for no benefit. One extra indexed read
+  // per tick is the cheaper trade.
+  const warmingLastInboundById = new Map<string, string | null>();
+  if (sendableRows.length > 0) {
+    const { data: kindRows } = await admin
+      .from("scheduled_messages")
+      .select("id, kind, conversations(last_inbound_at)")
+      .in("id", sendableRows.map((r) => r.id))
+      .eq("kind", "warming");
+    for (const kr of kindRows ?? []) {
+      // PostgREST returns a to-one embed as an object, but older/looser
+      // relationship inference can hand back a single-element array.
+      const embedded = (kr as { conversations?: unknown }).conversations;
+      const convo = Array.isArray(embedded) ? embedded[0] : embedded;
+      const lastInbound =
+        (convo as { last_inbound_at?: string | null } | null | undefined)?.last_inbound_at ?? null;
+      warmingLastInboundById.set((kr as { id: string }).id, lastInbound);
+    }
+  }
 
   // Per-channel WhatsApp credentials. The dispatcher serves ALL agents, so it
   // must send each agent's template FROM that agent's own channel — otherwise
@@ -215,6 +242,24 @@ Deno.serve(async (req) => {
       await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
       results.deferred_manual_mode++;
       continue;
+    }
+    // CRM warming only: don't knock on a live conversation. The opener is a
+    // generic "היי, מה קורה?" — firing it while the bot is mid-exchange with
+    // the lead reads as a non-sequitur, and can arrive while the agent loop is
+    // still generating its reply to the lead's last message.
+    //
+    // DEFER, never cancel: the row stays pending and goes out on a later tick
+    // once the lead has gone quiet, which is exactly when a re-engagement
+    // nudge is worth sending. Meanwhile the warming context is already on the
+    // conversation, so the bot handles the objection on its very next turn
+    // regardless of whether this template ever fires.
+    if (warmingLastInboundById.has(row.id)) {
+      const lastInbound = warmingLastInboundById.get(row.id) ?? null;
+      if (isRecentInbound(lastInbound)) {
+        await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+        results.deferred_warming_active_chat++;
+        continue;
+      }
     }
     if (isQuietHourNow({ startIl: row.agent_quiet_hours_start_il, endIl: row.agent_quiet_hours_end_il })) {
       results.deferred_quiet_hours++;
