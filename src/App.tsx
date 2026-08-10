@@ -9,6 +9,7 @@ import { AuthProvider } from "@/contexts/AuthContext";
 import { ProtectedRoute } from "@/components/auth/ProtectedRoute";
 import Index from "./pages/Index.tsx";
 import Leads from "./pages/Leads.tsx";
+import CrmWarming from "./pages/CrmWarming.tsx";
 import Conversations from "./pages/Conversations.tsx";
 import Prompts from "./pages/Prompts.tsx";
 import Coach from "./pages/Coach.tsx";
@@ -47,6 +48,7 @@ const App = () => (
             >
               <Route path="/" element={<Index />} />
               <Route path="/leads" element={<Leads />} />
+              <Route path="/crm-warming" element={<CrmWarming />} />
               <Route path="/conversations" element={<Conversations />} />
               <Route path="/conversations/:id" element={<Conversations />} />
               {/* /analytics merged into the home page as an admin tab. Old

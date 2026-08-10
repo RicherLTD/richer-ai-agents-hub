@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAgent } from "@/contexts/AgentContext";
 import { useAuth } from "@/contexts/AuthContext";
@@ -47,6 +48,24 @@ export function AgentsTab() {
     onSuccess: () => {
       toast.success("הסוכן עודכן בהצלחה");
       setEditing(null);
+      invalidate();
+    },
+    onError: (err: Error) => toast.error(err.message),
+  });
+
+  // CRM-warming kill switch — deliberately a plain inline toggle, not a
+  // confirmation dialog like `is_paused`: turning it off is the SAFE direction
+  // (it only stops proactive outreach; the bot keeps answering), so it must be
+  // one click. Status events keep being recorded either way.
+  const warmingToggle = useMutation({
+    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
+      updateAgent(id, { crm_warming_enabled: enabled }),
+    onSuccess: (_data, vars) => {
+      toast.success(vars.enabled ? "חימום CRM הופעל" : "חימום CRM כובה", {
+        description: vars.enabled
+          ? "פניות חימום יישלחו לפי כללי הסטטוס."
+          : "אירועי סטטוס ימשיכו להירשם, אבל לא תישלח שום פנייה.",
+      });
       invalidate();
     },
     onError: (err: Error) => toast.error(err.message),
@@ -111,13 +130,14 @@ export function AgentsTab() {
               <TableHead>WhatsApp</TableHead>
               <TableHead>סטטוס</TableHead>
               <TableHead className="w-32">בוט</TableHead>
+              <TableHead className="w-28">חימום CRM</TableHead>
               {isAdmin && <TableHead className="w-16"></TableHead>}
             </TableRow>
           </TableHeader>
           <TableBody>
             {list.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={isAdmin ? 6 : 5} className="text-center text-sm text-muted-foreground">
+                <TableCell colSpan={isAdmin ? 7 : 6} className="text-center text-sm text-muted-foreground">
                   אין סוכנים. {isAdmin && 'לחץ על "סוכן חדש" כדי להוסיף.'}
                 </TableCell>
               </TableRow>
@@ -160,6 +180,22 @@ export function AgentsTab() {
                     ) : (
                       <span className="text-xs text-muted-foreground">
                         {agent.is_paused ? "מושהה" : "פעיל"}
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {isAdmin ? (
+                      <Switch
+                        checked={agent.crm_warming_enabled ?? false}
+                        disabled={warmingToggle.isPending}
+                        onCheckedChange={(checked) =>
+                          warmingToggle.mutate({ id: agent.id, enabled: checked })
+                        }
+                        aria-label={`חימום CRM עבור ${agent.display_name}`}
+                      />
+                    ) : (
+                      <span className="text-xs text-muted-foreground">
+                        {agent.crm_warming_enabled ? "פעיל" : "כבוי"}
                       </span>
                     )}
                   </TableCell>

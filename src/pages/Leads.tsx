@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { formatDistanceToNow } from "date-fns";
 import { he } from "date-fns/locale";
 import { Search, Users } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { EmptyState } from "@/components/EmptyState";
 import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Skeleton } from "@/components/ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { useAgent } from "@/contexts/AgentContext";
+import { useDebounced } from "@/hooks/use-debounced";
 import { deriveDisplayStatus, statusBreakdown } from "@/lib/conversation-status";
 import { getLeads } from "@/lib/leads";
 import type { FunnelStage } from "@/types/conversation";
@@ -30,15 +31,6 @@ function formatRelative(value: string | null): string {
 
 function maskPhone(phone: string): string {
   return phone;
-}
-
-function useDebounced<T>(value: T, delayMs: number): T {
-  const [debounced, setDebounced] = useState(value);
-  useEffect(() => {
-    const id = window.setTimeout(() => setDebounced(value), delayMs);
-    return () => window.clearTimeout(id);
-  }, [value, delayMs]);
-  return debounced;
 }
 
 const Leads = () => {

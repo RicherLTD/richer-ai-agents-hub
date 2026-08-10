@@ -13,6 +13,17 @@ import type { Database } from "./database";
 interface AgentAugment {
   is_paused?: boolean;
   whatsapp_phone_number_id?: string | null;
+  // CRM warming (migration 0046, not yet applied). Drop these four once
+  // `bun run db:types` has been re-run against the migrated schema.
+  /** Kill switch for CRM warming. When false, status events are still recorded
+   *  on the conversation but nothing is warmed. Independent of `is_paused`. */
+  crm_warming_enabled?: boolean;
+  /** Meta-approved template used for the generic warming opener. Nullable. */
+  warming_template_name?: string | null;
+  /** NOT NULL, defaults to 'he' — never write null here. */
+  warming_template_language?: string;
+  /** NOT NULL, CHECK > 0. How many days of prior conversation the bot gets. */
+  warming_context_days?: number;
 }
 
 export type Agent = Database["public"]["Tables"]["agents"]["Row"] & AgentAugment;
