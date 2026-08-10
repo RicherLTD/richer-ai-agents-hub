@@ -110,22 +110,31 @@ being recorded for the dashboard, but nothing is queued and the prompt goes back
 
 ---
 
-## Make side
+## Orchestration side — n8n, not Make
 
-Owned by Izak, and written up separately for him in
-**[`crm-warming-make-contract.md`](./crm-warming-make-contract.md)** (Hebrew) — endpoint, payload
-fields, the 33 statuses to send, response codes, and the `rep_note` ask. Kept in one place so the
-two documents cannot drift.
+The caller is an n8n workflow, already built and **inactive**:
+[`CRM Lead Warming — Fireberry to WhatsApp`](https://richerltd.app.n8n.cloud/workflow/YeBmPoVmVDYfiCbL)
+(`YeBmPoVmVDYfiCbL`). Nothing in this repo depends on which platform calls us — the endpoint takes a
+POST with a bearer header and is transport-agnostic.
 
-The parts that concern deployment: he needs the value of `CRM_STATUS_SHARED_SECRET` from step 2, and
-warming should be enabled for `affiliate_marketing` (`product = B`) first. Make can start sending `R`
-events immediately regardless — they are recorded and simply not sent until that agent is switched on.
+Chain: `Webhook → Map Fireberry Fields (Code) → Only Warming Statuses (Filter) → HTTP Request`.
+
+Owned by Izak, written up for him in
+**[`crm-warming-n8n-setup.md`](./crm-warming-n8n-setup.md)** (Hebrew) — what is still open, the field
+mapping, the 33 statuses, response codes, and the `rep_note` ask. Kept in one place so the two
+documents cannot drift.
+
+The parts that concern deployment: he needs the value of `CRM_STATUS_SHARED_SECRET` from step 2 for
+the workflow's Bearer credential, and warming should be enabled for `affiliate_marketing`
+(`product = B`) first. The workflow can start sending `R` events immediately regardless — they are
+recorded and simply not sent until that agent is switched on.
 
 One rule worth repeating out loud, because it is the only way a lead gets messaged who shouldn't be:
-**filtering is Make's job.** There is deliberately no allow-list on our side, so every event that
-arrives warms the lead. Blocking statuses (blacklist / invalid lead / wrong number) must never be
-sent. A status that arrives with no rule row falls back to an immediate warm and is logged as
-`crm_status_rule_missing`.
+**filtering is the caller's job.** The n8n Filter node passes only the 33 known statuses, and there is
+deliberately no allow-list on our side — every event that reaches us warms the lead. Blocking statuses
+(blacklist / invalid lead / wrong number) should also be filtered at the Fireberry automation so they
+never leave the CRM. A status that arrives with no rule row falls back to an immediate warm and is
+logged as `crm_status_rule_missing`.
 
 ---
 
