@@ -53,8 +53,12 @@ UPDATE public.crm_status_rules SET release_priority = 100
 
 -- 75 — the lead engaged and named a concrete, answerable objection.
 UPDATE public.crm_status_rules SET release_priority = 75
-  WHERE status_sub IN (14, 15, 16, 18, 19, 26, 51, 54, 58, 59, 72, 80)
+  WHERE status_sub IN (14, 15, 16, 18, 19, 26, 51, 54, 58, 59, 60, 72, 80)
     AND release_priority = 50;
+
+-- Status 24 ("ל״מ אחר" — objection recorded but not categorised) is deliberately
+-- left at the neutral 50. We do not know what the objection is, so it belongs
+-- neither above the answerable ones nor down with the written-off ones.
 
 -- 60 — engaged, but the objection is softer or more personal.
 UPDATE public.crm_status_rules SET release_priority = 60

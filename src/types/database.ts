@@ -106,6 +106,7 @@ export type Database = {
           brand_color: string | null
           created_at: string | null
           created_by: string | null
+          crm_warming_enabled: boolean
           description: string | null
           display_name: string
           first_touch_delay_minutes: number
@@ -119,6 +120,7 @@ export type Database = {
           meeting_check_url: string | null
           meeting_duration_minutes: number
           meeting_type_id: string | null
+          mooz_product_code: string | null
           name: string
           operator_alert_phones: string[]
           primary_goal: string | null
@@ -128,6 +130,11 @@ export type Database = {
           source_funnels: string[] | null
           status: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at: string | null
+          warming_context_days: number
+          warming_daily_cap: number
+          warming_min_gap_seconds: number
+          warming_template_language: string
+          warming_template_name: string | null
           whatsapp_number: string | null
           whatsapp_phone_number_id: string | null
           whatsapp_provider: string | null
@@ -136,6 +143,7 @@ export type Database = {
           brand_color?: string | null
           created_at?: string | null
           created_by?: string | null
+          crm_warming_enabled?: boolean
           description?: string | null
           display_name: string
           first_touch_delay_minutes?: number
@@ -149,6 +157,7 @@ export type Database = {
           meeting_check_url?: string | null
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
+          mooz_product_code?: string | null
           name: string
           operator_alert_phones?: string[]
           primary_goal?: string | null
@@ -158,6 +167,11 @@ export type Database = {
           source_funnels?: string[] | null
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
+          warming_context_days?: number
+          warming_daily_cap?: number
+          warming_min_gap_seconds?: number
+          warming_template_language?: string
+          warming_template_name?: string | null
           whatsapp_number?: string | null
           whatsapp_phone_number_id?: string | null
           whatsapp_provider?: string | null
@@ -166,6 +180,7 @@ export type Database = {
           brand_color?: string | null
           created_at?: string | null
           created_by?: string | null
+          crm_warming_enabled?: boolean
           description?: string | null
           display_name?: string
           first_touch_delay_minutes?: number
@@ -179,6 +194,7 @@ export type Database = {
           meeting_check_url?: string | null
           meeting_duration_minutes?: number
           meeting_type_id?: string | null
+          mooz_product_code?: string | null
           name?: string
           operator_alert_phones?: string[]
           primary_goal?: string | null
@@ -188,6 +204,11 @@ export type Database = {
           source_funnels?: string[] | null
           status?: Database["public"]["Enums"]["agent_status_enum"] | null
           updated_at?: string | null
+          warming_context_days?: number
+          warming_daily_cap?: number
+          warming_min_gap_seconds?: number
+          warming_template_language?: string
+          warming_template_name?: string | null
           whatsapp_number?: string | null
           whatsapp_phone_number_id?: string | null
           whatsapp_provider?: string | null
@@ -542,6 +563,16 @@ export type Database = {
           consent_given_at: string | null
           consent_text_version: string | null
           created_at: string | null
+          crm_last_warmed_at: string | null
+          crm_rep_note: string | null
+          crm_status_event_at: string | null
+          crm_status_main: number | null
+          crm_status_sub: number | null
+          crm_warming_reason: string | null
+          crm_warming_replied_at: string | null
+          crm_warming_status:
+            | Database["public"]["Enums"]["crm_warming_status_enum"]
+            | null
           current_tag: Database["public"]["Enums"]["tag_enum"] | null
           detected_language: string | null
           estimated_age: number | null
@@ -583,6 +614,16 @@ export type Database = {
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null
+          crm_last_warmed_at?: string | null
+          crm_rep_note?: string | null
+          crm_status_event_at?: string | null
+          crm_status_main?: number | null
+          crm_status_sub?: number | null
+          crm_warming_reason?: string | null
+          crm_warming_replied_at?: string | null
+          crm_warming_status?:
+            | Database["public"]["Enums"]["crm_warming_status_enum"]
+            | null
           current_tag?: Database["public"]["Enums"]["tag_enum"] | null
           detected_language?: string | null
           estimated_age?: number | null
@@ -626,6 +667,16 @@ export type Database = {
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null
+          crm_last_warmed_at?: string | null
+          crm_rep_note?: string | null
+          crm_status_event_at?: string | null
+          crm_status_main?: number | null
+          crm_status_sub?: number | null
+          crm_warming_reason?: string | null
+          crm_warming_replied_at?: string | null
+          crm_warming_status?:
+            | Database["public"]["Enums"]["crm_warming_status_enum"]
+            | null
           current_tag?: Database["public"]["Enums"]["tag_enum"] | null
           detected_language?: string | null
           estimated_age?: number | null
@@ -672,6 +723,62 @@ export type Database = {
             columns: ["assigned_advisor_id"]
             isOneToOne: false
             referencedRelation: "advisors"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      crm_status_rules: {
+        Row: {
+          agent_id: string
+          clears_zoom_state: boolean
+          cooldown_days: number
+          created_at: string
+          delay_hours: number
+          id: string
+          is_active: boolean
+          objection_key: string
+          release_priority: number
+          status_label: string
+          status_sub: number
+          updated_at: string
+          warming_instructions: string
+        }
+        Insert: {
+          agent_id: string
+          clears_zoom_state?: boolean
+          cooldown_days?: number
+          created_at?: string
+          delay_hours?: number
+          id?: string
+          is_active?: boolean
+          objection_key: string
+          release_priority?: number
+          status_label: string
+          status_sub: number
+          updated_at?: string
+          warming_instructions: string
+        }
+        Update: {
+          agent_id?: string
+          clears_zoom_state?: boolean
+          cooldown_days?: number
+          created_at?: string
+          delay_hours?: number
+          id?: string
+          is_active?: boolean
+          objection_key?: string
+          release_priority?: number
+          status_label?: string
+          status_sub?: number
+          updated_at?: string
+          warming_instructions?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "crm_status_rules_agent_id_fkey"
+            columns: ["agent_id"]
+            isOneToOne: false
+            referencedRelation: "agents"
             referencedColumns: ["id"]
           },
         ]
@@ -1073,6 +1180,7 @@ export type Database = {
           created_at: string
           delivered_at: string | null
           id: string
+          kind: string
           last_error: string | null
           lead_name: string | null
           lead_phone: string
@@ -1097,6 +1205,7 @@ export type Database = {
           created_at?: string
           delivered_at?: string | null
           id?: string
+          kind?: string
           last_error?: string | null
           lead_name?: string | null
           lead_phone: string
@@ -1121,6 +1230,7 @@ export type Database = {
           created_at?: string
           delivered_at?: string | null
           id?: string
+          kind?: string
           last_error?: string | null
           lead_name?: string | null
           lead_phone?: string
@@ -1188,26 +1298,26 @@ export type Database = {
       template_funnel: {
         Args: {
           p_agent_id: string
-          p_from?: string | null
-          p_to?: string | null
-          p_broadcast_id?: string | null
+          p_broadcast_id?: string
+          p_from?: string
+          p_to?: string
         }
         Returns: {
-          template_name: string
-          sent: number
-          delivered: number
-          read: number
-          answered: number
           agent_zoom: number
-          self_zoom: number
-          consent_handoff: number
-          legacy_zoom: number
-          failed: number
-          delivered_rate_pct: number
-          read_rate_pct: number
-          answered_rate_pct: number
           agent_zoom_per_answered_pct: number
           agent_zoom_per_sent_pct: number
+          answered: number
+          answered_rate_pct: number
+          consent_handoff: number
+          delivered: number
+          delivered_rate_pct: number
+          failed: number
+          legacy_zoom: number
+          read: number
+          read_rate_pct: number
+          self_zoom: number
+          sent: number
+          template_name: string
         }[]
       }
     }
@@ -1223,6 +1333,10 @@ export type Database = {
         | "completed"
         | "cancelled"
       conversation_status_enum: "active" | "paused" | "completed" | "opted_out"
+      crm_warming_status_enum:
+        | "warming"
+        | "warming_stopped"
+        | "warming_converted"
       funnel_stage_enum: "cold" | "mid" | "done"
       message_direction_enum: "inbound" | "outbound"
       message_type_enum:
@@ -1393,6 +1507,11 @@ export const Constants = {
         "cancelled",
       ],
       conversation_status_enum: ["active", "paused", "completed", "opted_out"],
+      crm_warming_status_enum: [
+        "warming",
+        "warming_stopped",
+        "warming_converted",
+      ],
       funnel_stage_enum: ["cold", "mid", "done"],
       message_direction_enum: ["inbound", "outbound"],
       message_type_enum: [

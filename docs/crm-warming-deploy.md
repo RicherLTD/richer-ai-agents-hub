@@ -41,9 +41,12 @@ dashboard.
 The two `NOT NULL` columns (`agents.crm_warming_enabled`, `scheduled_messages.kind`) both take
 constant defaults, so on Postgres 17 this is a metadata-only change: no table rewrite, no long lock.
 
-> The SQL has been parsed against the real Postgres grammar (16 statements, clean) but **has not been
-> executed against any database** — there was no environment available to run it in. Treat step 1 as
-> the first real execution and check the output.
+> **APPLIED to production on 2026-08-11.** Both migrations are live on `juoglkqtmjsziieqgmhf`; the
+> commands above are recorded for a fresh environment and are idempotent no-ops against prod.
+> Verified after applying: 99 rule rows (33 statuses x 3 agents), 0 empty instruction texts, all 9,199
+> pre-existing `scheduled_messages` rows defaulted to `kind='template'`, and 0 conversations warming /
+> 0 agents enabled — i.e. no behavioural change. The seeded delays, cooldowns and zoom-clearing flags
+> were diffed row-by-row against this file and match exactly.
 
 Then regenerate types and commit the result:
 
