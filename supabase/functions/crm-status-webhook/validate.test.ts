@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { asInt, coercePayload, withinCooldown } from "./validate.ts";
+import { asInt, coercePayload, resolveStatusRule, withinCooldown } from "./validate.ts";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z").getTime();
 
@@ -127,5 +127,70 @@ describe("withinCooldown", () => {
 
   it("fails open on an unparseable timestamp", () => {
     expect(withinCooldown("not-a-date", 7, NOW)).toBe(false);
+  });
+});
+
+describe("resolveStatusRule", () => {
+  const activeRow = {
+    status_label: "ל״מ אין זמן",
+    objection_key: "no_time",
+    warming_instructions: "הצע משהו קטן וקל.",
+    delay_hours: 0,
+    cooldown_days: 14,
+    clears_zoom_state: false,
+    is_active: true,
+  };
+
+  it("returns the operator's rule when the status is active", () => {
+    const r = resolveStatusRule(activeRow);
+    expect(r.matched).toBe(true);
+    expect(r.disabled).toBe(false);
+    expect(r.rule.objection_key).toBe("no_time");
+    expect(r.rule.cooldown_days).toBe(14);
+  });
+
+  // The status is real but nobody has configured it. The caller already
+  // filtered, so warm it generically rather than drop it silently.
+  it("falls back to the default when no row exists", () => {
+    const r = resolveStatusRule(null);
+    expect(r.matched).toBe(false);
+    expect(r.disabled).toBe(false);
+    expect(r.rule.objection_key).toBe("unknown");
+    expect(r.rule.delay_hours).toBe(0);
+  });
+
+  // THE REGRESSION GUARD. The query used to filter is_active = true, so a
+  // switched-off rule returned no row, looked like an unknown status, and fell
+  // through to the default — meaning the dashboard's "off" toggle caused
+  // IMMEDIATE warming on generic instructions. Off must mean off.
+  it("reports a switched-off status as disabled, NOT as missing", () => {
+    const r = resolveStatusRule({ ...activeRow, is_active: false });
+    expect(r.disabled).toBe(true);
+    expect(r.matched).toBe(true);
+  });
+
+  it("distinguishes disabled from missing", () => {
+    const disabled = resolveStatusRule({ ...activeRow, is_active: false });
+    const missing = resolveStatusRule(null);
+    expect(disabled.disabled).not.toBe(missing.disabled);
+    expect(disabled.matched).not.toBe(missing.matched);
+  });
+
+  it("treats a null is_active as active rather than disabled", () => {
+    expect(resolveStatusRule({ ...activeRow, is_active: null }).disabled).toBe(false);
+  });
+
+  it("fills gaps in a partially populated row without throwing", () => {
+    const r = resolveStatusRule({ is_active: true });
+    expect(r.disabled).toBe(false);
+    expect(r.rule.cooldown_days).toBe(7);
+    expect(r.rule.clears_zoom_state).toBe(false);
+    expect(r.rule.warming_instructions.length).toBeGreaterThan(0);
+  });
+
+  it("does not let a caller mutate the shared default", () => {
+    const a = resolveStatusRule(null);
+    a.rule.delay_hours = 999;
+    expect(resolveStatusRule(null).rule.delay_hours).toBe(0);
   });
 });

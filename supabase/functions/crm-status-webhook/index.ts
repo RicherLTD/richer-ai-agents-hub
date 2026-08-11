@@ -35,22 +35,16 @@
 import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { logError } from "../_shared/logError.ts";
-import { type CrmStatusPayload, coercePayload, withinCooldown } from "./validate.ts";
+import {
+  type CrmStatusPayload,
+  type StatusRule,
+  coercePayload,
+  resolveStatusRule,
+  withinCooldown,
+} from "./validate.ts";
 
 const SOURCE = "crm-status-webhook";
 
-/** Applied when a status arrives with no matching crm_status_rules row. Make
- *  already filtered, so whatever reached us is warming-relevant — warm it now
- *  and let the operator add a tuned rule later. */
-const DEFAULT_RULE = {
-  status_label: "סטטוס לא מוגדר",
-  objection_key: "unknown",
-  warming_instructions:
-    "נציג עדכן את סטטוס הליד ב-CRM, אך אין הנחיה מוגדרת לסטטוס הזה. אין לך מידע על ההתנגדות. פתח שיחה קלילה, גלה בעצמך תוך כדי הדיאלוג מה עומד מאחורי החשש, ורק אז הובל לתיאום זום.",
-  delay_hours: 0,
-  cooldown_days: 7,
-  clears_zoom_state: false,
-} as const;
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -88,41 +82,22 @@ async function loadAgentByProduct(
   };
 }
 
-interface StatusRule {
-  status_label: string;
-  objection_key: string;
-  warming_instructions: string;
-  delay_hours: number;
-  cooldown_days: number;
-  clears_zoom_state: boolean;
-}
 
 async function loadStatusRule(
   admin: SupabaseClient,
   agentId: string,
   statusSub: number,
-): Promise<{ rule: StatusRule; matched: boolean }> {
+): Promise<{ rule: StatusRule; matched: boolean; disabled: boolean }> {
+  // NOT filtered on is_active — see resolveStatusRule for why that matters.
   const { data } = await admin
     .from("crm_status_rules")
     .select(
-      "status_label, objection_key, warming_instructions, delay_hours, cooldown_days, clears_zoom_state",
+      "status_label, objection_key, warming_instructions, delay_hours, cooldown_days, clears_zoom_state, is_active",
     )
     .eq("agent_id", agentId)
     .eq("status_sub", statusSub)
-    .eq("is_active", true)
     .maybeSingle();
-  if (!data) return { rule: { ...DEFAULT_RULE }, matched: false };
-  return {
-    rule: {
-      status_label: data.status_label as string,
-      objection_key: data.objection_key as string,
-      warming_instructions: data.warming_instructions as string,
-      delay_hours: (data.delay_hours as number | null) ?? 0,
-      cooldown_days: (data.cooldown_days as number | null) ?? 7,
-      clears_zoom_state: (data.clears_zoom_state as boolean | null) ?? false,
-    },
-    matched: true,
-  };
+  return resolveStatusRule(data);
 }
 
 interface ConversationRow {
@@ -380,7 +355,7 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { rule, matched } = await loadStatusRule(admin, agent.id, payload.status_sub);
+    const { rule, matched, disabled } = await loadStatusRule(admin, agent.id, payload.status_sub);
     if (!matched) {
       await logError({
         admin,
@@ -394,7 +369,11 @@ Deno.serve(async (req) => {
     }
 
     const conversation = await upsertConversation(admin, agent.id, payload);
-    const enterWarming = agent.crm_warming_enabled;
+    // A disabled rule is an operator saying "record this status, but never
+    // message anyone because of it". Treated exactly like the kill switch:
+    // the status is stored and visible in the dashboard, crm_warming_status
+    // stays NULL so the prompt is untouched, and nothing is queued.
+    const enterWarming = agent.crm_warming_enabled && !disabled;
 
     await writeWarmingContext(admin, {
       conversationId: conversation.id,
@@ -410,8 +389,10 @@ Deno.serve(async (req) => {
     if (!enterWarming) {
       return jsonResponse({
         ok: true,
-        warming_enabled: false,
+        warming_enabled: agent.crm_warming_enabled,
+        rule_disabled: disabled,
         conversation_id: conversation.id,
+        status_sub: payload.status_sub,
         recorded: true,
         enqueued: false,
       });
