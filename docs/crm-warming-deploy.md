@@ -122,7 +122,7 @@ Chain: `Webhook → Map Fireberry Fields (Code) → Only Warming Statuses (Filte
 
 Owned by Izak, written up for him in
 **[`crm-warming-n8n-setup.md`](./crm-warming-n8n-setup.md)** (Hebrew) — what is still open, the field
-mapping, the 33 statuses, response codes, and the `rep_note` ask. Kept in one place so the two
+mapping, the 33 statuses, response codes, and the closed-out rep_note question. Kept in one place so the two
 documents cannot drift.
 
 The parts that concern deployment: he needs the value of `CRM_STATUS_SHARED_SECRET` from step 2 for
@@ -251,7 +251,12 @@ steps 1–2 exercise the recording path without sending anything.
 ## Still open
 
 - The Meta-approved opener template (step 4).
-- `rep_note` in the Make payload — optional, but the highest-value thing still outstanding.
+- `rep_note` — CLOSED, negatively. Probed the live CRM on 2026-08-10: the rep-notes field
+  (`pcfsystemfield124`) and the objections field (`systemfield10`) are both populated in 0 of 200
+  leads, and the "call debrief" object holds 8 records, last touched Aug 2025, containing coaching
+  feedback about the rep rather than anything about the lead. Reps do not write lead notes anywhere.
+  The secondary status IS the only structured signal, and we already receive it. The payload field
+  stays supported so it works the day someone starts filling one — see crm-warming-n8n-setup.md §4.
 - Review of the 33 seeded `warming_instructions` texts. They are a first draft written against the
   tone of the live prompts, and are meant to be edited from the dashboard once real replies are
   visible — no deploy, no Meta approval.
