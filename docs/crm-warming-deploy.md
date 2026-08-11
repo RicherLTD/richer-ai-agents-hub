@@ -27,6 +27,7 @@ the feature live.
 
 ```bash
 bun run db:apply supabase/migrations/0046_crm_warming.sql
+bun run db:apply supabase/migrations/0047_warming_release_controls.sql
 ```
 
 Adds: enum `crm_warming_status_enum`; table `crm_status_rules` (+ admin-only RLS, `updated_at`
@@ -161,6 +162,32 @@ new event restarts the clock, so an actively-worked lead always has current cont
 *deferred*, not cancelled — it goes out on a later tick once they go quiet. Counted as
 `deferred_warming_active_chat` in the dispatcher response.
 
+**The queue is paced — this is the bank (`0047`).** The dispatcher claims up to 50 due rows per tick
+and sends them in a loop, so before this, fifty warming templates could leave one WhatsApp number
+within seconds. Three controls now gate release, all per-agent config editable from the dashboard:
+
+| Control | Column | Default | What it shapes |
+|---|---|---|---|
+| Minimum gap | `agents.warming_min_gap_seconds` | 90s | the burst — turns a loop into a drip |
+| Daily cap | `agents.warming_daily_cap` | 50 | the volume — the real brake, and what makes a ramp-up possible |
+| Priority | `crm_status_rules.release_priority` | 50 | who goes first once the cap binds |
+
+Priority is read at send time, not stamped at enqueue, so re-prioritising a status in the dashboard
+reorders the queue that already exists. Seeded by how much intent the lead has shown: ghosted-a-Zoom
+(91) is 100, concrete objections 75, softer ones 60, never-reached 40, written-off 20.
+
+A row the gate does not pick is *deferred*, never cancelled — it competes again next tick. Counted as
+`deferred_warming_paced`.
+
+⚠️ **A daily cap of 0 means zero sends, not unlimited.** Deliberate: an operator typing 0 into a
+"cap" box and getting unlimited messaging to leads without provable opt-in is the worst possible
+surprise here. Turning warming off is what `crm_warming_enabled` is for.
+
+**Known limitation:** priority sorts *within the batch the claim RPC returns* (up to 50, oldest
+first), not across the whole backlog. At expected volume the backlog stays smaller than the batch, so
+this is not felt. If a large backlog ever builds, raise the dispatcher's `?limit=` or teach
+`claim_scheduled_messages` to order by priority — the latter needs a DROP+CREATE (Postgres 42P13).
+
 **Ghosted-Zoom leads (status 91)** clear `zoom_scheduled_at`, `zoom_booked_by` and the
 `zoom_scheduled` tag before queueing — otherwise the lead's own stale tag would cancel the send.
 This is driven by `crm_status_rules.clears_zoom_state`, not a hardcoded status number.
@@ -206,6 +233,11 @@ steps 1–2 exercise the recording path without sending anything.
    `kind='template'` rows in the same tick are unaffected.
 6. Send a message as a warming lead → the block appears in the system prompt in Langfuse and the trace
    carries `warming` + `status:60`. Send as a normal lead → the block is absent.
+7. Pacing: queue three warming rows due now for one agent → the first tick sends exactly one and
+   reports `deferred_warming_paced: 2`; the next tick within 90s sends none. Set
+   `warming_daily_cap = 0` → nothing sends at all. Confirm `kind='template'` rows in the same ticks
+   are unaffected throughout.
+8. Priority: queue a status-91 row and a status-23 row due at the same moment → 91 goes first.
 
 ## What was run locally
 
