@@ -1,11 +1,12 @@
 # חימום לידים מ-CRM — מה נשאר לסגור ב-n8n
 
-מסמך לאיציק. **ה-workflow כבר בנוי ב-n8n** — נשארו שלושה דברים לסגור, וכולם בצד שלך.
+מסמך לאיציק. **ה-workflow כבר בנוי ב-n8n, ומיפוי השדות אומת מול ה-CRM האמיתי** — נשארו שני דברים
+לסגור, וכולם בצד שלך: ה-credential (סעיף 3) והאוטומציה ב-Fireberry (סעיף 1).
 
 🔗 **[CRM Lead Warming — Fireberry to WhatsApp](https://richerltd.app.n8n.cloud/workflow/YeBmPoVmVDYfiCbL)** (`YeBmPoVmVDYfiCbL`)
 
 ⚠️ ה-workflow **כבוי (inactive)** בכוונה. הוא לא יפעל עד שתדליק אותו, ואסור להדליק לפני
-שסעיפים 1–3 למטה סגורים ובוצעה בדיקה אחת מקצה לקצה.
+שסעיפים 1 ו-3 למטה סגורים ובוצעה בדיקה אחת מקצה לקצה.
 
 > הערה: ה-workflow נוצר תחת הפרויקט האישי של `ori@richerltd.com`. אם צריך אותו בפרויקט צוותי — להעביר.
 
@@ -27,7 +28,7 @@ Fireberry Status Change  →  Map Fireberry Fields  →  Only Warming Statuses  
 | צומת | מה הוא עושה | צריך ממך |
 |---|---|---|
 | **Fireberry Status Change** | מקבל את האירוע מ-Fireberry | להפנות אליו את האוטומציה ב-Fireberry (סעיף 1) |
-| **Map Fireberry Fields** | ממפה את שדות Fireberry לפורמט שלנו | לאשר את שמות השדות (סעיף 2) |
+| **Map Fireberry Fields** | ממפה את שדות Fireberry לפורמט שלנו | כלום — אומת ב-10/08/2026 (סעיף 2) |
 | **Only Warming Statuses** | מסנן — רק 33 הסטטוסים עוברים | כלום, מוכן |
 | **POST to crm-status-webhook** | שולח ל-Supabase עם Bearer | להגדיר את ה-credential (סעיף 3) |
 
@@ -51,28 +52,41 @@ https://richerltd.app.n8n.cloud/webhook/crm-status-warming
 
 ---
 
-## 2. אישור מיפוי השדות
+## 2. מיפוי השדות — ✅ אומת, אין מה לעשות
 
-בצומת **Map Fireberry Fields** יש בלוק אחד בראש הקוד. כל שדה נקרא דרך `pick(...)` עם כמה שמות
-אפשריים לפי סדר עדיפות:
+**עדכון 10/08/2026: שמות השדות אינם ניחוש יותר.** הם אומתו מול המטא-דאטה של Fireberry
+(327 השדות של אובייקט 1) ומול 200 לידים אמיתיים. הבלוק בראש הקוד של **Map Fireberry Fields**
+כבר קורא את השדות הנכונים:
+
+| שדה ב-Fireberry | משמעות |
+|---|---|
+| `pcfsystemfield103` | סטטוס משני — **זה מה שקובע הכל** |
+| `statuscode` | סטטוס ראשי |
+| `telephone1` (ואז `telephone2`/`telephone3`) | טלפון |
+| `accountname` | שם לקוח |
+| `pcfsystemfield122` | התעניין במוצר — **LOOKUP, מגיע כ-GUID** |
+| `pcfsystemfield124` | הערות נציג על הליד (`rep_note`, ראה סעיף 4) |
+
+⚠️ **המוצר מגיע כ-GUID, לא כ-`B`/`R`.** בתוך הצומת יש `PRODUCT_MAP` שמתרגם:
 
 ```js
-const statusSubRaw  = pick("status_sub", "pcfsystemfield103");
-const productRaw    = pick("product", "pcfproduct");
-const phoneRaw      = pick("lead_phone", "telephone1", "mobilephone", "pcfphone");
+"BA890F3E-20C2-40E4-80E5-169EAD34E32E" → "B"  // 🔴 מסלול שיווק שותפים
+"74F47470-2097-4635-B523-0DEA877E3BD1" → "R"  // 🟣 מסלול שיווק דיגיטלי ויזמות
 ```
 
-**שמות השדות של Fireberry שם הם ניחוש מושכל, לא ודאות.** מה לעשות:
+רק שני המוצרים האלה יש להם סוכן חימום. כל השאר (וידאו, נדל״ן, Speasy, שוק ההון, הפריצה הגדולה…)
+נופלים ב-`product_has_no_warming_agent` — **וזה התנהגות נכונה, לא באג.**
 
-1. לשלוח אירוע אמיתי אחד ל-Test URL.
-2. להסתכל על ה-output של צומת ה-Webhook ב-n8n ולראות איך השדות באמת נקראים.
-3. להכניס את השם האמיתי **ראשון** בכל `pick(...)`. את השאר להשאיר כ-fallback.
+הצומת מוציא `skip_reason` שמסביר למה אירוע לא עבר. שימושי לדיבוג ב-Executions:
 
-השדות שקריטי לוודא: **`pcfsystemfield103`** (סטטוס משני) ו-**`product`**. בלי `product` תקין
-(`B` או `R`) שום דבר לא עובר את הפילטר.
+| `skip_reason` | מה קרה |
+|---|---|
+| `status_not_in_warming_list` | הסטטוס המשני לא אחד מ-33 (ראה הרשימה למטה) |
+| `missing_product` | שדה המוצר לא הגיע בכלל ב-payload |
+| `product_has_no_warming_agent` | המוצר הגיע, אבל אין לו סוכן חימום |
+| `missing_phone` | אין טלפון בליד |
 
-הצומת מוציא גם `skip_reason` — אם אירוע לא עובר, זה יגיד למה: `status_not_in_warming_list`,
-`unknown_product` או `missing_phone`. שימושי לדיבוג ב-Executions.
+אם משנים שם שדה ב-Fireberry — צריך לעדכן את הבלוק הזה. אחרת אין מה לגעת בו.
 
 ### מה נשלח בסוף ל-Supabase
 
@@ -221,7 +235,8 @@ const phoneRaw      = pick("lead_phone", "telephone1", "mobilephone", "pcfphone"
 ## סדר ההפעלה
 
 1. להגדיר את ה-credential (סעיף 3).
-2. לשלוח אירוע בודד ל-**Test URL** ולאשר את מיפוי השדות (סעיף 2).
+2. לשלוח אירוע בודד ל-**Test URL** ולוודא ב-Executions שהצומת מחזיר `is_warming_status: true`
+   (אם לא — תסתכל ב-`skip_reason`, סעיף 2).
 3. לוודא ב-Executions שהקריאה ל-Supabase חזרה `200`.
 4. רק אז — להדליק את ה-workflow ולהפנות אליו את האוטומציה ב-Fireberry.
 
@@ -230,5 +245,9 @@ const phoneRaw      = pick("lead_phone", "telephone1", "mobilephone", "pcfphone"
 
 ## מה עוד פתוח מהצד שלנו
 
-- הודעת פתיחה מאושרת ב-Meta — בלעדיה סטטוסים נרשמים אבל לא נשלחת הודעה.
-- ה-migration ל-Supabase עדיין לא הורץ. עד שזה קורה, הקריאות יחזרו שגיאה.
+- **הודעת פתיחה מאושרת ב-Meta — זה מה שחסר כרגע.** `agents.warming_template_name` ריק בשלושת
+  הסוכנים, ולכן גם אם אירועים יזרמו, סטטוסים יירשמו אבל **לא תישלח שום הודעה**.
+- ✅ ה-migrations (0046 + 0047) **הורצו בפרוד ב-11/08/2026**. ה-endpoint חי ומחזיר `200` —
+  זה כבר לא חוסם (המסמך הזה אמר בעבר שהוא לא הורץ).
+- החימום כבוי לכל הסוכנים (`crm_warming_enabled = false`). זה המפסק האחרון, ונדליק אותו
+  **רק אחרי** בדיקה מקצה לקצה — ורק ל-`affiliate_marketing` בהתחלה.
