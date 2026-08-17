@@ -107,7 +107,29 @@ export async function runAgentTurn(args: RunAgentTurnArgs): Promise<AgentTurnRes
       model: args.model,
       max_tokens: args.maxTokens,
       thinking: { type: "adaptive" },
-      system: args.systemPrompt,
+      // Cacheable system block.
+      //
+      // brainContext.ts:11 documents this as the caller's job — "Caller
+      // adds an Anthropic cache_control breakpoint on the returned block
+      // so subsequent turns within 5 min hit the cache" — and it was
+      // never wired up. Cost of that omission, measured 2026-08-05:
+      // affiliate averaged 107,497 input tokens per reply at full $3/M
+      // ($0.328/reply) because ~34K tokens of brain were re-sent at full
+      // price on every turn AND on every tool-use iteration within a
+      // turn. digital_marketing, which has no brain documents, averaged
+      // 17,156 tokens ($0.057/reply) doing the same job.
+      //
+      // The prefix is sent verbatim and in the SAME ORDER as before, so
+      // the model sees exactly what it saw yesterday. This is a billing
+      // change, not a behaviour change — nothing about what the bot
+      // knows or says is altered.
+      system: [
+        {
+          type: "text",
+          text: args.systemPrompt,
+          cache_control: { type: "ephemeral" },
+        },
+      ],
       messages,
     };
     if (args.moozCtx) params.tools = MOOZ_TOOL_DEFS;
