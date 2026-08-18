@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { asInt, coercePayload, resolveStatusRule, withinCooldown } from "./validate.ts";
+import {
+  asInt,
+  coercePayload,
+  resolveLeadNameUpdate,
+  resolveStatusRule,
+  withinCooldown,
+} from "./validate.ts";
 
 const NOW = new Date("2026-08-10T12:00:00.000Z").getTime();
 
@@ -192,5 +198,38 @@ describe("resolveStatusRule", () => {
     const a = resolveStatusRule(null);
     a.rule.delay_hours = 999;
     expect(resolveStatusRule(null).rule.delay_hours).toBe(0);
+  });
+});
+
+describe("resolveLeadNameUpdate", () => {
+  // THE BUG GUARD. A CRM status event carrying a name must never overwrite a
+  // name already on the conversation — the WhatsApp/registration name is
+  // authoritative. Discovered 2026-08-18 when a test payload clobbered a real
+  // lead's name.
+  it("never overwrites an existing name", () => {
+    expect(resolveLeadNameUpdate("עינת", "בדיקת מערכת CRM")).toBeNull();
+    expect(resolveLeadNameUpdate("ישראל ישראלי", "something")).toBeNull();
+  });
+
+  // Fill-if-empty: a row with no name yet is a strict improvement to fill.
+  it("fills a missing name from the payload", () => {
+    expect(resolveLeadNameUpdate(null, "עינת")).toBe("עינת");
+    expect(resolveLeadNameUpdate(undefined, "עינת")).toBe("עינת");
+    expect(resolveLeadNameUpdate("", "עינת")).toBe("עינת");
+    expect(resolveLeadNameUpdate("   ", "עינת")).toBe("עינת");
+  });
+
+  it("trims the incoming name it decides to write", () => {
+    expect(resolveLeadNameUpdate(null, "  עינת  ")).toBe("עינת");
+  });
+
+  it("leaves an empty row untouched when the payload has no usable name", () => {
+    expect(resolveLeadNameUpdate(null, null)).toBeNull();
+    expect(resolveLeadNameUpdate(null, "   ")).toBeNull();
+    expect(resolveLeadNameUpdate("", null)).toBeNull();
+  });
+
+  it("keeps an existing name even when the payload is empty", () => {
+    expect(resolveLeadNameUpdate("עינת", null)).toBeNull();
   });
 });

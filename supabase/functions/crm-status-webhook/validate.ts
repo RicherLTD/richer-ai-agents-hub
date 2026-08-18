@@ -62,6 +62,30 @@ export function coercePayload(raw: unknown): CrmStatusPayload | null {
 }
 
 /**
+ * Decide the lead_name to write on an EXISTING conversation — fill-if-empty.
+ *
+ * A CRM status event must NEVER overwrite a name already on the row: that name
+ * comes from the WhatsApp profile or the registration form and is authoritative.
+ * A rep touching a Fireberry field must not turn a real "עינת" into whatever
+ * Make happens to send (a test discovered this clobbering a real lead on
+ * 2026-08-18). If the row has no name yet, filling it from the payload is a
+ * strict improvement.
+ *
+ * Returns the name to write, or null meaning "leave lead_name untouched".
+ * (INSERT of a brand-new conversation is a separate path and always takes the
+ * payload name — there is nothing to protect there.)
+ */
+export function resolveLeadNameUpdate(
+  existing: string | null | undefined,
+  incoming: string | null,
+): string | null {
+  const hasExisting = typeof existing === "string" && existing.trim().length > 0;
+  if (hasExisting) return null;
+  const trimmed = typeof incoming === "string" ? incoming.trim() : "";
+  return trimmed.length > 0 ? trimmed : null;
+}
+
+/**
  * True while a new opener must not be queued for this lead.
  *
  * Reads crm_last_warmed_at, which is stamped at QUEUE time — so a burst of

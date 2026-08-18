@@ -39,6 +39,7 @@ import {
   type CrmStatusPayload,
   type StatusRule,
   coercePayload,
+  resolveLeadNameUpdate,
   resolveStatusRule,
   withinCooldown,
 } from "./validate.ts";
@@ -118,14 +119,18 @@ async function upsertConversation(
   agentId: string,
   payload: CrmStatusPayload,
 ): Promise<ConversationRow> {
+  // NB: lead_name is deliberately NOT set here. On an existing conversation the
+  // WhatsApp-profile / registration name is authoritative, and a CRM status
+  // event must never clobber it (a test overwrote a real lead's name on
+  // 2026-08-18). fireberry_lead_id is a stable id, safe to refresh. lead_name
+  // is instead filled ONLY when the existing row has none — see below.
   const updateSet: Record<string, string> = {};
-  if (payload.lead_name !== null) updateSet.lead_name = payload.lead_name;
   if (payload.fireberry_lead_id !== null) {
     updateSet.fireberry_lead_id = payload.fireberry_lead_id;
   }
 
-  // An UPDATE needs at least one column. When Make sends neither name nor lead
-  // id, touch updated_at so the "did a row exist?" probe still works.
+  // An UPDATE needs at least one column. When Make sends no lead id, touch
+  // updated_at so the "did a row exist?" probe still works.
   if (Object.keys(updateSet).length === 0) {
     updateSet.updated_at = new Date().toISOString();
   }
@@ -142,11 +147,26 @@ async function upsertConversation(
   if ((updateCount ?? 0) > 0) {
     const { data: existing, error: selectError } = await admin
       .from("conversations")
-      .select("id, current_tag, crm_last_warmed_at")
+      .select("id, current_tag, crm_last_warmed_at, lead_name")
       .eq("agent_id", agentId)
       .eq("lead_phone", payload.lead_phone)
       .single();
     if (selectError) throw new Error(`select conversation failed: ${selectError.message}`);
+
+    // Fill-if-empty: adopt the CRM name ONLY when the row has none, never
+    // overwrite an existing one.
+    const nameToFill = resolveLeadNameUpdate(
+      existing.lead_name as string | null,
+      payload.lead_name,
+    );
+    if (nameToFill !== null) {
+      const { error: fillError } = await admin
+        .from("conversations")
+        .update({ lead_name: nameToFill })
+        .eq("id", existing.id as string);
+      if (fillError) throw new Error(`backfill lead_name failed: ${fillError.message}`);
+    }
+
     return {
       id: existing.id as string,
       inserted: false,
