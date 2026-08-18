@@ -1,4 +1,4 @@
-import { Bot, FileText, Home, LogOut, MessageCircle, Send, Settings, Users } from "lucide-react";
+import { Bot, FileText, Flame, Home, LogOut, MessageCircle, Send, Settings, Users } from "lucide-react";
 import { BrandLogo } from "@/components/BrandLogo";
 import { NavLink } from "@/components/NavLink";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -38,6 +38,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { title: "דף הבית", url: "/", icon: Home, end: true },
   { title: "לידים", url: "/leads", icon: Users, end: false },
+  { title: "חימום CRM", url: "/crm-warming", icon: Flame, end: false },
   { title: "שיחות פעילות", url: "/conversations", icon: MessageCircle, end: false },
   { title: "ניהול Prompts", url: "/prompts", icon: FileText, end: false },
   { title: "מאמן הבוט", url: "/coach", icon: Bot, end: false, adminOnly: true },

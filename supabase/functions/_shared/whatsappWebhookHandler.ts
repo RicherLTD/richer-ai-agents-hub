@@ -49,7 +49,7 @@ import { createClient, type SupabaseClient } from "https://esm.sh/@supabase/supa
 import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "./anthropicRetry.ts";
-import { judgeReply } from "./judgeReply.ts";
+import { JUDGE_MODEL, judgeReply } from "./judgeReply.ts";
 import { transcribeVoiceNote } from "./transcribeVoice.ts";
 import { logError } from "./logError.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
@@ -67,6 +67,10 @@ import {
   renderBookingStatusBlock,
   shouldPreCheckMooz,
 } from "./bookingStatusBlock.ts";
+import {
+  renderWarmingContextBlock,
+  shouldRenderWarmingBlock,
+} from "./warmingContextBlock.ts";
 import { alertOperators } from "./alertOperators.ts";
 import { isOptOutMessage } from "./optOut.ts";
 import { isQuietHourNow } from "./quietHours.ts";
@@ -75,6 +79,7 @@ import {
   computeSonnet46Cost,
   Langfuse,
   langfuseFromEnv,
+  type LangfuseScore,
 } from "./langfuse.ts";
 import { toCanonicalPhone } from "./normalizePhone.ts";
 import { buildEmbedUrl } from "./embedLink.ts";
@@ -621,7 +626,12 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     .eq("id", ctx.conversationId)
     .eq("status", "active")
     .or(`agent_lock_taken_at.is.null,agent_lock_taken_at.lt.${lockTimeoutAt}`)
-    .select("id, current_tag, status, manual_mode_since");
+    // The crm_* columns ride along on the lock claim rather than costing a
+    // second round-trip per turn. They are NULL for every lead that has never
+    // had a Fireberry status event, which is the overwhelming majority.
+    .select(
+      "id, current_tag, status, manual_mode_since, crm_warming_status, crm_status_event_at, crm_status_sub, crm_status_main, crm_warming_reason, crm_rep_note",
+    );
   if (!claim || claim.length === 0) {
     // Distinguish "lock contention" from "conversation paused" so the
     // operator sees the right reason in error_logs.
@@ -703,6 +713,8 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
     return;
   }
 
+  const claimed = claim[0] as Record<string, unknown>;
+
   try {
     await generateAndSendAgentResponseLocked(ctx, {
       // The conversation is already tagged zoom_scheduled → a confirmed
@@ -711,6 +723,15 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
       // scheduling keyword — otherwise the bot could re-offer a slot to a
       // lead who is already booked.
       alreadyZoomScheduled: claimedTag === "zoom_scheduled",
+      // CRM warming state, read for free off the lock claim above.
+      crm: {
+        warmingStatus: (claimed.crm_warming_status as string | null) ?? null,
+        statusEventAt: (claimed.crm_status_event_at as string | null) ?? null,
+        statusSub: (claimed.crm_status_sub as number | null) ?? null,
+        statusMain: (claimed.crm_status_main as number | null) ?? null,
+        warmingReason: (claimed.crm_warming_reason as string | null) ?? null,
+        repNote: (claimed.crm_rep_note as string | null) ?? null,
+      },
     });
   } finally {
     // Always release the lock — even on error — so the next inbound from
@@ -722,9 +743,118 @@ async function generateAndSendAgentResponse(ctx: AgentLoopCtx): Promise<void> {
   }
 }
 
+/** CRM warming state carried off the lock claim. All-NULL for a normal lead. */
+interface CrmWarmingState {
+  warmingStatus: string | null;
+  statusEventAt: string | null;
+  statusSub: number | null;
+  statusMain: number | null;
+  warmingReason: string | null;
+  repNote: string | null;
+}
+
+/**
+ * Build the CRM warming block for this turn.
+ *
+ * Costs ZERO extra queries for a normal lead: the predicate short-circuits on
+ * the crm_* columns that came free with the lock claim, and only a lead that is
+ * genuinely warming (inside its context window) triggers the single lookup of
+ * the operator's rule.
+ *
+ * Returns the objection key alongside the text so the Langfuse trace can be
+ * tagged without re-reading the rule.
+ */
+async function buildWarmingBlock(
+  ctx: AgentLoopCtx,
+  args: {
+    crm?: CrmWarmingState;
+    warmingContextDays: number;
+    hasHistory: boolean;
+  },
+): Promise<{ text: string; objectionKey: string | null }> {
+  const crm = args.crm;
+  if (!crm || crm.statusSub === null) return { text: "", objectionKey: null };
+
+  const shouldRender = shouldRenderWarmingBlock({
+    crmWarmingStatus: crm.warmingStatus,
+    crmStatusEventAt: crm.statusEventAt,
+    warmingContextDays: args.warmingContextDays,
+  });
+  if (!shouldRender) return { text: "", objectionKey: null };
+
+  const { data: rule } = await ctx.admin
+    .from("crm_status_rules")
+    .select("status_label, objection_key, warming_instructions")
+    .eq("agent_id", ctx.agentId)
+    .eq("status_sub", crm.statusSub)
+    .eq("is_active", true)
+    .maybeSingle();
+
+  // The rule was deactivated (or deleted) after the status event landed. The
+  // operator's decision to switch it off should take effect immediately, so
+  // stop steering rather than falling back to generic text.
+  if (!rule) return { text: "", objectionKey: null };
+
+  const objectionKey = (rule.objection_key as string | null) ?? null;
+  return {
+    text: renderWarmingContextBlock({
+      statusSub: crm.statusSub,
+      statusMain: crm.statusMain,
+      statusLabel: (rule.status_label as string | null) ?? crm.warmingReason ?? "לא ידוע",
+      objectionKey: objectionKey ?? "unknown",
+      instructions: (rule.warming_instructions as string | null) ?? "",
+      repNote: crm.repNote,
+      hasHistory: args.hasHistory,
+    }),
+    objectionKey,
+  };
+}
+
+/**
+ * Emit the `lead_replied` session score the first time a warmed lead answers.
+ *
+ * The conditional UPDATE is the idempotency guard: `crm_warming_replied_at IS
+ * NULL` in the WHERE means exactly one concurrent webhook can claim the
+ * transition, so the score is emitted once even when a lead fires three
+ * messages in a second. No row claimed → already recorded, or this lead was
+ * never actually sent an opener.
+ *
+ * Runs outside the reply path (fireAndForget): a missed score costs one data
+ * point, and must never cost a lead their answer.
+ */
+async function recordWarmingReplyScore(ctx: AgentLoopCtx): Promise<void> {
+  const { data: claimed } = await ctx.admin
+    .from("conversations")
+    .update({ crm_warming_replied_at: new Date().toISOString() })
+    .eq("id", ctx.conversationId)
+    .eq("crm_warming_status", "warming")
+    .not("crm_last_warmed_at", "is", null)
+    .is("crm_warming_replied_at", null)
+    .select("id");
+  if (!claimed || claimed.length === 0) return;
+  if (!ctx.langfuse) return;
+
+  await ctx.langfuse.recordScores(
+    { sessionId: ctx.conversationId },
+    [{ name: "lead_replied", value: 1, dataType: "BOOLEAN", comment: "crm_warming" }],
+    async (detail) => {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "langfuse_ingestion_failed",
+        level: "warn",
+        message: `score ingestion failed (${detail.status}): ${detail.body.slice(0, 200)}`,
+        context: { score: "lead_replied" },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    },
+  );
+}
+
 async function generateAndSendAgentResponseLocked(
   ctx: AgentLoopCtx,
-  opts: { alreadyZoomScheduled?: boolean } = {},
+  opts: { alreadyZoomScheduled?: boolean; crm?: CrmWarmingState } = {},
 ): Promise<void> {
   // Quiet-hours check. Operator-configured window in Asia/Jerusalem during
   // which the agent stays silent. Inbound row is already persisted; we
@@ -732,13 +862,16 @@ async function generateAndSendAgentResponseLocked(
   // so they can step in if they want — the lead is not forgotten.
   const { data: agentCfg } = await ctx.admin
     .from("agents")
-    .select("name, quiet_hours_start_il, quiet_hours_end_il, meeting_type_id, mooz_product_code")
+    .select(
+      "name, quiet_hours_start_il, quiet_hours_end_il, meeting_type_id, mooz_product_code, warming_context_days",
+    )
     .eq("id", ctx.agentId)
     .maybeSingle();
   const quietStart = (agentCfg?.quiet_hours_start_il as number | null | undefined) ?? null;
   const quietEnd = (agentCfg?.quiet_hours_end_il as number | null | undefined) ?? null;
   const meetingTypeId = (agentCfg?.meeting_type_id as string | null | undefined) ?? null;
   const productCode = (agentCfg?.mooz_product_code as string | null | undefined) ?? null;
+  const warmingContextDays = (agentCfg?.warming_context_days as number | null | undefined) ?? 14;
   if (isQuietHourNow({ startIl: quietStart, endIl: quietEnd })) {
     // Quiet hours = silent for everyone. The operator explicitly does
     // NOT want WhatsApp alerts during the night — the whole point of
@@ -904,9 +1037,62 @@ async function generateAndSendAgentResponseLocked(
     `When a lead says "היום" use ${todayDate}. ` +
     `When they say "מחר" compute it as the next calendar day in YYYY-MM-DD. ` +
     `Always pass dates to list_available_slots in YYYY-MM-DD format using THIS reference, not your training cutoff.\n\n`;
+  // CRM warming context. A rep changed this lead's Fireberry status, which is
+  // WHY we are talking to them right now — the block tells the model what the
+  // rep found and how the operator wants that objection handled.
+  //
+  // Best-effort in exactly the same shape as brainText: any failure degrades to
+  // an empty string, because a CRM lookup must never cost a lead their reply.
+  // For a lead with no status event (the overwhelming majority) this is "" and
+  // the prompt below is byte-identical to what it was before this feature —
+  // which also means no change to the cache_control prefix in agentTurn.ts.
+  let warmingBlock = "";
+  let warmingObjectionKey: string | null = null;
+  try {
+    const warming = await buildWarmingBlock(ctx, {
+      crm: opts.crm,
+      warmingContextDays,
+      hasHistory: turn.claudeMessages.length > 1,
+    });
+    warmingBlock = warming.text;
+    warmingObjectionKey = warming.objectionKey;
+  } catch (warmErr) {
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "warming_context_load_failed",
+      level: "warn",
+      message: warmErr instanceof Error ? warmErr.message : String(warmErr),
+      context: { lead_phone: ctx.leadPhone },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+  }
+
   // Single source of truth for the system prompt — runAgentTurn AND
   // the Langfuse trace below should both record exactly what Claude saw.
-  const fullSystemPrompt = dateHeader + bookingStatusBlock + turn.promptContent + brainText;
+  const fullSystemPrompt =
+    dateHeader + bookingStatusBlock + warmingBlock + turn.promptContent + brainText;
+
+  // Trace tags. Empty for a normal lead, so those traces stay identical to
+  // what they looked like before this feature. For a warming lead they make
+  // "show me every conversation triggered by status 60, and what the bot said"
+  // a filter in the Langfuse UI rather than a database query.
+  const warmingTraceTags = warmingBlock
+    ? [
+      "warming",
+      `status:${opts.crm?.statusSub ?? "unknown"}`,
+      `objection:${warmingObjectionKey ?? "unknown"}`,
+    ]
+    : [];
+
+  // The lead answered a warming opener. Recorded off the reply path, and only
+  // for a conversation that is actually warming — every other lead skips this
+  // entirely. Keyed on warmingStatus rather than warmingBlock so a reply that
+  // arrives just after the context window expired still counts as a reply.
+  if (opts.crm?.warmingStatus === "warming") {
+    fireAndForget(recordWarmingReplyScore(ctx));
+  }
 
   // Guard-retry loop: up to 2 attempts total.
   //
@@ -924,6 +1110,65 @@ async function generateAndSendAgentResponseLocked(
   // to the full logAndDlq path (DLQ + operator alert).
   let guardHint = "";
   let langfuseTraceId: string | null = null;
+
+  // Deferred observability.
+  //
+  // Guard/judge verdicts and the judge's own model call are buffered here
+  // and flushed to Langfuse only AFTER the reply has reached the lead, so
+  // instrumentation never adds latency to a lead-facing send. Flushed on
+  // the success path and on both terminal-failure paths; a missed flush
+  // costs one data point and can never cost a reply.
+  const turnScores: LangfuseScore[] = [];
+  let judgeStep: {
+    startTime: Date;
+    endTime: Date;
+    input: string;
+    verdict: { ok: boolean; reason: string; tokensInput: number; tokensOutput: number };
+  } | null = null;
+
+  const flushTurnObservability = async (): Promise<void> => {
+    const traceId = langfuseTraceId;
+    if (!ctx.langfuse || !traceId) return;
+    const onFailure = async (detail: { status: number; body: string }) => {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "langfuse_ingestion_failed",
+        level: "warn",
+        message: `Langfuse observability flush failed status=${detail.status}`,
+        context: { status: detail.status, body: detail.body, prompt_version: turn.promptVersion },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    };
+    const step = judgeStep;
+    const scores = turnScores.slice();
+    // Clear first: a retry of the loop must not re-post the same rows.
+    turnScores.length = 0;
+    judgeStep = null;
+    const jobs: Array<Promise<unknown>> = [];
+    if (step) {
+      jobs.push(ctx.langfuse.recordChildGeneration({
+        traceId,
+        name: "judge-reply",
+        model: JUDGE_MODEL,
+        startTime: step.startTime,
+        endTime: step.endTime,
+        input: step.input,
+        output: { ok: step.verdict.ok, reason: step.verdict.reason },
+        usage: {
+          inputTokens: step.verdict.tokensInput,
+          outputTokens: step.verdict.tokensOutput,
+        },
+        level: step.verdict.ok ? "DEFAULT" : "WARNING",
+        statusMessage: step.verdict.ok ? undefined : step.verdict.reason,
+      }, onFailure));
+    }
+    if (scores.length > 0) {
+      jobs.push(ctx.langfuse.recordScores({ traceId }, scores, onFailure));
+    }
+    await Promise.all(jobs);
+  };
 
   for (let attempt = 0; attempt < 2; attempt++) {
     const systemPromptThisAttempt = fullSystemPrompt + guardHint;
@@ -1024,6 +1269,7 @@ async function generateAndSendAgentResponseLocked(
             : `(invalid: ${validation.reason})`,
           usage,
           failureTag: validation.ok ? undefined : `invalid_${validation.reason}`,
+          extraTags: warmingTraceTags,
         },
         async (detail) => {
           await logError({
@@ -1041,6 +1287,15 @@ async function generateAndSendAgentResponseLocked(
             conversationId: ctx.conversationId,
           });
         },
+      );
+    }
+
+    // Buffered, not posted — flushed after the reply reaches the lead.
+    if (attempt === 0) {
+      turnScores.push(
+        validation.ok
+          ? { name: "guard_passed", value: 1, dataType: "BOOLEAN" }
+          : { name: "guard_passed", value: 0, dataType: "BOOLEAN", comment: validation.reason },
       );
     }
 
@@ -1085,6 +1340,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await flushTurnObservability();
       return;
     }
 
@@ -1092,6 +1348,7 @@ async function generateAndSendAgentResponseLocked(
     // rules the regex validator can't enforce ("5 אלף בחודש", subtle AI
     // disclosure, income hints without "מובטח"). Degrades open on
     // judge failure so a Haiku outage doesn't stop legitimate traffic.
+    const judgeStart = new Date();
     const verdict = await judgeReply(ctx.anthropic, validation.text, async (msg) => {
       await logError({
         admin: ctx.admin,
@@ -1104,6 +1361,22 @@ async function generateAndSendAgentResponseLocked(
         conversationId: ctx.conversationId,
       });
     });
+    // Buffered — the judge's own model call becomes a step inside this
+    // turn's trace, and its verdict becomes a score on the turn.
+    if (attempt === 0) {
+      judgeStep = {
+        startTime: judgeStart,
+        endTime: new Date(),
+        input: validation.text,
+        verdict,
+      };
+      turnScores.push({
+        name: "judge_passed",
+        value: verdict.ok ? 1 : 0,
+        dataType: "BOOLEAN",
+        comment: verdict.ok ? undefined : verdict.reason,
+      });
+    }
     if (!verdict.ok) {
       if (attempt === 0) {
         // Log a warn-level entry so the operator can spot it in error_logs,
@@ -1146,6 +1419,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await flushTurnObservability();
       return;
     }
 
@@ -1159,6 +1433,9 @@ async function generateAndSendAgentResponseLocked(
       costUsd,
       latencyMs,
     });
+
+    // Reply is with the lead — now it is free to spend time on tracing.
+    await flushTurnObservability();
 
     // Capture reply text for the memory extractor (used after the loop).
     // We need to break out of the loop scope carrying these values.
@@ -1178,6 +1455,12 @@ async function generateAndSendAgentResponseLocked(
       handoffWebhookUrl: ctx.handoffWebhookUrl,
       handoffWebhookSecret: ctx.handoffWebhookSecret,
       dashboardBaseUrl: ctx.dashboardBaseUrl,
+      // Records the extraction as a step inside this turn's trace, with an
+      // extraction_ok score. Null when tracing is disabled or the trace
+      // failed to create — extraction behaviour is unchanged either way.
+      langfuse: ctx.langfuse && langfuseTraceId
+        ? { client: ctx.langfuse, traceId: langfuseTraceId }
+        : null,
     });
     return;
   }

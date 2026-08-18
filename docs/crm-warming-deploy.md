@@ -1,0 +1,265 @@
+# CRM-Driven Lead Warming — deployment runbook
+
+Hand this to whoever deploys. Everything below is on branch `feat/crm-lead-warming`.
+
+**What this feature does.** A rep changes a lead's status in Fireberry → Make → a new webhook on
+our side flags the conversation as *warming* and queues one generic WhatsApp opener. When the lead
+replies, the **existing** agent loop handles them, with per-status instructions injected into the
+system prompt.
+
+**Blast radius on the live bot: near zero, by construction.**
+- Every DB change is additive — no existing column is altered or dropped.
+- `agents.crm_warming_enabled` defaults to **false**, so applying the migration changes no behaviour
+  at all until someone deliberately switches an agent on.
+- For any lead without a Fireberry status event the injected prompt block is the empty string, so the
+  system prompt is byte-identical to today's — including the `cache_control` prefix in `agentTurn.ts`.
+- The dispatcher's existing `kind='template'` path is untouched; the new rule applies only to
+  `kind='warming'` rows.
+
+---
+
+## Order of operations
+
+Steps 1–3 are safe on their own and change nothing the leads can see. Step 5 is the switch that makes
+the feature live.
+
+### 1. Migration
+
+```bash
+bun run db:apply supabase/migrations/0046_crm_warming.sql
+bun run db:apply supabase/migrations/0047_warming_release_controls.sql
+```
+
+Adds: enum `crm_warming_status_enum`; table `crm_status_rules` (+ admin-only RLS, `updated_at`
+trigger, 33 seeded rows per agent); 8 nullable columns on `conversations`; 4 columns on `agents`;
+`kind` on `scheduled_messages`.
+
+Idempotent throughout (`IF NOT EXISTS` / `ON CONFLICT DO NOTHING`), so a re-run is a no-op — and
+notably the seed will **never** overwrite instruction text an operator has since edited from the
+dashboard.
+
+The two `NOT NULL` columns (`agents.crm_warming_enabled`, `scheduled_messages.kind`) both take
+constant defaults, so on Postgres 17 this is a metadata-only change: no table rewrite, no long lock.
+
+> **APPLIED to production on 2026-08-11.** Both migrations are live on `juoglkqtmjsziieqgmhf`; the
+> commands above are recorded for a fresh environment and are idempotent no-ops against prod.
+> Verified after applying: 99 rule rows (33 statuses x 3 agents), 0 empty instruction texts, all 9,199
+> pre-existing `scheduled_messages` rows defaulted to `kind='template'`, and 0 conversations warming /
+> 0 agents enabled — i.e. no behavioural change. The seeded delays, cooldowns and zoom-clearing flags
+> were diffed row-by-row against this file and match exactly.
+
+Then regenerate types and commit the result:
+
+```bash
+bun run db:types
+```
+
+This also picks up `agents.mooz_product_code`, which migration `0041` added but which was never
+regenerated into `src/types/database.ts`.
+
+After regenerating, the temporary casts in `src/lib/crm-warming.ts` can be dropped — they exist only
+because the dashboard was written before the migration landed. They are marked with a comment.
+
+### 2. Secret
+
+```bash
+bunx supabase secrets set CRM_STATUS_SHARED_SECRET=<generate a long random value> \
+  --project-ref juoglkqtmjsziieqgmhf
+```
+
+Give the same value to Izak for the Make scenario's `Authorization` header.
+
+### 3. Deploy functions
+
+```bash
+# New. MUST use --no-verify-jwt — Make cannot carry a Supabase JWT; the function
+# authenticates via the Bearer shared secret set above.
+bunx supabase functions deploy crm-status-webhook --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+
+# Modified.
+bunx supabase functions deploy dispatch-scheduled-templates --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+bunx supabase functions deploy mooz-webhook --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+bunx supabase functions deploy whatsapp-webhook --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+bunx supabase functions deploy whatsapp-webhook-dm --no-verify-jwt --project-ref juoglkqtmjsziieqgmhf
+```
+
+Both WhatsApp entrypoints must go out because they share `_shared/whatsappWebhookHandler.ts`.
+
+**Deploy the migration before the functions.** The handler now selects `crm_*` columns on the lock
+claim; against a pre-migration database that select fails and the agent loop stops replying.
+
+### 4. Meta template
+
+One warming opener per agent — a generic line, the same for every lead, e.g. `היי, מה קורה?`.
+
+Get it approved in Meta, register it in `broadcast_templates`, then set it on the agent
+(`agents.warming_template_name`) from the dashboard Settings tab.
+
+Parameter count matters. The webhook reads `broadcast_templates.variable_count` and builds exactly
+that many parameters — a mismatch is Meta error #132000, which fails the whole send:
+- **0 parameters** (recommended, and what the existing first-touch template does): sends with no
+  params. Nothing can go wrong.
+- **1 parameter**: filled with the lead's name. A lead with no name is skipped and logged as
+  `warming_missing_template_variable` rather than sent malformed.
+- **2+**: refused and logged — only slot 1 has a defined meaning.
+
+### 5. Go live (the actual switch)
+
+Per agent, in dashboard Settings, turn on `crm_warming_enabled`. **Start with
+`affiliate_marketing` only** and watch the first ~20 leads end-to-end before enabling
+`digital_marketing`.
+
+To stop everything instantly, turn it back off. It is independent of `is_paused`; status events keep
+being recorded for the dashboard, but nothing is queued and the prompt goes back to untouched.
+
+---
+
+## Orchestration side — n8n, not Make
+
+The caller is an n8n workflow, already built and **inactive**:
+[`CRM Lead Warming — Fireberry to WhatsApp`](https://richerltd.app.n8n.cloud/workflow/YeBmPoVmVDYfiCbL)
+(`YeBmPoVmVDYfiCbL`). Nothing in this repo depends on which platform calls us — the endpoint takes a
+POST with a bearer header and is transport-agnostic.
+
+Chain: `Webhook → Map Fireberry Fields (Code) → Only Warming Statuses (Filter) → HTTP Request`.
+
+Owned by Izak, written up for him in
+**[`crm-warming-n8n-setup.md`](./crm-warming-n8n-setup.md)** (Hebrew) — what is still open, the field
+mapping, the 33 statuses, response codes, and the closed-out rep_note question. Kept in one place so the two
+documents cannot drift.
+
+The parts that concern deployment: he needs the value of `CRM_STATUS_SHARED_SECRET` from step 2 for
+the workflow's Bearer credential, and warming should be enabled for `affiliate_marketing`
+(`product = B`) first. The workflow can start sending `R` events immediately regardless — they are
+recorded and simply not sent until that agent is switched on.
+
+One rule worth repeating out loud, because it is the only way a lead gets messaged who shouldn't be:
+**filtering is the caller's job.** The n8n Filter node passes only the 33 known statuses, and there is
+deliberately no allow-list on our side — every event that reaches us warms the lead. Blocking statuses
+(blacklist / invalid lead / wrong number) should also be filtered at the Fireberry automation so they
+never leave the CRM. A status that arrives with no rule row falls back to an immediate warm and is
+logged as `crm_status_rule_missing`.
+
+---
+
+## Behaviour worth knowing before you support it
+
+**Context always refreshes; sends are rate-limited.** Every status event immediately updates what the
+bot knows. Whether an opener is *sent* is governed by `crm_status_rules.cooldown_days`. So a lead
+flipped through four statuses in a week gets one message, but the bot is always working the newest
+objection.
+
+**A newer status supersedes a pending older one — but only when a replacement is actually going
+out.** A lead marked "price" (15-day delay) then "no time" two days later normally has the price row
+cancelled (`last_error='superseded_by_newer_crm_status'`) and a fresh one queued. If the second event
+falls inside the cooldown, though, the pending row is deliberately left alone rather than cancelled —
+cancelling it and then declining to replace it would silently drop the lead's warming altogether.
+The stale row is harmless: the opener is generic, and by the time it fires the bot is carrying the
+newest status context.
+
+**The context expires.** A status is a snapshot, not a fact about a person. The prompt block is
+injected only while the last status event is inside `agents.warming_context_days` (default 14). Each
+new event restarts the clock, so an actively-worked lead always has current context.
+
+**The opener waits for a quiet moment.** A warming row whose lead wrote within the last 60 minutes is
+*deferred*, not cancelled — it goes out on a later tick once they go quiet. Counted as
+`deferred_warming_active_chat` in the dispatcher response.
+
+**The queue is paced — this is the bank (`0047`).** The dispatcher claims up to 50 due rows per tick
+and sends them in a loop, so before this, fifty warming templates could leave one WhatsApp number
+within seconds. Three controls now gate release, all per-agent config editable from the dashboard:
+
+| Control | Column | Default | What it shapes |
+|---|---|---|---|
+| Minimum gap | `agents.warming_min_gap_seconds` | 90s | the burst — turns a loop into a drip |
+| Daily cap | `agents.warming_daily_cap` | 50 | the volume — the real brake, and what makes a ramp-up possible |
+| Priority | `crm_status_rules.release_priority` | 50 | who goes first once the cap binds |
+
+Priority is read at send time, not stamped at enqueue, so re-prioritising a status in the dashboard
+reorders the queue that already exists. Seeded by how much intent the lead has shown: ghosted-a-Zoom
+(91) is 100, concrete objections 75, softer ones 60, never-reached 40, written-off 20.
+
+A row the gate does not pick is *deferred*, never cancelled — it competes again next tick. Counted as
+`deferred_warming_paced`.
+
+⚠️ **A daily cap of 0 means zero sends, not unlimited.** Deliberate: an operator typing 0 into a
+"cap" box and getting unlimited messaging to leads without provable opt-in is the worst possible
+surprise here. Turning warming off is what `crm_warming_enabled` is for.
+
+**Known limitation:** priority sorts *within the batch the claim RPC returns* (up to 50, oldest
+first), not across the whole backlog. At expected volume the backlog stays smaller than the batch, so
+this is not felt. If a large backlog ever builds, raise the dispatcher's `?limit=` or teach
+`claim_scheduled_messages` to order by priority — the latter needs a DROP+CREATE (Postgres 42P13).
+
+**Ghosted-Zoom leads (status 91)** clear `zoom_scheduled_at`, `zoom_booked_by` and the
+`zoom_scheduled` tag before queueing — otherwise the lead's own stale tag would cancel the send.
+This is driven by `crm_status_rules.clears_zoom_state`, not a hardcoded status number.
+
+**Langfuse.** Warming turns carry the tags `warming`, `status:<n>`, `objection:<key>` — so
+"every conversation triggered by status 60, and what the bot actually said" is a filter in the UI.
+Two session scores are now emitted: `lead_replied` and `bot_booked_zoom`. Normal (non-warming)
+traces are unchanged.
+
+### Accepted risk, decided deliberately
+
+Leads with **no WhatsApp history** are warmed too — a lead that exists in Fireberry but has never
+messaged the bot gets a conversation row created and the opener sent. Those sends go to numbers whose
+WhatsApp opt-in we cannot prove, and Meta counts them toward the quality rating of the number the live
+bot depends on. The dashboard flags this cohort ("ללא היסטוריה") specifically so a downward trend gets
+noticed early. Watch it during the canary.
+
+### Where to look when something is wrong
+
+`error_logs`, filtered by `source='crm-status-webhook'`. The error types are stable:
+`crm_status_validation_failed`, `agent_not_found`, `crm_status_rule_missing`,
+`warming_template_not_configured`, `warming_missing_template_variable`,
+`warming_template_variable_mismatch`, `crm_status_webhook_failed`. From the agent loop:
+`warming_context_load_failed` (degrades to no block — never costs a lead a reply).
+
+---
+
+## Post-deploy verification
+
+Run these against production after step 3, **before** step 5. With `crm_warming_enabled` still false,
+steps 1–2 exercise the recording path without sending anything.
+
+1. `curl` with `product=B, status_sub=60` → `200`, `warming_enabled:false`, `recorded:true`, a
+   conversation row with `crm_status_sub=60` and `crm_warming_status` still NULL, and **no**
+   `scheduled_messages` row. This is the kill switch working.
+2. Confirm 33 seed rows exist per agent: `select agent_id, count(*) from crm_status_rules group by 1`.
+3. Enable warming for `affiliate_marketing`, then repeat the curl → now `enqueued:true`,
+   `scheduled_for` ≈ now. With `status_sub=14` → `scheduled_for` ≈ now + 15 days.
+4. POST twice inside the cooldown → context updated both times, exactly one queued row
+   (`cooldown_skipped:true` on the second).
+5. Set a test conversation's `last_inbound_at` to 5 minutes ago → dispatcher leaves the row pending
+   and reports `deferred_warming_active_chat`. Set it to 2 hours ago → it sends. Confirm
+   `kind='template'` rows in the same tick are unaffected.
+6. Send a message as a warming lead → the block appears in the system prompt in Langfuse and the trace
+   carries `warming` + `status:60`. Send as a normal lead → the block is absent.
+7. Pacing: queue three warming rows due now for one agent → the first tick sends exactly one and
+   reports `deferred_warming_paced: 2`; the next tick within 90s sends none. Set
+   `warming_daily_cap = 0` → nothing sends at all. Confirm `kind='template'` rows in the same ticks
+   are unaffected throughout.
+8. Priority: queue a status-91 row and a status-23 row due at the same moment → 91 goes first.
+
+## What was run locally
+
+- `bun run test` — 462 tests pass, including 20 new ones for `warmingContextBlock`.
+- `bun x tsc --noEmit` — clean.
+- `deno check` on every modified edge function — no new errors. (Two pre-existing errors remain, in
+  `lead-register` and `mooz-webhook`; both are present on `main` and are esm.sh type-definition gaps,
+  not runtime bugs.)
+- The migration parsed against the Postgres grammar. **Not executed** — see step 1.
+
+## Still open
+
+- The Meta-approved opener template (step 4).
+- `rep_note` — CLOSED, negatively. Probed the live CRM on 2026-08-10: the rep-notes field
+  (`pcfsystemfield124`) and the objections field (`systemfield10`) are both populated in 0 of 200
+  leads, and the "call debrief" object holds 8 records, last touched Aug 2025, containing coaching
+  feedback about the rep rather than anything about the lead. Reps do not write lead notes anywhere.
+  The secondary status IS the only structured signal, and we already receive it. The payload field
+  stays supported so it works the day someone starts filling one — see crm-warming-n8n-setup.md §4.
+- Review of the 33 seeded `warming_instructions` texts. They are a first draft written against the
+  tone of the live prompts, and are meant to be edited from the dashboard once real replies are
+  visible — no deploy, no Meta approval.

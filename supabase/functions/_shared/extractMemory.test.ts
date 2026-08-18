@@ -3,8 +3,105 @@ import {
   coerceExtractedMemory,
   decideConversationTag,
   decideFunnelStage,
+  EXTRACT_MEMORY_TOOL,
+  renderTranscript,
   shouldTriggerZoomHandoff,
 } from "./extractMemory.ts";
+
+// Regression tests for the 2026-07-29 extractor fix. The old design passed
+// the agent's own alternating message array plus a bare `{` prefill, which
+// positioned Haiku as the bot mid-conversation; it answered with invented
+// control tokens instead of JSON and failed on ~95% of calls for a month.
+describe("renderTranscript", () => {
+  it("labels the lead and the agent instead of using chat roles", () => {
+    const out = renderTranscript([
+      { role: "user", content: "היי, ראיתי את המודעה" },
+      { role: "assistant", content: "היי! מה גילך?" },
+      { role: "user", content: "בן 30" },
+    ]);
+
+    expect(out).toBe(
+      "Lead: היי, ראיתי את המודעה\nAgent: היי! מה גילך?\nLead: בן 30",
+    );
+  });
+
+  it("produces a single readable block, never an assistant turn to continue", () => {
+    const out = renderTranscript([{ role: "assistant", content: "שלום" }]);
+    // The whole point: nothing here invites the model to keep talking as
+    // the bot, and there is no trailing "{" to complete.
+    expect(out).toBe("Agent: שלום");
+    expect(out.endsWith("{")).toBe(false);
+  });
+
+  it("trims whitespace so blank lines can't break the transcript", () => {
+    expect(renderTranscript([{ role: "user", content: "  hi  \n" }])).toBe("Lead: hi");
+  });
+
+  it("returns an empty string for an empty conversation", () => {
+    expect(renderTranscript([])).toBe("");
+  });
+});
+
+describe("EXTRACT_MEMORY_TOOL", () => {
+  it("declares every field coerceExtractedMemory reads", () => {
+    // If a field is added to ExtractedMemory but not to the tool schema,
+    // the model can never populate it and the value silently stays null.
+    const properties = Object.keys(EXTRACT_MEMORY_TOOL.input_schema.properties);
+    expect(properties).toEqual([
+      "q1_age",
+      "q2_motivation",
+      "q3_dream_change",
+      "q4_blocker",
+      "q5_urgency",
+      "q6_investment",
+      "q7_email",
+      "meeting_consented",
+      "conversation_summary",
+      "primary_objection",
+      "red_flags",
+      "notes_for_advisor",
+    ]);
+  });
+
+  it("allows null for every optional answer field", () => {
+    const props = EXTRACT_MEMORY_TOOL.input_schema.properties;
+    for (const key of ["q1_age", "q2_motivation", "q7_email", "notes_for_advisor"] as const) {
+      expect(props[key].type).toContain("null");
+    }
+  });
+
+  it("requires the two fields that gate downstream behaviour", () => {
+    // meeting_consented gates handoff; red_flags gates tagging. Both must
+    // always be present, never absent-and-therefore-undefined.
+    expect(EXTRACT_MEMORY_TOOL.input_schema.required).toEqual([
+      "meeting_consented",
+      "red_flags",
+    ]);
+  });
+
+  it("produces arguments that coerceExtractedMemory accepts", () => {
+    // A realistic forced-tool-call payload must survive validation.
+    const memory = coerceExtractedMemory({
+      q1_age: 30,
+      q2_motivation: "רוצה הכנסה נוספת",
+      q3_dream_change: null,
+      q4_blocker: null,
+      q5_urgency: "בהקדם",
+      q6_investment: null,
+      q7_email: "lead@example.com",
+      meeting_consented: true,
+      conversation_summary: "ליד מתעניין",
+      primary_objection: null,
+      red_flags: [],
+      notes_for_advisor: null,
+    });
+
+    expect(memory).not.toBeNull();
+    expect(memory?.q1_age).toBe(30);
+    expect(memory?.meeting_consented).toBe(true);
+    expect(memory?.red_flags).toEqual([]);
+  });
+});
 
 describe("coerceExtractedMemory", () => {
   it("returns null when given a non-object", () => {

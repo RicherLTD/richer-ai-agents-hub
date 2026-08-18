@@ -15,6 +15,7 @@
     "db:types": "bunx supabase gen types typescript --linked --schema public > src/types/database.ts",
     "fn:deploy": "bunx supabase functions deploy",
     "prompts:sync": "bun run scripts/prompts/sync.ts",
+    "extractor:validate": "deno run --allow-env --allow-net scripts/admin/validate-extractor.ts",
     "seed:test": "bun run scripts/seed/test-conversations.ts",
     "seed:clear": "bun run scripts/seed/test-conversations.ts clear",
     "wa:proxy": "bun run scripts/wa-tunnel-proxy.mjs"

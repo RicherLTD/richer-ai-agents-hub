@@ -42,7 +42,58 @@ export interface AgentTurnTraceInput {
   usage: AnthropicUsage;
   /** Tag the trace as a failure mode (validation reason, API error, etc.). */
   failureTag?: string;
+  /** Extra trace tags appended after the success/failure tag. Used by CRM
+   *  warming to stamp `warming`, `status:<n>` and `objection:<key>` so an
+   *  operator can filter Langfuse to "every conversation triggered by status
+   *  60" and read what the bot actually said. Empty for a normal lead. */
+  extraTags?: ReadonlyArray<string>;
 }
+
+/** A verdict attached after the fact to a trace, an observation, or a
+ *  whole session. `dataType` is inferred by Langfuse when omitted, but we
+ *  pass it explicitly so a boolean 0/1 never renders as a numeric average
+ *  of something meaningless. */
+export interface LangfuseScore {
+  name: string;
+  value: number | string;
+  dataType?: "NUMERIC" | "CATEGORICAL" | "BOOLEAN" | "TEXT";
+  comment?: string;
+  /** Attach to a single step rather than the whole turn. */
+  observationId?: string;
+}
+
+/** A model call that is NOT the main agent reply — the judge, the memory
+ *  extractor — recorded as a step inside an existing turn trace. */
+export interface ChildGenerationInput {
+  traceId: string;
+  name: string;
+  model: string;
+  startTime: Date;
+  endTime: Date;
+  input: unknown;
+  output: unknown;
+  usage?: AnthropicUsage;
+  metadata?: Record<string, unknown>;
+  level?: "DEFAULT" | "WARNING" | "ERROR";
+  statusMessage?: string;
+}
+
+/** A non-model step inside a turn — a Mooz tool call, a guard check. */
+export interface ChildSpanInput {
+  traceId: string;
+  name: string;
+  startTime: Date;
+  endTime: Date;
+  input?: unknown;
+  output?: unknown;
+  metadata?: Record<string, unknown>;
+  level?: "DEFAULT" | "WARNING" | "ERROR";
+  statusMessage?: string;
+}
+
+export type IngestionFailureHandler = (
+  detail: { status: number; body: string },
+) => Promise<void> | void;
 
 const SONNET_46_PRICING = {
   inputFresh: 0.000003, // $3 / M tokens
@@ -81,7 +132,10 @@ export class Langfuse {
     const generationId = crypto.randomUUID();
     const lastUserMessage = input.claudeMessages[input.claudeMessages.length - 1]?.content
       ?? null;
-    const tags = input.failureTag ? [input.failureTag] : ["success"];
+    const tags = [
+      input.failureTag ? input.failureTag : "success",
+      ...(input.extraTags ?? []),
+    ];
 
     const events = [
       {
@@ -131,6 +185,120 @@ export class Langfuse {
       },
     ];
 
+    const ok = await this.ingest(events, onFailure);
+    return ok ? traceId : null;
+  }
+
+  /**
+   * Attach scores to an existing trace, observation, or session. This is
+   * the "good answer / bad answer" ledger — the thing that makes replies
+   * comparable after the fact.
+   *
+   * `sessionId` scores a whole Conversation (used for outcomes that only
+   * become known days later, e.g. a Bot-Booked Zoom); `traceId` scores one
+   * turn. Pass exactly one of them.
+   */
+  async recordScores(
+    target: { traceId: string } | { sessionId: string },
+    scores: ReadonlyArray<LangfuseScore>,
+    onFailure?: IngestionFailureHandler,
+  ): Promise<boolean> {
+    if (scores.length === 0) return true;
+    const now = new Date().toISOString();
+    const events = scores.map((s) => ({
+      id: crypto.randomUUID(),
+      type: "score-create",
+      timestamp: now,
+      body: {
+        id: crypto.randomUUID(),
+        ...("traceId" in target ? { traceId: target.traceId } : { sessionId: target.sessionId }),
+        ...(s.observationId ? { observationId: s.observationId } : {}),
+        name: s.name,
+        value: s.value,
+        ...(s.dataType ? { dataType: s.dataType } : {}),
+        ...(s.comment ? { comment: s.comment.slice(0, 500) } : {}),
+      },
+    }));
+    return await this.ingest(events, onFailure);
+  }
+
+  /**
+   * Record a model call that happened inside an existing turn — the judge
+   * or the memory extractor. Returns the observation id so a score can be
+   * attached to that specific step.
+   */
+  async recordChildGeneration(
+    input: ChildGenerationInput,
+    onFailure?: IngestionFailureHandler,
+  ): Promise<string | null> {
+    const observationId = crypto.randomUUID();
+    const events = [{
+      id: crypto.randomUUID(),
+      type: "generation-create",
+      timestamp: input.endTime.toISOString(),
+      body: {
+        id: observationId,
+        traceId: input.traceId,
+        name: input.name,
+        startTime: input.startTime.toISOString(),
+        endTime: input.endTime.toISOString(),
+        model: input.model,
+        input: input.input,
+        output: input.output,
+        ...(input.usage
+          ? {
+            usage: {
+              input: input.usage.inputTokens ?? 0,
+              output: input.usage.outputTokens ?? 0,
+              total: (input.usage.inputTokens ?? 0) + (input.usage.outputTokens ?? 0),
+              unit: "TOKENS",
+            },
+          }
+          : {}),
+        ...(input.metadata ? { metadata: input.metadata } : {}),
+        ...(input.level ? { level: input.level } : {}),
+        ...(input.statusMessage ? { statusMessage: input.statusMessage.slice(0, 500) } : {}),
+      },
+    }];
+    const ok = await this.ingest(events, onFailure);
+    return ok ? observationId : null;
+  }
+
+  /**
+   * Record non-model steps inside a turn — Mooz tool calls, for instance.
+   * Batched into a single request because a turn can make several.
+   */
+  async recordSpans(
+    spans: ReadonlyArray<ChildSpanInput>,
+    onFailure?: IngestionFailureHandler,
+  ): Promise<boolean> {
+    if (spans.length === 0) return true;
+    const events = spans.map((s) => ({
+      id: crypto.randomUUID(),
+      type: "span-create",
+      timestamp: s.endTime.toISOString(),
+      body: {
+        id: crypto.randomUUID(),
+        traceId: s.traceId,
+        name: s.name,
+        startTime: s.startTime.toISOString(),
+        endTime: s.endTime.toISOString(),
+        ...(s.input !== undefined ? { input: s.input } : {}),
+        ...(s.output !== undefined ? { output: s.output } : {}),
+        ...(s.metadata ? { metadata: s.metadata } : {}),
+        ...(s.level ? { level: s.level } : {}),
+        ...(s.statusMessage ? { statusMessage: s.statusMessage.slice(0, 500) } : {}),
+      },
+    }));
+    return await this.ingest(events, onFailure);
+  }
+
+  /** POST a batch of ingestion events. Never throws — tracing must never
+   *  break the agent loop or delay a reply to a lead. */
+  private async ingest(
+    events: ReadonlyArray<unknown>,
+    onFailure?: IngestionFailureHandler,
+  ): Promise<boolean> {
     try {
       const auth = btoa(`${this.config.publicKey}:${this.config.secretKey}`);
       const url = `${this.config.baseUrl.replace(/\/$/, "")}/api/public/ingestion`;
@@ -147,14 +315,14 @@ export class Langfuse {
         const detail = { status: response.status, body: errBody.slice(0, 500) };
         console.warn(`[langfuse] ingestion failed`, detail);
         if (onFailure) await onFailure(detail);
-        return null;
+        return false;
       }
-      return traceId;
+      return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn(`[langfuse] exception during ingestion: ${msg}`);
       if (onFailure) await onFailure({ status: 0, body: msg });
-      return null;
+      return false;
     }
   }
 }

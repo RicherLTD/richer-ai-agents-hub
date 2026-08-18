@@ -1,4 +1,6 @@
 import { zodResolver } from "@hookform/resolvers/zod";
+import { useQuery } from "@tanstack/react-query";
+import { Flame } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
@@ -13,7 +15,9 @@ import {
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { listBroadcastTemplates } from "@/lib/broadcasts";
 import type { Agent, AgentInsert, AgentStatus, AgentUpdate } from "@/types/agent";
 
 const STATUS_OPTIONS: Array<{ value: AgentStatus; label: string }> = [
@@ -23,6 +27,11 @@ const STATUS_OPTIONS: Array<{ value: AgentStatus; label: string }> = [
 ];
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
+
+/** Radix Select can't hold an empty string value, so "no template" needs a sentinel. */
+const NO_TEMPLATE = "__none__";
+
+const DEFAULT_WARMING_CONTEXT_DAYS = 14;
 
 const agentSchema = z.object({
   name: z
@@ -46,6 +55,15 @@ const agentSchema = z.object({
     .optional()
     .refine((v) => !v || /^https?:\/\//.test(v), "חייב להתחיל ב-http:// או https://")
     .or(z.literal("")),
+  // --- CRM warming (migration 0046) ---
+  crm_warming_enabled: z.boolean(),
+  warming_template_name: z.string().max(200).optional().or(z.literal("")),
+  warming_template_language: z.string().max(16).optional().or(z.literal("")),
+  warming_context_days: z.coerce
+    .number({ invalid_type_error: "מספר שלם" })
+    .int("מספר שלם")
+    .min(1, "לפחות יום אחד")
+    .max(365, "מקסימום 365 ימים"),
 });
 
 export type AgentFormValues = z.infer<typeof agentSchema>;
@@ -60,6 +78,10 @@ const EMPTY: AgentFormValues = {
   brand_color: "",
   primary_goal: "",
   icon_url: "",
+  crm_warming_enabled: false,
+  warming_template_name: "",
+  warming_template_language: "he",
+  warming_context_days: DEFAULT_WARMING_CONTEXT_DAYS,
 };
 
 function fromAgent(agent: Agent): AgentFormValues {
@@ -73,6 +95,10 @@ function fromAgent(agent: Agent): AgentFormValues {
     brand_color: agent.brand_color ?? "",
     primary_goal: agent.primary_goal ?? "",
     icon_url: agent.icon_url ?? "",
+    crm_warming_enabled: agent.crm_warming_enabled ?? false,
+    warming_template_name: agent.warming_template_name ?? "",
+    warming_template_language: agent.warming_template_language ?? "he",
+    warming_context_days: agent.warming_context_days ?? DEFAULT_WARMING_CONTEXT_DAYS,
   };
 }
 
@@ -98,6 +124,14 @@ export function AgentForm({ agent, onSubmit, onCancel, submitLabel }: AgentFormP
   });
   const isEdit = Boolean(agent);
 
+  // Warming opener uses a Meta-approved template, same registry the broadcast
+  // composer reads. On create there is no agent id yet, so the picker waits.
+  const templates = useQuery({
+    queryKey: ["broadcast-templates", agent?.id ?? ""] as const,
+    queryFn: () => listBroadcastTemplates(agent!.id),
+    enabled: Boolean(agent?.id),
+  });
+
   const handleSubmit = form.handleSubmit(async (values) => {
     const payload = blankToNull({
       name: values.name,
@@ -109,8 +143,17 @@ export function AgentForm({ agent, onSubmit, onCancel, submitLabel }: AgentFormP
       brand_color: values.brand_color,
       primary_goal: values.primary_goal,
       icon_url: values.icon_url,
+      // Nullable — clearing the picker really does mean "no template".
+      warming_template_name: values.warming_template_name,
     });
-    await onSubmit(payload as AgentInsert | AgentUpdate);
+    // These three are NOT NULL in migration 0046, so they bypass blankToNull:
+    // an empty language must fall back to the column default, never to NULL.
+    const warmingPayload = {
+      crm_warming_enabled: values.crm_warming_enabled,
+      warming_template_language: values.warming_template_language?.trim() || "he",
+      warming_context_days: values.warming_context_days,
+    };
+    await onSubmit({ ...payload, ...warmingPayload } as AgentInsert | AgentUpdate);
   });
 
   return (
@@ -256,6 +299,104 @@ export function AgentForm({ agent, onSubmit, onCancel, submitLabel }: AgentFormP
             </FormItem>
           )}
         />
+
+        {/* ── CRM warming ─────────────────────────────────────────────
+            Its own bordered block so the kill switch here is never confused
+            with the agent-level "השהה" pause: pausing takes the whole bot
+            offline, this only stops proactive CRM warming. */}
+        <div className="space-y-4 rounded-md border border-border bg-muted/30 p-4">
+          <div className="flex items-center gap-2">
+            <Flame className="h-4 w-4 text-muted-foreground" />
+            <h3 className="text-sm font-semibold">חימום לידים מה-CRM</h3>
+          </div>
+
+          <FormField
+            control={form.control}
+            name="crm_warming_enabled"
+            render={({ field }) => (
+              <FormItem className="flex flex-row items-center justify-between gap-4 rounded-md border border-border bg-card p-3">
+                <div className="space-y-1">
+                  <FormLabel>חימום CRM פעיל</FormLabel>
+                  <FormDescription>
+                    מתג ראשי לחימום בלבד. כשהוא כבוי — אירועי סטטוס מה-CRM עדיין נרשמים ונראים בדף
+                    "חימום CRM", אבל לא נשלחת שום פנייה. <strong>אינו</strong> משהה את הבוט: מענה
+                    לשיחות רגילות ממשיך כרגיל (לשם כך יש "השהה" ברשימת הסוכנים).
+                  </FormDescription>
+                </div>
+                <FormControl>
+                  <Switch
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                    aria-label="חימום CRM פעיל"
+                  />
+                </FormControl>
+              </FormItem>
+            )}
+          />
+
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <FormField
+              control={form.control}
+              name="warming_template_name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>תבנית פתיחה</FormLabel>
+                  <Select
+                    value={field.value || NO_TEMPLATE}
+                    onValueChange={(value) => {
+                      if (value === NO_TEMPLATE) {
+                        field.onChange("");
+                        return;
+                      }
+                      field.onChange(value);
+                      const picked = templates.data?.find((t) => t.name === value);
+                      if (picked) form.setValue("warming_template_language", picked.language);
+                    }}
+                    disabled={!isEdit || templates.isLoading}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="בחר תבנית…" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      <SelectItem value={NO_TEMPLATE}>ללא תבנית</SelectItem>
+                      {(templates.data ?? []).map((t) => (
+                        <SelectItem key={t.id} value={t.name}>
+                          {t.label} ({t.name})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormDescription>
+                    {isEdit
+                      ? "מתוך תבניות הדיוור המאושרות של הסוכן (הגדרות ← תבניות דיוור)."
+                      : "ניתן לבחור תבנית אחרי יצירת הסוכן."}
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="warming_context_days"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>חלון הקשר (ימים)</FormLabel>
+                  <FormControl>
+                    <Input type="number" min={1} max={365} dir="ltr" {...field} />
+                  </FormControl>
+                  <FormDescription>
+                    כמה ימים אחורה מהשיחה הקודמת נטענים ל-prompt של הבוט. ברירת מחדל:{" "}
+                    {DEFAULT_WARMING_CONTEXT_DAYS}.
+                  </FormDescription>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </div>
+        </div>
 
         <div className="flex justify-end gap-2 pt-2">
           <Button type="button" variant="outline" onClick={onCancel}>

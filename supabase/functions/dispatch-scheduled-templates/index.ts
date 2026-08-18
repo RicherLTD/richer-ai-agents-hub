@@ -4,6 +4,12 @@ import { alertOperators } from "../_shared/alertOperators.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { partitionOptedOut } from "../_shared/optOutFilter.ts";
 import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
+import { isRecentInbound } from "../_shared/warmingDefer.ts";
+import {
+  computeWarmingAllowance,
+  israelDayStartIso,
+  sortByReleasePriority,
+} from "../_shared/warmingRelease.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -153,8 +159,131 @@ Deno.serve(async (req) => {
   ];
   const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, cancelled: 0 };
   let auth401AlertSent = false;
+
+  // CRM-warming rows need two facts the claim RPC doesn't return: whether the
+  // row IS a warming row, and when the lead last wrote to us.
+  //
+  // Deliberately a supplementary query rather than a v4 of
+  // claim_scheduled_messages: changing that function's RETURNS TABLE needs a
+  // DROP + CREATE (Postgres 42P13), which would couple this deploy to the
+  // existing first-touch/broadcast path for no benefit. One extra indexed read
+  // per tick is the cheaper trade.
+  interface WarmingMeta {
+    agentId: string;
+    lastInbound: string | null;
+    statusSub: number | null;
+    scheduledFor: string | null;
+    priority: number;
+  }
+  const warmingById = new Map<string, WarmingMeta>();
+  if (sendableRows.length > 0) {
+    const { data: kindRows } = await admin
+      .from("scheduled_messages")
+      .select("id, agent_id, scheduled_for, kind, conversations(last_inbound_at, crm_status_sub)")
+      .in("id", sendableRows.map((r) => r.id))
+      .eq("kind", "warming");
+    for (const kr of kindRows ?? []) {
+      // PostgREST returns a to-one embed as an object, but older/looser
+      // relationship inference can hand back a single-element array.
+      const embedded = (kr as { conversations?: unknown }).conversations;
+      const convo = (Array.isArray(embedded) ? embedded[0] : embedded) as
+        | { last_inbound_at?: string | null; crm_status_sub?: number | null }
+        | null
+        | undefined;
+      const row = kr as { id: string; agent_id: string; scheduled_for: string | null };
+      warmingById.set(row.id, {
+        agentId: row.agent_id,
+        lastInbound: convo?.last_inbound_at ?? null,
+        statusSub: convo?.crm_status_sub ?? null,
+        scheduledFor: row.scheduled_for,
+        priority: 50,
+      });
+    }
+  }
+
+  // Release priority lives on crm_status_rules, keyed on (agent_id, status_sub).
+  // Read at send time rather than stamped at enqueue, so an operator who
+  // re-prioritises a status in the dashboard reorders the queue that already
+  // exists — which is the entire point of having a priority.
+  if (warmingById.size > 0) {
+    const statusSubs = [
+      ...new Set([...warmingById.values()].map((w) => w.statusSub).filter((s): s is number => s !== null)),
+    ];
+    const agentIds = [...new Set([...warmingById.values()].map((w) => w.agentId))];
+    if (statusSubs.length > 0) {
+      const { data: ruleRows } = await admin
+        .from("crm_status_rules")
+        .select("agent_id, status_sub, release_priority")
+        .in("agent_id", agentIds)
+        .in("status_sub", statusSubs);
+      const priorityByKey = new Map<string, number>();
+      for (const rr of ruleRows ?? []) {
+        const r = rr as { agent_id: string; status_sub: number; release_priority: number | null };
+        priorityByKey.set(`${r.agent_id}:${r.status_sub}`, r.release_priority ?? 50);
+      }
+      for (const meta of warmingById.values()) {
+        if (meta.statusSub === null) continue;
+        meta.priority = priorityByKey.get(`${meta.agentId}:${meta.statusSub}`) ?? 50;
+      }
+    }
+  }
+
+  // The bank's release gate. Per agent: how many warming messages may leave
+  // right now, given the minimum gap since the last one and the daily cap.
+  //
+  // Without this the dispatcher claims up to 50 due rows and sends them in a
+  // tight loop — fifty templates from one WhatsApp number in seconds, to leads
+  // whose opt-in we cannot prove. That is the fastest way to lose the number
+  // the live bot depends on.
+  const warmingApprovedIds = new Set<string>();
+  const dayStartIso = israelDayStartIso();
+  for (const agentId of new Set([...warmingById.values()].map((w) => w.agentId))) {
+    const { data: agentCfg } = await admin
+      .from("agents")
+      .select("warming_min_gap_seconds, warming_daily_cap")
+      .eq("id", agentId)
+      .maybeSingle();
+
+    const { data: lastSentRow } = await admin
+      .from("scheduled_messages")
+      .select("sent_at")
+      .eq("agent_id", agentId)
+      .eq("kind", "warming")
+      .eq("status", "sent")
+      .not("sent_at", "is", null)
+      .order("sent_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    const { count: sentToday } = await admin
+      .from("scheduled_messages")
+      .select("id", { count: "exact", head: true })
+      .eq("agent_id", agentId)
+      .eq("kind", "warming")
+      .eq("status", "sent")
+      .gte("sent_at", dayStartIso);
+
+    const allowance = computeWarmingAllowance({
+      lastSentAt: (lastSentRow?.sent_at as string | null) ?? null,
+      sentToday: sentToday ?? 0,
+      minGapSeconds: (agentCfg?.warming_min_gap_seconds as number | null) ?? 90,
+      dailyCap: (agentCfg?.warming_daily_cap as number | null) ?? 50,
+    });
+    if (allowance.allowed <= 0) continue;
+
+    // Only rows that would actually survive the per-lead checks compete for a
+    // slot — otherwise a lead who is mid-conversation would consume today's
+    // allowance and then be deferred anyway.
+    const candidates = [...warmingById.entries()]
+      .filter(([, m]) => m.agentId === agentId && !isRecentInbound(m.lastInbound))
+      .map(([id, m]) => ({ id, release_priority: m.priority, scheduled_for: m.scheduledFor }));
+
+    for (const row of sortByReleasePriority(candidates).slice(0, allowance.allowed)) {
+      warmingApprovedIds.add(row.id);
+    }
+  }
 
   // Per-channel WhatsApp credentials. The dispatcher serves ALL agents, so it
   // must send each agent's template FROM that agent's own channel — otherwise
@@ -215,6 +344,32 @@ Deno.serve(async (req) => {
       await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
       results.deferred_manual_mode++;
       continue;
+    }
+    // CRM warming only: don't knock on a live conversation. The opener is a
+    // generic "היי, מה קורה?" — firing it while the bot is mid-exchange with
+    // the lead reads as a non-sequitur, and can arrive while the agent loop is
+    // still generating its reply to the lead's last message.
+    //
+    // DEFER, never cancel: the row stays pending and goes out on a later tick
+    // once the lead has gone quiet, which is exactly when a re-engagement
+    // nudge is worth sending. Meanwhile the warming context is already on the
+    // conversation, so the bot handles the objection on its very next turn
+    // regardless of whether this template ever fires.
+    if (warmingById.has(row.id)) {
+      const meta = warmingById.get(row.id)!;
+      if (isRecentInbound(meta.lastInbound)) {
+        await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+        results.deferred_warming_active_chat++;
+        continue;
+      }
+      // Not picked by the release gate this tick — either the daily cap is
+      // spent, the minimum gap has not elapsed, or a higher-priority lead took
+      // the slot. Defer, never cancel: it competes again on the next tick.
+      if (!warmingApprovedIds.has(row.id)) {
+        await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+        results.deferred_warming_paced++;
+        continue;
+      }
     }
     if (isQuietHourNow({ startIl: row.agent_quiet_hours_start_il, endIl: row.agent_quiet_hours_end_il })) {
       results.deferred_quiet_hours++;
