@@ -27,3 +27,21 @@ export function formatIlHHMM(utcIso: string): string {
     return "";
   }
 }
+
+/**
+ * Returns the Israel-local calendar date as "YYYY-MM-DD" for a UTC ISO
+ * timestamp, or "" if unparseable. Used to compare the lead's requested
+ * date against the last date Mooz actually has open — the booking window
+ * is only ~24 business hours wide, so "is your date even reachable?" is a
+ * question the bot has to answer on almost every scheduling turn.
+ */
+export function formatIlDate(utcIso: string): string {
+  try {
+    const d = new Date(utcIso);
+    if (Number.isNaN(d.getTime())) return "";
+    // en-CA gives ISO-ordered YYYY-MM-DD.
+    return d.toLocaleDateString("en-CA", { timeZone: "Asia/Jerusalem" });
+  } catch {
+    return "";
+  }
+}

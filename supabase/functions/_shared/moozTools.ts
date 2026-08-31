@@ -25,7 +25,7 @@ import { MoozClient, type MoozAvailableSlot } from "./mooz.ts";
 import { type FireberryChecker, type FireberryBlockResult } from "./fireberry.ts";
 import { logError } from "./logError.ts";
 import { meetsZoomQualificationFloor } from "./zoomGate.ts";
-import { formatIlHHMM } from "./ilTime.ts";
+import { formatIlDate, formatIlHHMM } from "./ilTime.ts";
 
 /** Anthropic tool definitions — passed verbatim to messages.create({tools}). */
 export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
@@ -492,7 +492,8 @@ async function resolveEmptyWindow(
         requested_date: preferredDate,
         probe_days: HORIZON_PROBE_DAYS,
         guidance:
-          "היומן לא פתוח כרגע לקביעה — לא בתאריך שהלִיד ביקש ולא בשום תאריך אחר. " +
+          "היומן לא פתוח לקביעה — לא בתאריך שהלִיד ביקש ולא בשום תאריך אחר. " +
+          "היומן נפתח רק ליום-יומיים הקרובים, וזה קבוע. " +
           "אל תציע תאריך חלופי, אל תבקש מהלִיד תאריך אחר, ואל תקרא ל-list_available_slots שוב בשיחה הזו. " +
           "אמור לו בפשטות שהיומן עוד לא פתוח לקביעה לתאריך שביקש, ושיועץ לימודים ייצור איתו קשר " +
           "ויתאם איתו פרטנית. אל תבטיח מועד או שעה. אחרי זה המשך לענות לו רגיל אם ישאל משהו.",
@@ -503,22 +504,41 @@ async function resolveEmptyWindow(
   }
 
   // The calendar IS open — just not when the lead asked. Offer what's real.
+  //
+  // Mooz's window is only ~24 business hours wide and skips Fri/Sat, by
+  // design and permanently. So "your date is not reachable" is the normal
+  // case, not an edge case, and the bot must never imply it might open later.
+  // We state the fact outright rather than leaving the model to infer it from
+  // the dates: whether the lead's requested day is past the last open slot
+  // decides between "offer what's open" and "an advisor will arrange it".
   const offer = horizon.slice(0, HORIZON_OFFER_MAX);
   const lastOpen = horizon[horizon.length - 1];
+  const lastOpenDate = formatIlDate(lastOpen.start);
+  const beyondHorizon = lastOpenDate !== "" && preferredDate > lastOpenDate;
   return {
     resultJson: JSON.stringify({
       outcome: "requested_window_empty",
       requested_date: preferredDate,
+      horizon_last_open_date_il: lastOpenDate,
       horizon_last_open_il: formatLocalIL(lastOpen.start),
+      requested_date_beyond_horizon: beyondHorizon,
       open_slots: offer.map((s) => ({
         start_utc: s.start,
         end_utc: s.end,
         local_il: formatLocalIL(s.start),
       })),
-      guidance:
-        "אין זמינות בתאריך שהלִיד ביקש, אבל יש זמינות אמיתית בתאריכים שמופיעים כאן. " +
-        "הסבר לו בקצרה שהיומן פתוח לקביעה רק לימים הקרובים, והצע 2 מהזמנים שכאן. " +
-        "אל תבקש ממנו תאריך אחר ואל תקרא לכלי הזה שוב בתור הזה — אלה הזמנים שיש.",
+      guidance: beyondHorizon
+        ? "התאריך שהלִיד ביקש רחוק מדי — היומן נפתח לקביעה רק ליום-יומיים הקרובים (עד " +
+          lastOpenDate + "), וזה קבוע, לא זמני. " +
+          "אם הלִיד אמר במפורש שהוא לא יכול לפני התאריך שביקש — אל תדחוף לו את הזמנים הקרובים. " +
+          "אמור לו שהיומן נפתח לקביעה רק סמוך למועד, ולכן **יועץ לימודים ייצור איתו קשר ויתאם איתו " +
+          "פרטנית** לתאריך שהוא ביקש. " +
+          "אם הוא רק הביע העדפה רופפת ולא אילוץ אמיתי — אפשר להציע לו 2 מהזמנים ב-open_slots. " +
+          "בשני המקרים: אל תבטיח שתעדכן אותו כשייפתח משהו, אל תגיד שתבדוק שוב, ואל תקרא לכלי הזה " +
+          "שוב בתור הזה."
+        : "אין זמינות בשעות שהלִיד ביקש באותו יום, אבל יש זמינות אמיתית בזמנים שמופיעים כאן. " +
+          "הצע 2 מהזמנים שב-open_slots. " +
+          "אל תבקש ממנו תאריך אחר ואל תקרא לכלי הזה שוב בתור הזה — אלה הזמנים שיש.",
     }),
     bookingCreated: false,
     // Grounded in real Mooz data, so the bot may state these.
