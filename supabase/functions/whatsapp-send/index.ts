@@ -255,7 +255,17 @@ Deno.serve(async (req) => {
 
     const { error: updErr } = await admin
       .from("conversations")
-      .update({ last_interaction_at: ts })
+      .update({
+        last_interaction_at: ts,
+        // An operator just answered this lead by hand, which is exactly what
+        // the needs_attention queue was asking for — clear it so the queue
+        // keeps reflecting only leads still waiting on a human.
+        // needs_attention_alerted_at is left alone on purpose: it is the
+        // alert dedup memory, and wiping it would let an immediate repeat
+        // failure re-alert within seconds.
+        needs_attention: null,
+        needs_attention_at: null,
+      })
       .eq("id", conversation.id);
     if (updErr) {
       await logError({

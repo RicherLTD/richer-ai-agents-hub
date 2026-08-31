@@ -50,6 +50,7 @@ import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "./anthropicRetry.ts";
 import { JUDGE_MODEL, judgeReply } from "./judgeReply.ts";
+import { flagNeedsAttention } from "./needsAttention.ts";
 import { transcribeVoiceNote } from "./transcribeVoice.ts";
 import { logError } from "./logError.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
@@ -310,24 +311,35 @@ async function logAndDlq(
     agentId: ctx.agentId,
     conversationId: ctx.conversationId,
   });
-  // Notify operators on WhatsApp so a human can step in immediately.
-  // This is best-effort — alertOperators never throws.
+  // Put the lead in the operator queue and alert the operators on WhatsApp.
+  // Routed through flagNeedsAttention (not alertOperators directly) so the
+  // 6h dedup window applies to EVERY give-up path — a lead who keeps writing
+  // into a broken turn must not generate an alert per turn.
   try {
-    await alertOperators({
+    await flagNeedsAttention({
       admin: ctx.admin,
-      apiUrl: ctx.hookmyapp.apiUrl,
-      accessToken: ctx.hookmyapp.accessToken,
-      phoneNumberId: ctx.hookmyapp.phoneNumberId,
-      agentId: ctx.agentId,
       conversationId: ctx.conversationId,
-      leadPhone: ctx.leadPhone,
-      failureType: errorType,
-      failureDetail: errorDetail ?? message,
-      dashboardBaseUrl: ctx.dashboardBaseUrl,
+      reason: "bot_failed",
+      sendAlert: async (label) => {
+        await alertOperators({
+          admin: ctx.admin,
+          apiUrl: ctx.hookmyapp.apiUrl,
+          accessToken: ctx.hookmyapp.accessToken,
+          phoneNumberId: ctx.hookmyapp.phoneNumberId,
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+          leadPhone: ctx.leadPhone,
+          // The operator reads the human-readable reason first; the machine
+          // code stays in the detail line.
+          failureType: label,
+          failureDetail: errorDetail ?? message,
+          dashboardBaseUrl: ctx.dashboardBaseUrl,
+        });
+      },
     });
   } catch (alertErr) {
     console.error(
-      `[logAndDlq] alertOperators threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`,
+      `[logAndDlq] attention/alert threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`,
     );
   }
 }
@@ -526,6 +538,85 @@ async function recordOutbound(
       agentId: ctx.agentId,
       conversationId: ctx.conversationId,
     });
+  }
+}
+
+// What the lead gets when the agent loop cannot produce a reply. A FIXED
+// string — never model output — so it cannot itself trip a guard and be
+// dropped. Before this existed, every final guard rejection ended in
+// `return` with nothing sent: 64 leads in 14 days simply watched the bot
+// vanish mid-conversation, several of them right after saying "כן, בוא
+// נקבע". Saying "a human will follow up" is infinitely better than silence.
+const AGENT_FALLBACK_REPLY =
+  "סליחה, נתקלתי בתקלה קטנה מהצד שלי 🙏 העברתי את זה לנציג שיחזור אליך ממש בקרוב.";
+
+/**
+ * The lead-facing half of the safety net: make sure SOMETHING reaches the
+ * lead when the agent loop gives up. The queue + operator alert half lives in
+ * logAndDlq, which every give-up path already calls.
+ *
+ * Never throws — it runs on the failure path and must not add a second
+ * failure on top. The conversation is deliberately left ACTIVE so the next
+ * inbound gets a fresh, possibly successful, attempt.
+ */
+async function sendFallbackReplyToLead(ctx: AgentLoopCtx): Promise<void> {
+  // Don't repeat the apology if it is already the last thing the lead saw —
+  // a lead who keeps writing into a broken turn would otherwise get it over
+  // and over. They are in the operator queue either way.
+  let alreadyApologised = false;
+  try {
+    const { data: last } = await ctx.admin
+      .from("messages")
+      .select("direction, content")
+      .eq("conversation_id", ctx.conversationId)
+      .eq("direction", "outbound")
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    alreadyApologised =
+      ((last as { content?: string | null } | null)?.content ?? "") === AGENT_FALLBACK_REPLY;
+  } catch {
+    // Can't tell → send it. A duplicate apology beats silence.
+  }
+  if (alreadyApologised) return;
+
+  try {
+    const sent = await sendWhatsAppText({
+      apiUrl: ctx.hookmyapp.apiUrl,
+      accessToken: ctx.hookmyapp.accessToken,
+      phoneNumberId: ctx.hookmyapp.phoneNumberId,
+      to: ctx.leadPhone,
+      body: AGENT_FALLBACK_REPLY,
+    });
+    if (!sent.ok) {
+      await logError({
+        admin: ctx.admin,
+        source: AGENT_LOOP_SOURCE,
+        errorType: "fallback_reply_send_failed",
+        message: `fallback reply could not be delivered (status=${sent.status})`,
+        context: { status: sent.status, lead_phone: ctx.leadPhone },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+      return;
+    }
+    const ts = new Date().toISOString();
+    await ctx.admin.from("messages").insert({
+      conversation_id: ctx.conversationId,
+      direction: "outbound",
+      message_type: "text",
+      content: AGENT_FALLBACK_REPLY,
+      timestamp: ts,
+      meta_message_id: sent.metaMessageId ?? null,
+    });
+    await ctx.admin
+      .from("conversations")
+      .update({ last_interaction_at: ts })
+      .eq("id", ctx.conversationId);
+  } catch (err) {
+    console.error(
+      `[sendFallbackReplyToLead] threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
 }
 
@@ -918,6 +1009,31 @@ async function generateAndSendAgentResponseLocked(
           agentId: ctx.agentId,
           conversationId: ctx.conversationId,
         }),
+        // Mooz has nothing open anywhere (or we couldn't check). The bot tells
+        // the lead an advisor will arrange it — so an advisor actually has to.
+        // Queue + alert, and deliberately NOT a blocking tag: the lead is warm
+        // and the bot keeps answering their questions meanwhile.
+        onNeedsHumanScheduling: async ({ reason, requestedDate }) => {
+          await flagNeedsAttention({
+            admin: ctx.admin,
+            conversationId: ctx.conversationId,
+            reason: reason === "calendar_closed" ? "calendar_closed" : "bot_failed",
+            sendAlert: async (label) => {
+              await alertOperators({
+                admin: ctx.admin,
+                apiUrl: ctx.hookmyapp.apiUrl,
+                accessToken: ctx.hookmyapp.accessToken,
+                phoneNumberId: ctx.hookmyapp.phoneNumberId,
+                agentId: ctx.agentId,
+                conversationId: ctx.conversationId,
+                leadPhone: ctx.leadPhone,
+                failureType: label,
+                failureDetail: `הליד ביקש ${requestedDate}`,
+                dashboardBaseUrl: ctx.dashboardBaseUrl,
+              });
+            },
+          });
+        },
       }
     : null;
 
@@ -1218,6 +1334,7 @@ async function generateAndSendAgentResponseLocked(
           guard_attempt: attempt,
         },
       );
+      await sendFallbackReplyToLead(ctx);
       return;
     }
     const response = turnResult.response as unknown as AnthropicMessageResponse;
@@ -1340,6 +1457,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await sendFallbackReplyToLead(ctx);
       await flushTurnObservability();
       return;
     }
@@ -1419,6 +1537,7 @@ async function generateAndSendAgentResponseLocked(
           lead_phone: ctx.leadPhone,
         },
       );
+      await sendFallbackReplyToLead(ctx);
       await flushTurnObservability();
       return;
     }
