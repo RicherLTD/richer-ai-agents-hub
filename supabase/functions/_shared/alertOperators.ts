@@ -15,8 +15,78 @@
 
 import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { sendWhatsAppText } from "./whatsappSend.ts";
+import { sendWhatsAppTemplate } from "./whatsappTemplateSend.ts";
 
 const ALERT_HEADER = "🚨 הבוט נתקע בשיחה";
+
+// Meta only accepts free-form text inside the 24h customer-service window.
+// Operators are not customers — they never message the bot — so every
+// free-text alert we sent was rejected with error 131047 ("Re-engagement
+// message"). 128/128 failed over 14 days and nobody knew the bot was
+// dropping leads. The approved `bot_stuck_alert` template is the only
+// route that actually reaches a phone, so it is the primary path now;
+// free text stays as a fallback for the rare case the window IS open.
+const DEFAULT_ALERT_TEMPLATE = "bot_stuck_alert";
+const DEFAULT_ALERT_TEMPLATE_LANG = "he";
+
+/** Max chars for the lead's message inside {{5}}. The whole rendered body
+ *  must stay under Meta's 1024-char limit; 250 leaves comfortable room. */
+const LAST_INBOUND_MAX = 250;
+const NAME_MAX = 80;
+const REASON_MAX = 160;
+
+/**
+ * Make a string safe to pass as a Meta template parameter.
+ *
+ * Meta rejects any parameter containing a newline, a tab, or a run of more
+ * than 4 spaces. A lead's WhatsApp message contains all three routinely, so
+ * this runs on EVERY variable, not just the message.
+ *
+ * Also guarantees a non-empty result — an empty parameter is rejected too.
+ */
+export function sanitiseTemplateVariable(
+  raw: string | null | undefined,
+  maxChars = NAME_MAX,
+): string {
+  const flattened = (raw ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (flattened.length === 0) return "—";
+  if (flattened.length <= maxChars) return flattened;
+  return flattened.slice(0, maxChars - 1) + "…";
+}
+
+export interface AlertTemplateInput {
+  leadName: string | null;
+  leadPhone: string;
+  /** Human-readable agent name, e.g. "שיווק דיגיטלי". */
+  agentLabel: string | null;
+  failureType: string;
+  failureDetail?: string | null;
+  lastInbound: string | null;
+}
+
+/**
+ * Build the ordered body variables for `bot_stuck_alert`:
+ *   {{1}} lead name   {{2}} phone   {{3}} agent
+ *   {{4}} reason      {{5}} the lead's last message
+ * Order is a contract with the approved template — do not reorder.
+ */
+export function buildAlertTemplateVariables(input: AlertTemplateInput): string[] {
+  const reason = input.failureDetail
+    ? `${input.failureType} — ${input.failureDetail}`
+    : input.failureType;
+  return [
+    input.leadName?.trim()
+      ? sanitiseTemplateVariable(input.leadName, NAME_MAX)
+      : "(ללא שם)",
+    sanitiseTemplateVariable(formatHebrewPhone(input.leadPhone), NAME_MAX),
+    sanitiseTemplateVariable(input.agentLabel, NAME_MAX),
+    sanitiseTemplateVariable(reason, REASON_MAX),
+    sanitiseTemplateVariable(input.lastInbound, LAST_INBOUND_MAX),
+  ];
+}
 
 export interface AlertOperatorsInput {
   admin: SupabaseClient;
@@ -54,6 +124,8 @@ function truncate(s: string, max: number): string {
 
 interface AgentRow {
   operator_alert_phones?: unknown;
+  display_name?: string | null;
+  name?: string | null;
 }
 interface ConvRow {
   lead_name?: string | null;
@@ -71,9 +143,15 @@ async function gatherAlertContext(
   admin: SupabaseClient,
   agentId: string,
   conversationId: string,
-): Promise<{ phones: string[]; leadName: string | null; lastInbound: string | null }> {
+): Promise<{
+  phones: string[];
+  leadName: string | null;
+  lastInbound: string | null;
+  agentLabel: string | null;
+}> {
   const [agentRes, convRes, msgRes] = await Promise.all([
-    admin.from("agents").select("operator_alert_phones").eq("id", agentId).maybeSingle(),
+    admin.from("agents").select("operator_alert_phones, display_name, name").eq("id", agentId)
+      .maybeSingle(),
     admin.from("conversations").select("lead_name").eq("id", conversationId).maybeSingle(),
     admin.from("messages")
       .select("content")
@@ -89,7 +167,9 @@ async function gatherAlertContext(
     : [];
   const leadName = ((convRes.data as ConvRow | null)?.lead_name ?? null) as string | null;
   const lastInbound = ((msgRes.data as MsgRow | null)?.content ?? null) as string | null;
-  return { phones, leadName, lastInbound };
+  const agentRow = agentRes.data as AgentRow | null;
+  const agentLabel = (agentRow?.display_name ?? agentRow?.name ?? null) as string | null;
+  return { phones, leadName, lastInbound, agentLabel };
 }
 
 function buildAlertBody(args: {
@@ -155,30 +235,99 @@ export async function alertOperators(input: AlertOperatorsInput): Promise<AlertR
     conversationId: input.conversationId,
   });
 
+  const templateName = Deno.env.get("OPERATOR_ALERT_TEMPLATE_NAME")?.trim() ||
+    DEFAULT_ALERT_TEMPLATE;
+  const templateLang = Deno.env.get("OPERATOR_ALERT_TEMPLATE_LANG")?.trim() ||
+    DEFAULT_ALERT_TEMPLATE_LANG;
+  const variables = buildAlertTemplateVariables({
+    leadName: ctx.leadName,
+    leadPhone: input.leadPhone,
+    agentLabel: ctx.agentLabel,
+    failureType: input.failureType,
+    failureDetail: input.failureDetail ?? null,
+    lastInbound: ctx.lastInbound,
+  });
+
   const result: AlertResult = { attempted: ctx.phones.length, succeeded: 0, failed: 0 };
+  const perPhone: Array<Record<string, unknown>> = [];
 
   for (const phone of ctx.phones) {
+    let delivered = false;
+    let via = "template";
+    let status = 0;
+    let errorBody = "";
+
+    // Primary: the approved template. This is the only path that works
+    // outside the 24h window, i.e. essentially always.
     try {
-      const send = await sendWhatsAppText({
+      const sent = await sendWhatsAppTemplate({
         apiUrl: input.apiUrl,
         accessToken: input.accessToken,
         phoneNumberId: input.phoneNumberId,
         to: phone,
-        body,
+        templateName,
+        languageCode: templateLang,
+        variables,
       });
-      if (send.ok) result.succeeded++;
-      else {
-        result.failed++;
-        console.error(
-          `[alertOperators] failed to alert ${phone}: status=${send.status} body=${send.errorBody.slice(0, 200)}`,
-        );
-      }
+      delivered = sent.ok;
+      status = sent.status;
+      if (!sent.ok) errorBody = sent.errorBody;
     } catch (err) {
+      errorBody = err instanceof Error ? err.message : String(err);
+    }
+
+    // Fallback: free text. Only succeeds when the operator happens to have
+    // messaged the bot in the last 24h, but costs nothing to try and covers
+    // a template that got paused/renamed on Meta's side.
+    if (!delivered) {
+      via = "text_fallback";
+      try {
+        const sent = await sendWhatsAppText({
+          apiUrl: input.apiUrl,
+          accessToken: input.accessToken,
+          phoneNumberId: input.phoneNumberId,
+          to: phone,
+          body,
+        });
+        delivered = sent.ok;
+        if (!sent.ok) {
+          status = sent.status;
+          errorBody = `${errorBody} | text: ${sent.errorBody}`;
+        }
+      } catch (err) {
+        errorBody = `${errorBody} | text: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+
+    if (delivered) result.succeeded++;
+    else {
       result.failed++;
       console.error(
-        `[alertOperators] exception alerting ${phone}: ${err instanceof Error ? err.message : String(err)}`,
+        `[alertOperators] failed to alert ${phone}: status=${status} body=${errorBody.slice(0, 200)}`,
       );
     }
+    perPhone.push({ phone, delivered, via, status, error: errorBody.slice(0, 200) || null });
   }
+
+  // Persist the outcome. Without this the previous silent 100% failure rate
+  // was invisible — an alert that fails must itself be observable.
+  await input.admin.from("error_logs").insert({
+    agent_id: input.agentId,
+    conversation_id: input.conversationId,
+    source: "alert-operators",
+    error_type: result.failed === 0 ? "operator_alert_sent" : "operator_alert_failed",
+    level: result.failed === 0 ? "info" : "error",
+    message:
+      `operator alert (${input.failureType}): ${result.succeeded}/${result.attempted} delivered ` +
+      `via template "${templateName}"`,
+    context: { template: templateName, lang: templateLang, results: perPhone },
+  }).then(
+    () => {},
+    (err: unknown) =>
+      console.error(
+        `[alertOperators] could not log outcome: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+  );
+
   return result;
 }

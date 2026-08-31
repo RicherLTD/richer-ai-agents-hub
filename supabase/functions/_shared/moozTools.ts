@@ -35,7 +35,14 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
       "Fetches real available zoom meeting slots from Mooz, the booking system. " +
       "Use this when (a) the lead has agreed to schedule, AND (b) you need to offer specific times. " +
       "Never invent or guess times — only mention slots returned by this tool. " +
-      "If the tool returns an empty array, tell the lead you couldn't find slots for that date and ask for an alternative.",
+      "The result always carries an `outcome` field and, when relevant, a `guidance` field in " +
+      "Hebrew — FOLLOW THE GUIDANCE EXACTLY. outcome=slots_found: offer 2-3 of the slots. " +
+      "outcome=requested_window_empty: the calendar is open but not on the requested date — offer " +
+      "the `open_slots` instead. outcome=calendar_closed or calendar_unverified: nothing is " +
+      "bookable — tell the lead an advisor will contact them to arrange it personally, and do NOT " +
+      "call this tool again in this conversation. " +
+      "NEVER respond to an empty result by asking the lead for a different date and searching " +
+      "again — that loop is a known failure that lost leads.",
     input_schema: {
       type: "object",
       properties: {
@@ -113,6 +120,17 @@ export const MOOZ_TOOL_DEFS: Anthropic.Messages.Tool[] = [
   },
 ];
 
+/** How far ahead the horizon probe scans when the lead's own window came
+ *  back empty. Deliberately much wider than the tool's 7-day lookahead cap:
+ *  the point is to discover where Mooz's calendar actually ends, not to
+ *  honour the lead's request. Mooz clamps to its own max_days_ahead, so
+ *  over-shooting is free. */
+const HORIZON_PROBE_DAYS = 30;
+
+/** How many real slots from the probe we hand back to Claude. Enough to
+ *  offer a genuine choice, few enough that it doesn't derail the message. */
+const HORIZON_OFFER_MAX = 4;
+
 const NAMES = new Set(MOOZ_TOOL_DEFS.map((t) => t.name));
 
 export function isMoozTool(name: string): boolean {
@@ -138,6 +156,18 @@ export interface MoozDispatchCtx {
    *  (statuscode 2 = נרשם) or blacklisted (11 = רשימה שחורה). Absent/null →
    *  gate disabled (fail-open). */
   fireberry?: FireberryChecker | null;
+  /** Called when the bot has told the lead that a human will arrange the
+   *  meeting — i.e. Mooz has no open slot anywhere in the horizon, or we
+   *  couldn't verify the horizon. The lead is NOT bookable by the bot, so a
+   *  person has to reach out. The caller wires this to the operator alert.
+   *  Best-effort: it must never throw, and the tool result is returned to
+   *  Claude regardless of whether it succeeded. */
+  onNeedsHumanScheduling?: (info: {
+    /** "calendar_closed" | "calendar_unverified" */
+    reason: string;
+    /** The date the lead asked for (YYYY-MM-DD), for the alert body. */
+    requestedDate: string;
+  }) => Promise<void>;
 }
 
 /** What we hand back to Claude as the tool_result content. */
@@ -354,10 +384,24 @@ async function handleListSlots(
     };
   }
 
+  // The requested window is empty. This is where the bot used to loop:
+  // the old result said "ask the lead for a different day", so the model
+  // asked, searched again, got [] again — Sept → Oct → Nov, one empty
+  // search per turn, until the lead gave up. The window was never the
+  // problem: Mooz's calendar simply ends a few days out (max_days_ahead),
+  // so no date the lead names beyond it can EVER have a slot.
+  //
+  // Resolve it here instead of handing the model an open question: probe
+  // the whole open horizon once, then return a decision.
+  if (slots.length === 0) {
+    return await resolveEmptyWindow(parsed.preferredDate, lookaheadDays, ctx);
+  }
+
   // Cap the surface area Claude sees — too many slots derail the convo.
   const trimmed = slots.slice(0, 12);
   return {
     resultJson: JSON.stringify({
+      outcome: "slots_found",
       preferred_date: parsed.preferredDate,
       lookahead_days: lookaheadDays,
       slot_count: trimmed.length,
@@ -367,14 +411,136 @@ async function handleListSlots(
         local_il: formatLocalIL(s.start),
       })),
       hint:
-        trimmed.length === 0
-          ? "No slots in this window. Ask the lead for a different day."
-          : "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.",
+        "Offer 2-3 of these (not all). When the lead picks one, call book_meeting with the exact start_utc/end_utc strings.",
     }),
     bookingCreated: false,
     // Allow-list for the time guard: only the slots we actually surfaced.
     offeredTimesIL: trimmed.flatMap(slotTimesIL),
   };
+}
+
+/**
+ * Called when the lead's requested window came back empty. Probes the full
+ * open horizon (one extra Mooz call) and returns one of three DECISIONS —
+ * never an invitation to name another date:
+ *
+ *   requested_window_empty  → the calendar is open, just not then. Offer the
+ *                             real slots and say how far the calendar reaches.
+ *   calendar_closed         → nothing open anywhere. A human schedules this
+ *                             lead manually; the bot must stop searching.
+ *   calendar_unverified     → the probe itself failed. Same conversational
+ *                             outcome as closed: hand to a human. We fail
+ *                             toward a person, never back into the loop.
+ */
+async function resolveEmptyWindow(
+  preferredDate: string,
+  lookaheadDays: number,
+  ctx: MoozDispatchCtx,
+): Promise<MoozDispatchResult> {
+  const nowMs = Date.now();
+  const probeFrom = new Date(nowMs).toISOString();
+  const probeTo = new Date(nowMs + HORIZON_PROBE_DAYS * 86_400_000).toISOString();
+
+  let horizon: MoozAvailableSlot[] = [];
+  try {
+    horizon = await ctx.mooz.listAvailableSlots({
+      meetingTypeId: ctx.meetingTypeId,
+      from: probeFrom,
+      to: probeTo,
+    });
+  } catch (err) {
+    await logError({
+      admin: ctx.admin,
+      source: "mooz-tools",
+      errorType: "horizon_probe_failed",
+      message: err instanceof Error ? err.message : String(err),
+      context: { meetingTypeId: ctx.meetingTypeId, probeFrom, probeTo, preferredDate },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    await notifyHumanScheduling(ctx, "calendar_unverified", preferredDate);
+    return {
+      resultJson: JSON.stringify({
+        outcome: "calendar_unverified",
+        requested_date: preferredDate,
+        guidance:
+          "לא הצלחנו לבדוק את היומן. אל תבקש מהלִיד תאריך אחר ואל תקרא לכלי הזה שוב בתור הזה. " +
+          "אמור לו בקצרה שיועץ לימודים ייצור איתו קשר לתאום הפגישה, ותודה לו על הסבלנות.",
+      }),
+      bookingCreated: false,
+      offeredTimesIL: [],
+    };
+  }
+
+  // Nothing open anywhere in the horizon → a person has to schedule this.
+  if (horizon.length === 0) {
+    await logError({
+      admin: ctx.admin,
+      source: "mooz-tools",
+      errorType: "calendar_closed",
+      level: "warn",
+      message:
+        `no Mooz availability in the next ${HORIZON_PROBE_DAYS} days — lead needs manual scheduling`,
+      context: { meetingTypeId: ctx.meetingTypeId, preferredDate, lookaheadDays },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    await notifyHumanScheduling(ctx, "calendar_closed", preferredDate);
+    return {
+      resultJson: JSON.stringify({
+        outcome: "calendar_closed",
+        requested_date: preferredDate,
+        probe_days: HORIZON_PROBE_DAYS,
+        guidance:
+          "היומן לא פתוח כרגע לקביעה — לא בתאריך שהלִיד ביקש ולא בשום תאריך אחר. " +
+          "אל תציע תאריך חלופי, אל תבקש מהלִיד תאריך אחר, ואל תקרא ל-list_available_slots שוב בשיחה הזו. " +
+          "אמור לו בפשטות שהיומן עוד לא פתוח לקביעה לתאריך שביקש, ושיועץ לימודים ייצור איתו קשר " +
+          "ויתאם איתו פרטנית. אל תבטיח מועד או שעה. אחרי זה המשך לענות לו רגיל אם ישאל משהו.",
+      }),
+      bookingCreated: false,
+      offeredTimesIL: [],
+    };
+  }
+
+  // The calendar IS open — just not when the lead asked. Offer what's real.
+  const offer = horizon.slice(0, HORIZON_OFFER_MAX);
+  const lastOpen = horizon[horizon.length - 1];
+  return {
+    resultJson: JSON.stringify({
+      outcome: "requested_window_empty",
+      requested_date: preferredDate,
+      horizon_last_open_il: formatLocalIL(lastOpen.start),
+      open_slots: offer.map((s) => ({
+        start_utc: s.start,
+        end_utc: s.end,
+        local_il: formatLocalIL(s.start),
+      })),
+      guidance:
+        "אין זמינות בתאריך שהלִיד ביקש, אבל יש זמינות אמיתית בתאריכים שמופיעים כאן. " +
+        "הסבר לו בקצרה שהיומן פתוח לקביעה רק לימים הקרובים, והצע 2 מהזמנים שכאן. " +
+        "אל תבקש ממנו תאריך אחר ואל תקרא לכלי הזה שוב בתור הזה — אלה הזמנים שיש.",
+    }),
+    bookingCreated: false,
+    // Grounded in real Mooz data, so the bot may state these.
+    offeredTimesIL: offer.flatMap(slotTimesIL),
+  };
+}
+
+/** Best-effort human handoff signal. Never throws — the tool result must
+ *  reach Claude even if the alert path is broken. */
+async function notifyHumanScheduling(
+  ctx: MoozDispatchCtx,
+  reason: string,
+  requestedDate: string,
+): Promise<void> {
+  if (!ctx.onNeedsHumanScheduling) return;
+  try {
+    await ctx.onNeedsHumanScheduling({ reason, requestedDate });
+  } catch (err) {
+    console.error(
+      `[moozTools] onNeedsHumanScheduling threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 interface ListInputOk {
@@ -499,14 +665,37 @@ async function handleBookMeeting(
   });
 
   if (!result.ok) {
-    if (result.kind === "slot_full" || result.kind === "duplicate") {
+    // Mooz 409 "Duplicate" = a booking with THIS exact email + meeting type +
+    // start time already exists. In practice that means this lead already has
+    // this very slot (our own earlier book_meeting succeeded, or a retry). This
+    // is NOT a "the time got taken" situation — it means the meeting the lead
+    // asked for is already set. Do NOT re-offer alternative times (that is the
+    // bug where the bot said "13:00 is taken, here's 13:30/14:00" while 13:00
+    // was in fact already booked). Treat it as booked and confirm.
+    if (result.kind === "duplicate") {
+      return {
+        resultJson: JSON.stringify({
+          error: "already_booked_this_slot",
+          mooz_kind: result.kind,
+          mooz_message: result.message,
+          guidance:
+            "הפגישה בשעה הזו כבר קבועה ללִיד — אל תיצור קביעה נוספת, אל תקרא ל-book_meeting או ל-list_available_slots שוב, ואל תגיד שהשעה תפוסה ואל תציע שעות אחרות. פשוט אשר ללִיד בקצרה שהזום שלו קבוע לשעה שביקש.",
+        }),
+        bookingCreated: false,
+        offeredTimesIL: [],
+      };
+    }
+    // Genuine capacity race — the slot filled between list and book. Per the
+    // product decision we do NOT loop re-offering fresh slots (that dance
+    // confused leads). Acknowledge briefly; a human will confirm the time.
+    if (result.kind === "slot_full") {
       return {
         resultJson: JSON.stringify({
           error: "slot_unavailable",
           mooz_kind: result.kind,
           mooz_message: result.message,
           guidance:
-            "Slot was taken since you last looked. Apologize briefly, call list_available_slots again with the same preferred_date, and offer fresh options.",
+            "לא הצלחנו לתפוס את השעה הזו. אל תיכנס ללולאת הצעות: אל תקרא ל-list_available_slots שוב ואל תציע שעות חלופיות בתור הזה. אשר ללִיד בקצרה שאתה מסדר את המועד ושנציג יחזור אליו לאשר את השעה.",
         }),
         bookingCreated: false,
         offeredTimesIL: [],
@@ -640,6 +829,11 @@ async function updateConversationOnBooking(args: {
       // requires_human/opted_out/underage tags still stop the loop.
       zoom_scheduled_at: args.scheduledAt,
       lead_name: args.leadName,
+      // A booked Zoom resolves whatever the operator queue was holding this
+      // lead for (a failed turn, or a calendar that had no slots). Leaving it
+      // flagged would fill the queue with leads that are already handled.
+      needs_attention: null,
+      needs_attention_at: null,
     })
     .eq("id", args.conversationId);
   if (error) {

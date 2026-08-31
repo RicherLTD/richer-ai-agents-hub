@@ -57,42 +57,76 @@ Deno.serve(async (req) => {
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
   // test_alert: fire the operator-alert canary to verify the alert path.
-  // Body: { agent_id }. Sends a canned "this is a test" message to each
-  // phone in agents.operator_alert_phones. No touching of real
-  // conversations.
+  // Body: { agent_id, conversation_id? }.
+  //
+  // This deliberately runs the REAL alertOperators() code path — the same
+  // one the agent loop calls when it drops a lead — rather than a bespoke
+  // free-text send. The old canary sent plain text, which Meta rejects
+  // outside the 24h window (131047); it therefore "passed" nothing and
+  // masked a 100% production failure rate for 14 days. A canary that does
+  // not exercise the production path is worse than no canary.
   if (url.searchParams.get("test_alert") === "1") {
     const dashboardBaseUrl = Deno.env.get("DASHBOARD_BASE_URL") ?? null;
-    let payload: { agent_id?: string };
+    let payload: { agent_id?: string; conversation_id?: string; channel?: string };
     try { payload = await req.json(); } catch { return j({ error: "invalid JSON" }, 400); }
     const agentId = payload.agent_id;
     if (!agentId) return j({ error: "agent_id required" }, 400);
-    const { data: agent } = await admin.from("agents").select("operator_alert_phones, name").eq("id", agentId).maybeSingle();
-    const rawPhones = agent?.operator_alert_phones;
-    const phones: string[] = Array.isArray(rawPhones)
-      ? (rawPhones as unknown[]).filter((p): p is string => typeof p === "string" && p.length > 0)
-      : [];
-    if (phones.length === 0) return j({ error: "no operator_alert_phones configured" }, 400);
-    const link = dashboardBaseUrl ? `${dashboardBaseUrl.replace(/\/$/, "")}/conversations` : null;
-    const body = [
-      "🧪 בדיקת התראה",
-      "",
-      "זאת רק בדיקה שמוודאת שאתה מקבל התראות מהבוט",
-      "כש־ליד נתקע. אם קיבלת את ההודעה הזאת — המערכת חיה.",
-      "",
-      `*סוכן:* ${agent?.name ?? "unknown"}`,
-      `*מקבלים התראה:* ${phones.length} מספרים`,
-      ...(link ? ["", `*דשבורד:* ${link}`] : []),
-    ].join("\n");
-    const results = { sent: 0, failed: 0 };
-    for (const phone of phones) {
-      const res = await fetch(`${apiUrl}/${phoneId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({ messaging_product: "whatsapp", to: phone, type: "text", text: { body } }),
-      });
-      if (res.ok) results.sent++; else results.failed++;
+
+    // The two agents live on SEPARATE WABAs with separate credentials, and a
+    // Meta template is per-WABA. Testing the affiliate channel therefore
+    // proves nothing about the digital one — where 58% of the drops happen.
+    // channel:"dm" routes the canary through the digital credentials.
+    const useDm = payload.channel === "dm";
+    const chApiUrl = useDm ? (Deno.env.get("WHATSAPP_API_URL_DM") ?? "") : apiUrl;
+    const chPhoneId = useDm ? (Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM") ?? "") : phoneId;
+    const chToken = useDm ? (Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM") ?? "") : token;
+    if (!chApiUrl || !chPhoneId || !chToken) {
+      return j({ error: `missing whatsapp env for channel ${useDm ? "dm" : "default"}` }, 500);
     }
-    return j({ ok: true, phones_count: phones.length, ...results });
+
+    // alertOperators reads lead name + last inbound off a conversation. Use
+    // the caller's, else the agent's most recent one, so the canary shows a
+    // realistic message instead of placeholders.
+    let conversationId = payload.conversation_id ?? null;
+    let leadPhone = "972000000000";
+    if (!conversationId) {
+      const { data: recent } = await admin
+        .from("conversations")
+        .select("id, lead_phone")
+        .eq("agent_id", agentId)
+        .order("last_interaction_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      conversationId = (recent?.id as string | undefined) ?? null;
+      leadPhone = (recent?.lead_phone as string | undefined) ?? leadPhone;
+    } else {
+      const { data: convo } = await admin
+        .from("conversations")
+        .select("lead_phone")
+        .eq("id", conversationId)
+        .maybeSingle();
+      leadPhone = (convo?.lead_phone as string | undefined) ?? leadPhone;
+    }
+    if (!conversationId) return j({ error: "no conversation available for this agent" }, 400);
+
+    const res = await alertOperators({
+      admin,
+      apiUrl: chApiUrl,
+      accessToken: chToken,
+      phoneNumberId: chPhoneId,
+      agentId,
+      conversationId,
+      leadPhone,
+      failureType: "test_alert",
+      failureDetail: "בדיקה יזומה — הבוט לא נתקע באמת",
+      dashboardBaseUrl,
+    });
+    return j({
+      ok: res.failed === 0,
+      channel: useDm ? "dm" : "default",
+      conversation_id: conversationId,
+      ...res,
+    }, res.failed === 0 ? 200 : 502);
   }
 
   // send_text: admin-only one-shot free-text send to an existing

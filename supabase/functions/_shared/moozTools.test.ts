@@ -78,9 +78,22 @@ function makeMoozStub(opts: {
   /** Result of the cross-product dedup lookup. Defaults to not-booked so
    *  existing happy-path tests proceed into createBooking. */
   lookup?: Awaited<ReturnType<MoozClient["lookupByPhone"]>>;
+  /** Per-call override, in call order. Lets a test return [] for the
+   *  requested window and real slots for the horizon probe (or throw on
+   *  the probe only). Takes precedence over `slots` / `slotsError`. */
+  slotsByCall?: Array<MoozAvailableSlot[] | Error>;
+  /** Records the {from,to} of every listAvailableSlots call. */
+  rangeLog?: Array<{ from: string; to: string }>;
 }): MoozClient {
+  let call = 0;
   return {
-    listAvailableSlots: async () => {
+    listAvailableSlots: async (args: { from: string; to: string }) => {
+      opts.rangeLog?.push({ from: args.from, to: args.to });
+      if (opts.slotsByCall) {
+        const next = opts.slotsByCall[call++];
+        if (next instanceof Error) throw next;
+        return next ?? [];
+      }
       if (opts.slotsError) throw opts.slotsError;
       return opts.slots ?? [];
     },
@@ -183,19 +196,88 @@ describe("dispatchMoozTool — list_available_slots", () => {
     expect(r.offeredTimesIL.length).toBeGreaterThan(0);
   });
 
-  it("empty result yields 'try different day' guidance", async () => {
+  // ── horizon probe: never loop on an empty window ──────────────────
+  //
+  // Mooz only opens its calendar a few days ahead (max_days_ahead). A lead
+  // asking for "the week of the 6th" therefore gets [] forever, and the old
+  // behavior ("tell them you found nothing and ask for another day") looped
+  // the bot through Sept → Oct → Nov, one empty search per turn. The tool now
+  // resolves the question itself: on an empty window it probes the whole open
+  // horizon once and returns a DECISION, never an invitation to search again.
+
+  it("empty window + open horizon → offers the real open slots, forbids re-search", async () => {
     const { admin } = makeAdmin();
-    const ctx = makeCtx(makeMoozStub({ slots: [] }), admin);
+    const ranges: Array<{ from: string; to: string }> = [];
+    const horizonSlots: MoozAvailableSlot[] = [
+      { start: "2026-05-22T08:00:00.000Z", end: "2026-05-22T08:30:00.000Z" },
+      { start: "2026-05-22T09:00:00.000Z", end: "2026-05-22T09:30:00.000Z" },
+    ];
+    const ctx = makeCtx(
+      makeMoozStub({ slotsByCall: [[], horizonSlots], rangeLog: ranges }),
+      admin,
+    );
     const r = await dispatchMoozTool(
       "list_available_slots",
-      { preferred_date: "2026-05-21" },
+      { preferred_date: "2026-09-06", lookahead_days: 3 },
       ctx,
     );
     const parsed = JSON.parse(r.resultJson);
-    expect(parsed.slot_count).toBe(0);
-    expect(parsed.hint).toContain("different day");
-    // No slots → nothing the bot may state.
+    expect(parsed.outcome).toBe("requested_window_empty");
+    // It probed a second, wider range rather than answering "pick another day".
+    expect(ranges).toHaveLength(2);
+    expect(parsed.open_slots).toHaveLength(2);
+    expect(parsed.horizon_last_open_il).toBeTruthy();
+    expect(parsed.guidance).toContain("אל תבקש");
+    // Times from the probe are real Mooz slots — the bot may state them.
+    expect(r.offeredTimesIL).toContain("11:00");
+  });
+
+  it("empty window + empty horizon → calendar_closed, hand to a human, no re-search", async () => {
+    const { admin } = makeAdmin();
+    const handoffs: Array<{ reason: string }> = [];
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(makeMoozStub({ slotsByCall: [[], []] }), admin),
+      onNeedsHumanScheduling: async (info) => {
+        handoffs.push({ reason: info.reason });
+      },
+    };
+    const r = await dispatchMoozTool(
+      "list_available_slots",
+      { preferred_date: "2026-09-06", lookahead_days: 3 },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.outcome).toBe("calendar_closed");
+    expect(parsed.guidance).toContain("יועץ");
+    expect(parsed.guidance).toContain("אל תקרא");
+    // Nothing real to state.
     expect(r.offeredTimesIL).toEqual([]);
+    // A human must actually pick this lead up.
+    expect(handoffs).toEqual([{ reason: "calendar_closed" }]);
+  });
+
+  it("probe failure also hands to a human rather than looping", async () => {
+    const { admin } = makeAdmin();
+    const handoffs: string[] = [];
+    const ctx: MoozDispatchCtx = {
+      ...makeCtx(
+        makeMoozStub({ slotsByCall: [[], new Error("probe network down")] }),
+        admin,
+      ),
+      onNeedsHumanScheduling: async (info) => {
+        handoffs.push(info.reason);
+      },
+    };
+    const r = await dispatchMoozTool(
+      "list_available_slots",
+      { preferred_date: "2026-09-06" },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.outcome).toBe("calendar_unverified");
+    expect(parsed.guidance).toContain("יועץ");
+    expect(r.offeredTimesIL).toEqual([]);
+    expect(handoffs).toEqual(["calendar_unverified"]);
   });
 
   it("Mooz error returns user-facing message", async () => {
@@ -342,7 +424,7 @@ describe("dispatchMoozTool — book_meeting", () => {
     expect(r.bookingCreated).toBe(true);
   });
 
-  it("slot_full surfaces slot_unavailable with retry guidance and does NOT update DB", async () => {
+  it("slot_full surfaces slot_unavailable WITHOUT re-offer guidance and does NOT update DB", async () => {
     const { admin, calls } = makeAdmin();
     const ctx = makeCtx(
       makeMoozStub({
@@ -364,7 +446,39 @@ describe("dispatchMoozTool — book_meeting", () => {
     const parsed = JSON.parse(r.resultJson);
     expect(parsed.error).toBe("slot_unavailable");
     expect(parsed.mooz_kind).toBe("slot_full");
-    expect(parsed.guidance).toContain("Apologize");
+    // The re-offer loop was removed on purpose — the bot is explicitly told
+    // NOT to re-list slots or offer alternatives, and to hand off to a human.
+    expect(parsed.guidance).toContain("אל תקרא ל-list_available_slots");
+    expect(parsed.guidance).toContain("נציג");
+    const update = calls.find((c) => c.table === "conversations" && c.op === "update");
+    expect(update).toBeUndefined();
+  });
+
+  it("duplicate is treated as already-booked-this-slot, not as a taken slot, and does NOT update DB", async () => {
+    const { admin, calls } = makeAdmin();
+    const ctx = makeCtx(
+      makeMoozStub({
+        bookingResult: { ok: false, kind: "duplicate", message: "Duplicate booking" },
+      }),
+      admin,
+    );
+    const r = await dispatchMoozTool(
+      "book_meeting",
+      {
+        start_time: VALID_UTC,
+        end_time: VALID_END,
+        lead_name: "Shlomo",
+        lead_email: "s@example.com",
+      },
+      ctx,
+    );
+    expect(r.bookingCreated).toBe(false);
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.error).toBe("already_booked_this_slot");
+    expect(parsed.mooz_kind).toBe("duplicate");
+    // Treated as already-booked: confirm the existing time, do not re-offer.
+    expect(parsed.guidance).toContain("כבר קבועה");
+    expect(parsed.guidance).toContain("אל תקרא ל-book_meeting או ל-list_available_slots שוב");
     const update = calls.find((c) => c.table === "conversations" && c.op === "update");
     expect(update).toBeUndefined();
   });

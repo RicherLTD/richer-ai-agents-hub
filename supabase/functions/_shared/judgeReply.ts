@@ -30,7 +30,11 @@ BLOCK (ok=false) — these are illegal or harmful:
 1. "price_leak" — concrete prices/costs of the program in any currency (₪/$/€/£) or bare numbers + "אלף/אלפים/K" tied to cost/investment.
 2. "income_promise" — SPECIFIC income amounts associated with predicted earnings. Examples that BLOCK: "תרוויח 5000 שקל בחודש", "X בחודש", "מובטח להחזיר השקעה", "ערבות", "בטוח שתרוויח Y".
 3. "ai_disclosure" — admits being an AI, bot, language model, or automated system.
-4. "invented_fact" — fabricates advisor names, scheduled times, program durations, success-rate percentages, or specific student outcomes.
+4. "invented_fact" — fabricates advisor names, program durations, success-rate percentages, or specific student outcomes.
+   DO NOT judge meeting dates/times. You cannot see the booking system, so you have no way to know
+   whether a stated time is real — and a deterministic guard upstream has ALREADY verified every
+   HH:MM in this reply against the actual slots the booking system returned. A reply that reaches
+   you has passed that check. Flagging a time here only blocks a legitimate, grounded offer.
 5. "off_topic" — clearly unrelated to the lead's question (rare).
 
 ALLOW (ok=true, reason="clean") — these are LEGITIMATE and must NOT be blocked:
@@ -40,6 +44,9 @@ C. "כל בן אדם שונה, זה תלוי בהשקעה שלך" — abstract t
 D. "סיכויי ההצלחה שלך גדולים" — abstract probability without a number is FINE.
 E. "אני יודע שזה נשמע משוגע" — empathy / acknowledgment is FINE.
 F. Deflection to the advisor on Zoom — always FINE.
+G. Stating specific meeting dates/times ("יום א׳ 30.08 בשעה 11:00"), confirming a booking, or
+   saying the calendar has no availability and an advisor will make contact — ALWAYS FINE. These
+   are grounded in the booking system and verified upstream. Never block them.
 
 THE KEY RULE: a CONCRETE NUMBER tied to predicted income is illegal. Abstract conditional/possibility/effort language is legal. The verb "להבטיח" alone is NOT a problem; it only becomes one when it attaches to a specific amount.
 
