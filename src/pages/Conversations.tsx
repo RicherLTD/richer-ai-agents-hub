@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { MessageCircle, Search } from "lucide-react";
+import { AlertTriangle, MessageCircle, Search } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { ConversationDetail } from "@/components/conversations/ConversationDetail";
@@ -10,9 +10,11 @@ import { EmptyState } from "@/components/EmptyState";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { useAgent } from "@/contexts/AgentContext";
 import { getActiveConversations } from "@/lib/conversations";
+import { getNeedsAttentionQueue } from "@/lib/needs-attention";
 import { deriveDisplayStatus, statusBreakdown } from "@/lib/conversation-status";
 import type { Conversation } from "@/types/conversation";
 
@@ -32,6 +34,8 @@ const Conversations = () => {
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [datePreset, setDatePreset] = useState<DatePreset>("all");
+  // When on, the list shows the operator queue instead of the filtered list.
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const [dateRange, setDateRange] = useState<DateRange>({ from: null, to: null });
   const debouncedSearch = useDebounced(search, 300);
 
@@ -59,12 +63,24 @@ const Conversations = () => {
     enabled: Boolean(activeAgent?.id),
   });
 
+  // The queue is fetched separately from the main list: a lead the bot
+  // dropped days ago is still waiting now, so it must not be hidden by the
+  // page's date filter or the 500-row window.
+  const { data: attentionRows } = useQuery({
+    queryKey: ["conversations-attention", activeAgent?.id],
+    queryFn: () => getNeedsAttentionQueue(activeAgent!.id),
+    enabled: Boolean(activeAgent?.id),
+    refetchInterval: 60_000,
+  });
+  const attentionQueue = useMemo(() => attentionRows ?? [], [attentionRows]);
+
   const rows = useMemo(() => data ?? [], [data]);
   const counts = useMemo(() => statusBreakdown(rows), [rows]);
   const filtered = useMemo(() => {
+    if (attentionOnly) return attentionQueue;
     if (status === "all") return rows;
     return rows.filter((r) => deriveDisplayStatus(r) === status);
-  }, [rows, status]);
+  }, [rows, status, attentionOnly, attentionQueue]);
 
   if (isAgentLoading) {
     return (
@@ -93,11 +109,44 @@ const Conversations = () => {
           <h1 className="font-display text-3xl font-medium tracking-tight">שיחות</h1>
           <p className="text-sm text-muted-foreground">
             <span className="tabular-nums font-medium text-foreground">{filtered.length}</span> שיחות
-            {status !== "all" ? " מסוננות" : ""}
-            {dateRange.from || dateRange.to ? " (לפי תאריך)" : ""}
+            {attentionOnly
+              ? " שממתינות לטיפול נציג"
+              : (status !== "all" ? " מסוננות" : "")}
+            {!attentionOnly && (dateRange.from || dateRange.to) ? " (לפי תאריך)" : ""}
           </p>
         </div>
-        <StatusFilterChips value={status} onChange={setStatus} counts={counts} />
+        <div className="flex flex-wrap items-center gap-1.5">
+          <StatusFilterChips
+            value={attentionOnly ? "all" : status}
+            onChange={(next) => {
+              setAttentionOnly(false);
+              setStatus(next);
+            }}
+            counts={counts}
+          />
+          {attentionQueue.length > 0 && (
+            <button
+              type="button"
+              aria-pressed={attentionOnly}
+              onClick={() => setAttentionOnly((v) => !v)}
+              className={cn(
+                "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+                attentionOnly
+                  ? "border-destructive bg-destructive text-destructive-foreground"
+                  : "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20",
+              )}
+            >
+              <AlertTriangle className="h-3 w-3" aria-hidden />
+              <span>דרוש טיפול</span>
+              <Badge
+                variant={attentionOnly ? "secondary" : "outline"}
+                className="h-5 min-w-[1.5rem] px-1.5 text-[10px] tabular-nums"
+              >
+                {attentionQueue.length}
+              </Badge>
+            </button>
+          )}
+        </div>
         <DateRangeFilter
           preset={datePreset}
           range={dateRange}
@@ -139,7 +188,9 @@ const Conversations = () => {
                 <p className="p-4 text-sm text-destructive">שגיאה: {error.message}</p>
               ) : filtered.length === 0 ? (
                 <p className="py-12 text-center text-sm text-muted-foreground">
-                  {debouncedSearch || status !== "all" || dateRange.from || dateRange.to
+                  {attentionOnly
+                    ? "אין שיחות שממתינות לטיפול — הכל מטופל 🎉"
+                    : debouncedSearch || status !== "all" || dateRange.from || dateRange.to
                     ? "אין שיחות שתואמות לסינון."
                     : "עדיין אין שיחות לסוכן הזה."}
                 </p>

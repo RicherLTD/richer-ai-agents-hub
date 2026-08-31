@@ -586,6 +586,9 @@ export type Database = {
           lead_phone: string
           manual_mode_by: string | null
           manual_mode_since: string | null
+          needs_attention: string | null
+          needs_attention_alerted_at: string | null
+          needs_attention_at: string | null
           primary_objection:
             | Database["public"]["Enums"]["objection_enum"]
             | null
@@ -637,6 +640,9 @@ export type Database = {
           lead_phone: string
           manual_mode_by?: string | null
           manual_mode_since?: string | null
+          needs_attention?: string | null
+          needs_attention_alerted_at?: string | null
+          needs_attention_at?: string | null
           primary_objection?:
             | Database["public"]["Enums"]["objection_enum"]
             | null
@@ -690,6 +696,9 @@ export type Database = {
           lead_phone?: string
           manual_mode_by?: string | null
           manual_mode_since?: string | null
+          needs_attention?: string | null
+          needs_attention_alerted_at?: string | null
+          needs_attention_at?: string | null
           primary_objection?:
             | Database["public"]["Enums"]["objection_enum"]
             | null
@@ -937,6 +946,304 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      instagram_inbox_contacts: {
+        Row: {
+          account_id: string
+          active_channel: string | null
+          blotato_conversation_id: string
+          callback_consent_at: string | null
+          classification: string
+          created_at: string
+          desired_outcome: string | null
+          display_name: string | null
+          entry_intent: string | null
+          experiment_id: string | null
+          fireberry_lead_id: string | null
+          fireberry_outcome: string | null
+          fireberry_outcome_at: string | null
+          fireberry_synced_at: string | null
+          followup_count: number
+          id: string
+          last_inbound_at: string | null
+          last_outbound_at: string | null
+          lead_route: string | null
+          manychat_compared_at: string | null
+          manychat_contact_id: string | null
+          metadata: Json
+          need_summary: string | null
+          next_action: string | null
+          next_action_at: string | null
+          outbound_history_complete: boolean
+          owner: string
+          paused_reason: string | null
+          phone: string | null
+          platform: string
+          platform_contact_id: string | null
+          script_version: string
+          stage: string
+          updated_at: string
+          username: string | null
+          variant: string
+          web_series_status: string
+        }
+        Insert: {
+          account_id: string
+          active_channel?: string | null
+          blotato_conversation_id: string
+          callback_consent_at?: string | null
+          classification?: string
+          created_at?: string
+          desired_outcome?: string | null
+          display_name?: string | null
+          entry_intent?: string | null
+          experiment_id?: string | null
+          fireberry_lead_id?: string | null
+          fireberry_outcome?: string | null
+          fireberry_outcome_at?: string | null
+          fireberry_synced_at?: string | null
+          followup_count?: number
+          id?: string
+          last_inbound_at?: string | null
+          last_outbound_at?: string | null
+          lead_route?: string | null
+          manychat_compared_at?: string | null
+          manychat_contact_id?: string | null
+          metadata?: Json
+          need_summary?: string | null
+          next_action?: string | null
+          next_action_at?: string | null
+          outbound_history_complete?: boolean
+          owner?: string
+          paused_reason?: string | null
+          phone?: string | null
+          platform: string
+          platform_contact_id?: string | null
+          script_version?: string
+          stage?: string
+          updated_at?: string
+          username?: string | null
+          variant?: string
+          web_series_status?: string
+        }
+        Update: {
+          account_id?: string
+          active_channel?: string | null
+          blotato_conversation_id?: string
+          callback_consent_at?: string | null
+          classification?: string
+          created_at?: string
+          desired_outcome?: string | null
+          display_name?: string | null
+          entry_intent?: string | null
+          experiment_id?: string | null
+          fireberry_lead_id?: string | null
+          fireberry_outcome?: string | null
+          fireberry_outcome_at?: string | null
+          fireberry_synced_at?: string | null
+          followup_count?: number
+          id?: string
+          last_inbound_at?: string | null
+          last_outbound_at?: string | null
+          lead_route?: string | null
+          manychat_compared_at?: string | null
+          manychat_contact_id?: string | null
+          metadata?: Json
+          need_summary?: string | null
+          next_action?: string | null
+          next_action_at?: string | null
+          outbound_history_complete?: boolean
+          owner?: string
+          paused_reason?: string | null
+          phone?: string | null
+          platform?: string
+          platform_contact_id?: string | null
+          script_version?: string
+          stage?: string
+          updated_at?: string
+          username?: string | null
+          variant?: string
+          web_series_status?: string
+        }
+        Relationships: []
+      }
+      instagram_inbox_events: {
+        Row: {
+          actor: string
+          contact_id: string
+          created_at: string
+          event_type: string
+          id: number
+          payload: Json
+        }
+        Insert: {
+          actor: string
+          contact_id: string
+          created_at?: string
+          event_type: string
+          id?: never
+          payload?: Json
+        }
+        Update: {
+          actor?: string
+          contact_id?: string
+          created_at?: string
+          event_type?: string
+          id?: never
+          payload?: Json
+        }
+        Relationships: [
+          {
+            foreignKeyName: "instagram_inbox_events_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "instagram_inbox_contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      instagram_inbox_experiments: {
+        Row: {
+          changed_variable: string
+          control_version: string
+          created_at: string
+          decision: string | null
+          eligible_count: number
+          ended_at: string | null
+          entry_intent: string
+          hypothesis: string | null
+          id: string
+          lead_route: string
+          minimum_sample: number
+          profile_key: string
+          result: Json
+          rollback_reason: string | null
+          started_at: string | null
+          status: string
+          updated_at: string
+          variant: string
+        }
+        Insert: {
+          changed_variable: string
+          control_version: string
+          created_at?: string
+          decision?: string | null
+          eligible_count?: number
+          ended_at?: string | null
+          entry_intent: string
+          hypothesis?: string | null
+          id?: string
+          lead_route: string
+          minimum_sample?: number
+          profile_key: string
+          result?: Json
+          rollback_reason?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          variant: string
+        }
+        Update: {
+          changed_variable?: string
+          control_version?: string
+          created_at?: string
+          decision?: string | null
+          eligible_count?: number
+          ended_at?: string | null
+          entry_intent?: string
+          hypothesis?: string | null
+          id?: string
+          lead_route?: string
+          minimum_sample?: number
+          profile_key?: string
+          result?: Json
+          rollback_reason?: string | null
+          started_at?: string | null
+          status?: string
+          updated_at?: string
+          variant?: string
+        }
+        Relationships: []
+      }
+      instagram_inbox_messages: {
+        Row: {
+          blotato_message_id: string | null
+          contact_id: string
+          created_at: string
+          direction: string
+          id: string
+          raw: Json
+          sent_at: string
+          source: string
+          status: string | null
+          text: string | null
+        }
+        Insert: {
+          blotato_message_id?: string | null
+          contact_id: string
+          created_at?: string
+          direction: string
+          id?: string
+          raw?: Json
+          sent_at: string
+          source: string
+          status?: string | null
+          text?: string | null
+        }
+        Update: {
+          blotato_message_id?: string | null
+          contact_id?: string
+          created_at?: string
+          direction?: string
+          id?: string
+          raw?: Json
+          sent_at?: string
+          source?: string
+          status?: string | null
+          text?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "instagram_inbox_messages_contact_id_fkey"
+            columns: ["contact_id"]
+            isOneToOne: false
+            referencedRelation: "instagram_inbox_contacts"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      instagram_inbox_optimization_runs: {
+        Row: {
+          created_at: string
+          decision_summary: string | null
+          fireberry_sync: Json
+          id: number
+          metrics: Json
+          period_end: string | null
+          period_start: string | null
+          run_type: string
+        }
+        Insert: {
+          created_at?: string
+          decision_summary?: string | null
+          fireberry_sync?: Json
+          id?: never
+          metrics?: Json
+          period_end?: string | null
+          period_start?: string | null
+          run_type: string
+        }
+        Update: {
+          created_at?: string
+          decision_summary?: string | null
+          fireberry_sync?: Json
+          id?: never
+          metrics?: Json
+          period_end?: string | null
+          period_start?: string | null
+          run_type?: string
+        }
+        Relationships: []
       }
       lead_memory: {
         Row: {
@@ -1295,6 +1602,14 @@ export type Database = {
         }[]
       }
       is_admin: { Args: never; Returns: boolean }
+      reconcile_stage8a_historical_receipt_due: {
+        Args: {
+          p_candidate_key: string
+          p_due_action_id: string
+          p_receipt_id: string
+        }
+        Returns: string
+      }
       template_funnel: {
         Args: {
           p_agent_id: string

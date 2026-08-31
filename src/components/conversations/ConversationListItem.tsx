@@ -3,6 +3,7 @@ import { he } from "date-fns/locale";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
+import { NeedsAttentionBadge } from "@/components/leads/NeedsAttentionBadge";
 import { deriveDisplayStatus } from "@/lib/conversation-status";
 import { cn } from "@/lib/utils";
 import type { Conversation } from "@/types/conversation";
@@ -116,6 +117,7 @@ export function ConversationListItem({ conversation, isActive, onClick }: Props)
             </p>
             <CopyPhoneButton phone={conversation.lead_phone} className="sm:group-hover/row:opacity-100" />
           </div>
+          <NeedsAttentionBadge reason={conversation.needs_attention} />
           <DisplayStatusBadge status={deriveDisplayStatus(conversation)} />
         </div>
       </div>
