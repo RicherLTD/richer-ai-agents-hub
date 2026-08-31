@@ -205,7 +205,10 @@ describe("dispatchMoozTool — list_available_slots", () => {
   // resolves the question itself: on an empty window it probes the whole open
   // horizon once and returns a DECISION, never an invitation to search again.
 
-  it("empty window + open horizon → offers the real open slots, forbids re-search", async () => {
+  it("requested date beyond the horizon → hands to an advisor, never promises to re-check", async () => {
+    // Mooz opens only ~24 business hours ahead, permanently. A lead asking
+    // for a date weeks out can never be booked by the bot, so the tool must
+    // say so outright rather than let the model infer it from the dates.
     const { admin } = makeAdmin();
     const ranges: Array<{ from: string; to: string }> = [];
     const horizonSlots: MoozAvailableSlot[] = [
@@ -225,10 +228,33 @@ describe("dispatchMoozTool — list_available_slots", () => {
     expect(parsed.outcome).toBe("requested_window_empty");
     // It probed a second, wider range rather than answering "pick another day".
     expect(ranges).toHaveLength(2);
+    expect(parsed.requested_date_beyond_horizon).toBe(true);
+    expect(parsed.horizon_last_open_date_il).toBe("2026-05-22");
     expect(parsed.open_slots).toHaveLength(2);
-    expect(parsed.horizon_last_open_il).toBeTruthy();
-    expect(parsed.guidance).toContain("אל תבקש");
+    // Must route to a human and must not promise a follow-up.
+    expect(parsed.guidance).toContain("יועץ");
+    expect(parsed.guidance).toContain("אל תבטיח");
+    expect(parsed.guidance).toContain("קבוע");
     // Times from the probe are real Mooz slots — the bot may state them.
+    expect(r.offeredTimesIL).toContain("11:00");
+  });
+
+  it("same day, different hours → just offers the open slots (no advisor detour)", async () => {
+    const { admin } = makeAdmin();
+    const horizonSlots: MoozAvailableSlot[] = [
+      { start: "2026-05-21T08:00:00.000Z", end: "2026-05-21T08:30:00.000Z" },
+    ];
+    const ctx = makeCtx(makeMoozStub({ slotsByCall: [[], horizonSlots] }), admin);
+    const r = await dispatchMoozTool(
+      "list_available_slots",
+      { preferred_date: "2026-05-21", lookahead_days: 1 },
+      ctx,
+    );
+    const parsed = JSON.parse(r.resultJson);
+    expect(parsed.outcome).toBe("requested_window_empty");
+    expect(parsed.requested_date_beyond_horizon).toBe(false);
+    expect(parsed.guidance).toContain("אל תבקש");
+    expect(parsed.guidance).not.toContain("יועץ");
     expect(r.offeredTimesIL).toContain("11:00");
   });
 
