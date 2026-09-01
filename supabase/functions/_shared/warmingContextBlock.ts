@@ -103,6 +103,19 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     })`,
     `**Likely objection:** ${args.objectionKey}`,
     ``,
+    // === Core behaviour rules (fix the "reply ignores the lead / reverts to
+    // fresh-lead qualification" bug). These sit before the per-status
+    // instructions and outrank the opening/qualification flow in the main
+    // prompt that follows this block. ===
+    `## Answer what they just said — FIRST`,
+    `Before anything else, read the lead's most recent message and respond to it directly and specifically — engage their actual words, question, or objection. Only after you have genuinely reacted to what they said do you steer toward the goal. Never skip past their message to push an agenda.`,
+    ``,
+    `## This is NOT a fresh lead`,
+    `This person already registered and our team already reached out to them — they are being re-engaged, not met for the first time. Do NOT open with, or fall back to, the standard new-lead qualification script (e.g. "what brought you to register?", "what are you looking to change?"). Those belong to a first conversation, not this one. This warming guidance takes precedence over any opening/qualification flow described in the main instructions below.`,
+    ``,
+    `## Show, don't tell`,
+    `Never announce your technique or intent. Do not say things like "I'm not here to interrogate you", "no pressure, but…", or "I just want to help" — naming it is robotic, exposes your hand, and makes the lead shut down. Convey warmth and low pressure through how you behave, not by stating it.`,
+    ``,
     `## How to handle this lead`,
     args.instructions.trim(),
     ``,

@@ -208,4 +208,38 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("no income promises");
     expect(block).toContain("no invented facts");
   });
+
+  // The core behaviour fix: a re-warmed lead's reply was being ignored while the
+  // bot reverted to the fresh-lead qualification script ("what brought you to
+  // register?"). These three rules, added before the per-status instructions,
+  // prevent that.
+  describe("core behaviour rules", () => {
+    it("tells the bot to answer the lead's latest message first", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Answer what they just said — FIRST");
+      expect(block).toContain("respond to it directly and specifically");
+    });
+
+    it("forbids the fresh-lead qualification script and asserts precedence over the main prompt", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("This is NOT a fresh lead");
+      expect(block).toContain("what brought you to register");
+      expect(block).toContain("takes precedence over any opening/qualification flow");
+    });
+
+    it("bans announcing the technique (show, don't tell)", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Show, don't tell");
+      expect(block).toContain("I'm not here to interrogate you");
+    });
+
+    // These rules must sit before the operator's per-status instructions so they
+    // frame (and outrank) the specific handling.
+    it("places the behaviour rules before the per-status handling", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block.indexOf("Answer what they just said")).toBeLessThan(
+        block.indexOf("## How to handle this lead"),
+      );
+    });
+  });
 });
