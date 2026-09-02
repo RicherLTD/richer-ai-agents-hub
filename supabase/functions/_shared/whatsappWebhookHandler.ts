@@ -632,6 +632,10 @@ async function sendAndRecordReply(
   replyText: string,
   trace: Omit<OutboundTrace, "metaMessageId">,
 ): Promise<void> {
+  // The model likes the em/en-dash; the operator wants a plain hyphen only.
+  // Deterministic replace before BOTH the send and the recorded outbound row,
+  // so what we store matches what the lead sees. Cheap and guaranteed.
+  replyText = replyText.replace(/[—–]/g, "-");
   const sendResult: SendResult = await sendWhatsAppText({
     apiUrl: ctx.hookmyapp.apiUrl,
     accessToken: ctx.hookmyapp.accessToken,
