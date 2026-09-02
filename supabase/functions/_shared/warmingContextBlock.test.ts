@@ -233,6 +233,13 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("I'm not here to interrogate you");
     });
 
+    it("tells the bot the per-status guidance is a mindset, not a script to recite", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("MINDSET, not a script");
+      expect(block).toContain("tell me straight");
+      expect(block).toContain("do not be vague or coy");
+    });
+
     // These rules must sit before the operator's per-status instructions so they
     // frame (and outrank) the specific handling.
     it("places the behaviour rules before the per-status handling", () => {
