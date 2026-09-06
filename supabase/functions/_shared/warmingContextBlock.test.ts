@@ -184,7 +184,9 @@ describe("renderWarmingContextBlock", () => {
         repNote: "א".repeat(MAX_REP_NOTE_CHARS + 5_000),
       });
       expect(block).toContain("נחתכה בשל אורך");
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 4_000);
+      // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
+      // point is the note is clamped, so an UNclamped note (+5000) would blow past this.
+      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 5_000);
     });
   });
 
@@ -238,6 +240,13 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("MINDSET, not a script");
       expect(block).toContain("tell me straight");
       expect(block).toContain("do not be vague or coy");
+    });
+
+    it("tells the bot to neutralize the objection before pitching the zoom", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Neutralize the objection BEFORE you go for the Zoom");
+      expect(block).toContain("do NOT repeat");
+      expect(block).toContain("The Zoom is the destination, not your tool");
     });
 
     // These rules must sit before the operator's per-status instructions so they
