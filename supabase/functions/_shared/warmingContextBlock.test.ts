@@ -185,8 +185,8 @@ describe("renderWarmingContextBlock", () => {
       });
       expect(block).toContain("נחתכה בשל אורך");
       // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
-      // point is the note is clamped, so an UNclamped note (+5000) would blow past this.
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 5_000);
+      // point is the note is clamped, so an UNclamped note (+6000) would blow past this.
+      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 6_000);
     });
   });
 
@@ -247,6 +247,16 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("Neutralize the objection BEFORE you go for the Zoom");
       expect(block).toContain("do NOT repeat");
       expect(block).toContain("The Zoom is the destination, not your tool");
+    });
+
+    // A live test on status 20 exposed the bot folding on the first soft reply
+    // ("all good" → "no pressure, I'm here"; "didn't connect" → "good luck!").
+    // A brush-off from a re-warmed lead is the start of the work, not a no.
+    it("forbids folding on a soft brush-off and raises the release threshold", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain('A brush-off is not a "no"');
+      expect(block).toContain("is the START of your work");
+      expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
     // These rules must sit before the operator's per-status instructions so they
