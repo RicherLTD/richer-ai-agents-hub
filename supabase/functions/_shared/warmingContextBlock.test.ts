@@ -136,6 +136,14 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("Never mention the CRM");
   });
 
+  // Live on status 20 the bot asked "what didn't click for you?" — surfacing an
+  // objection the lead had never raised, exposing that it "knew" something.
+  it("forbids voicing the status-implied objection unless the lead raised it", () => {
+    const block = renderWarmingContextBlock(baseArgs);
+    expect(block).toContain("never name, quote, or even hint at the specific objection");
+    expect(block).toContain("UNLESS the lead has raised it with you first");
+  });
+
   describe("without a rep note", () => {
     it("instructs the bot to discover the objection instead of inventing one", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, repNote: null });
@@ -185,8 +193,8 @@ describe("renderWarmingContextBlock", () => {
       });
       expect(block).toContain("נחתכה בשל אורך");
       // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
-      // point is the note is clamped, so an UNclamped note (+6000) would blow past this.
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 6_000);
+      // point is the note is clamped, so an UNclamped note (+7000) would blow past this.
+      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 7_000);
     });
   });
 
