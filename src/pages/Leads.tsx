@@ -5,6 +5,7 @@ import { Search, Users } from "lucide-react";
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { EmptyState } from "@/components/EmptyState";
+import { toLocalPhone } from "@/lib/formatPhone";
 import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
 import { DateRangeFilter, type DatePreset, type DateRange } from "@/components/leads/DateRangeFilter";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
@@ -30,7 +31,7 @@ function formatRelative(value: string | null): string {
 }
 
 function maskPhone(phone: string): string {
-  return phone;
+  return toLocalPhone(phone);
 }
 
 const Leads = () => {

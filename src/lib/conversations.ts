@@ -15,6 +15,7 @@
  */
 import { supabase } from "./supabase/client";
 import type { Conversation } from "@/types/conversation";
+import { toPhoneSearchTerm } from "@/lib/formatPhone";
 
 export interface ConversationsFilters {
   agentId: string;
@@ -43,7 +44,7 @@ export async function getActiveConversations(
     query = query.lte("created_at", filters.toCreatedAt);
   }
   if (filters.search && filters.search.trim()) {
-    const term = filters.search.trim().replace(/[%_]/g, "");
+    const term = toPhoneSearchTerm(filters.search.trim().replace(/[%_]/g, ""));
     query = query.or(`lead_phone.ilike.%${term}%,lead_name.ilike.%${term}%`);
   }
 

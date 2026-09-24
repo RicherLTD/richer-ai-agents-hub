@@ -1,6 +1,7 @@
 import { format, isSameDay, isYesterday } from "date-fns";
 import { he } from "date-fns/locale";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { toLocalPhone } from "@/lib/formatPhone";
 import { CopyPhoneButton } from "@/components/leads/CopyPhoneButton";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
 import { NeedsAttentionBadge } from "@/components/leads/NeedsAttentionBadge";
@@ -113,7 +114,7 @@ export function ConversationListItem({ conversation, isActive, onClick }: Props)
         <div className="mt-1 flex items-center gap-2">
           <div className="flex min-w-0 flex-1 items-center gap-1">
             <p dir="ltr" className="min-w-0 truncate font-mono text-[11px] text-muted-foreground tabular-nums">
-              {conversation.lead_phone}
+              {toLocalPhone(conversation.lead_phone)}
             </p>
             <CopyPhoneButton phone={conversation.lead_phone} className="sm:group-hover/row:opacity-100" />
           </div>

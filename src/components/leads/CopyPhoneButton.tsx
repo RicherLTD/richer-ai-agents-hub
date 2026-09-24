@@ -2,6 +2,7 @@ import { Check, Copy } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { toLocalPhone } from "@/lib/formatPhone";
 
 interface Props {
   phone: string;
@@ -21,7 +22,7 @@ export function CopyPhoneButton({ phone, className }: Props) {
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(phone);
+      await navigator.clipboard.writeText(toLocalPhone(phone));
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1200);
       toast.success("הטלפון הועתק");
