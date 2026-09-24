@@ -7,6 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { DisplayStatusBadge } from "@/components/leads/DisplayStatusBadge";
 import { deriveDisplayStatus } from "@/lib/conversation-status";
 import type { Conversation } from "@/types/conversation";
+import { toLocalPhone } from "@/lib/formatPhone";
 
 function formatRelative(value: string | null): string {
   if (!value) return "—";
@@ -48,7 +49,7 @@ export function RecentLeadsList({ leads, isLoading }: Props) {
                       {lead.lead_name?.trim() || "ליד ללא שם"}
                     </p>
                     <p dir="ltr" className="truncate text-right text-[11px] text-muted-foreground">
-                      {lead.lead_phone}
+                      {toLocalPhone(lead.lead_phone)}
                     </p>
                   </div>
                   <div className="shrink-0">
