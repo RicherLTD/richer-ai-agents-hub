@@ -214,6 +214,32 @@ describe("renderWarmingContextBlock", () => {
       expect(block).not.toContain("CONTINUE that conversation");
     });
 
+    // Live on status 22, with the old messages unseen the bot re-asked "what
+    // drew you in?" — something the lead had already answered.
+    it("lists what the lead already shared and tells the bot not to re-ask it", () => {
+      const block = renderWarmingContextBlock({
+        ...baseArgs,
+        hasHistory: true,
+        priorProfile: ["What drew them in: ראה את הסדרה ורצה לשמוע פרטים"],
+      });
+      expect(block).toContain("Do not ask about these again");
+      expect(block).toContain("- What drew them in: ראה את הסדרה ורצה לשמוע פרטים");
+    });
+
+    it("omits the shared-facts section when nothing is known", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true, priorProfile: [] });
+      expect(block).not.toContain("Do not ask about these again");
+    });
+
+    it("never renders shared facts for a first contact", () => {
+      const block = renderWarmingContextBlock({
+        ...baseArgs,
+        hasHistory: false,
+        priorProfile: ["Age: 34"],
+      });
+      expect(block).not.toContain("Age: 34");
+    });
+
     it("tells the bot this is a first contact when there is no history", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: false });
       expect(block).toContain("first contact on WhatsApp");
