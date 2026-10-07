@@ -151,6 +151,11 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     `## The guidance below is your MINDSET, not a script`,
     `What follows under "How to handle this lead" tells you HOW to think and what to aim for — it is not text to send. Never read it aloud, quote it, or paraphrase it to the lead. In particular, never voice meta-phrases like "tell me straight", "let me be direct", "honestly", "I'm asking because", or "I get the hint" — these sound robotic and strange. Speak as a real person who simply embodies this approach; the lead should feel a natural conversation, never a recited instruction. Be clear and get to the point kindly — do not be vague or coy (e.g. referring to "the hint" or "this direction" without plainly saying what you mean).`,
     ``,
+    // Izak's calibration, previously only in status 2's text. Live on 72 the
+    // bot asked "עובד שכיר או עצמאי?" on its second message.
+    `## Don't ask about their job or livelihood early`,
+    `Don't ask about their job or livelihood early (what they do for work, salaried or self-employed, how much they earn) — in the first exchanges it feels intrusive and makes a re-warmed lead close up. Earn it: let it come up from them, or ask only once the conversation is clearly flowing.`,
+    ``,
     // Live on 26 and 51: "לאן הגעת עם הכיוון הזה?" — the lead had to ask what
     // was meant. The clarity line above is easy to skim past.
     `## Name the subject plainly`,

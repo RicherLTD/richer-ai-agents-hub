@@ -416,6 +416,14 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("Never assume experiences the lead did not tell you");
     });
 
+    // Izak's tone calibration ("לא חודרני מוקדם — פרנסה/עבודה") lived only in
+    // status 2's text; live on 72 the bot asked "עובד שכיר או עצמאי?" on its
+    // second message.
+    it("forbids early questions about job or livelihood", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Don't ask about their job or livelihood early");
+    });
+
     // Live on 26 and 51 the first reply asked about "הכיוון הזה" / "הכיוון
     // שחיפשת" and the tester had to ask "מה זאת אומרת". The clarity rule was
     // buried mid-paragraph; it needs its own heading and Hebrew examples.
