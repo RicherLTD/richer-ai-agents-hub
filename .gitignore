@@ -33,3 +33,6 @@ dist-ssr
 # Claude Code internals (worktrees, session state, etc.)
 .claude/
 .vercel
+
+# Warming simulator output (transcripts, reports)
+scripts/admin/warming-sim/out/
