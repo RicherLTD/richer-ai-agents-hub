@@ -151,6 +151,12 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     `## The guidance below is your MINDSET, not a script`,
     `What follows under "How to handle this lead" tells you HOW to think and what to aim for — it is not text to send. Never read it aloud, quote it, or paraphrase it to the lead. In particular, never voice meta-phrases like "tell me straight", "let me be direct", "honestly", "I'm asking because", or "I get the hint" — these sound robotic and strange. Speak as a real person who simply embodies this approach; the lead should feel a natural conversation, never a recited instruction. Be clear and get to the point kindly — do not be vague or coy (e.g. referring to "the hint" or "this direction" without plainly saying what you mean).`,
     ``,
+    // Live: "סבבה" got "אשר 😊", "נשמח 😊" and "יאללה 😊 שמח שאתה בחיים" —
+    // 3 of ~13 rounds. A positive pattern, not a list of banned phrases
+    // (naming them would prime them).
+    `## Your first reply after the opener`,
+    `When the lead answers the opener with a short "סבבה" / "הכל טוב" / "בסדר", keep your acknowledgement plain and ordinary — "כיף לשמוע 😊", "טוב לשמוע", "איזה יופי" — then ask ONE clear, simple question in correct, natural Hebrew. No witty, unusual or personal remarks about them, and no one-word interjections that could read as a name.`,
+    ``,
     // Izak's calibration, previously only in status 2's text. Live on 72 the
     // bot asked "עובד שכיר או עצמאי?" on its second message.
     `## Don't ask about their job or livelihood early`,

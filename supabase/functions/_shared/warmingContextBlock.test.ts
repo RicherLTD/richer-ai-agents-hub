@@ -416,6 +416,15 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("Never assume experiences the lead did not tell you");
     });
 
+    // Three of ~13 live rounds answered a bare "סבבה" with an odd opener:
+    // "אשר 😊", "נשמח 😊", "יאללה 😊 שמח שאתה בחיים". The first reply after
+    // the opener needs a plain, concrete pattern.
+    it("gives the first reply after the opener a plain acknowledgement pattern", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("## Your first reply after the opener");
+      expect(block).toContain("כיף לשמוע");
+    });
+
     // Izak's tone calibration ("לא חודרני מוקדם — פרנסה/עבודה") lived only in
     // status 2's text; live on 72 the bot asked "עובד שכיר או עצמאי?" on its
     // second message.
