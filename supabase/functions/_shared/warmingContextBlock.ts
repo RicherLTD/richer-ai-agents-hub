@@ -90,6 +90,9 @@ export interface WarmingBlockArgs {
   /** Stable facts the lead shared in that earlier conversation, one line each
    *  (warmingHistory.buildPriorProfile). Rendered only when hasHistory. */
   priorProfile?: string[];
+  /** The opener template's text (broadcast_templates.body_preview), when
+   *  known. The history only carries "[template:name]". */
+  openerText?: string | null;
 }
 
 export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
@@ -100,7 +103,11 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     ``,
     // The single most important rule in this block. Everything else is
     // technique; this one prevents the lead learning they're inside a pipeline.
-    `The lead knows NOTHING about any of this. Never mention the CRM, a status, a rep, a system, or that anything was "updated". Never say "I saw that…" about anything below. To the lead you are simply the same person they have been talking with.`,
+    `The lead knows NOTHING about any of this. Never mention the CRM, a status, a system, what a rep wrote, or that anything was "updated". Never say "I saw that…" about anything below.`,
+    ``,
+    // Tester's call on status 23: hiding the earlier contact entirely made the
+    // openings feel evasive. Acknowledging it is fine; its content is not.
+    `What the lead DOES know is that they registered and were in touch with the college before. So it is fine, and often the natural opening, to acknowledge that plainly — e.g. "I know you were in touch with us a while back — I'd love to hear where you're at today". Just never say what was said on that contact or what concern came up there.`,
     ``,
     // Corollary that failed live on status 20: the bot voiced "what didn't
     // click for you?" — surfacing the objection the status implied, which the
@@ -122,6 +129,12 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     `## This is NOT a fresh lead`,
     `This person already registered and our team already reached out to them — they are being re-engaged, not met for the first time. Do NOT open with, or fall back to, the standard new-lead qualification script (e.g. "what brought you to register?", "what are you looking to change?"). Those belong to a first conversation, not this one. This warming guidance takes precedence over any opening/qualification flow described in the main instructions below.`,
     ``,
+    `## What the lead has seen from us in this stage`,
+    renderOpenerLine(args.openerText ?? null),
+    // Live on status 23: the main prompt describes a first-touch template
+    // with four numbered options, and the bot took the warming opener for it.
+    `That is ALL the lead received in this stage. The first-touch message with four numbered options described in the main instructions below belongs to a brand-new lead's first contact and is NOT part of this conversation: never refer to "the four options", "the first message we sent you", or ask the lead to pick from a list they never saw.`,
+    ``,
     `## Show, don't tell`,
     `Never announce your technique or intent. Do not say things like "I'm not here to interrogate you", "no pressure, but…", or "I just want to help" — naming it is robotic, exposes your hand, and makes the lead shut down. Convey warmth and low pressure through how you behave, not by stating it.`,
     ``,
@@ -133,6 +146,11 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     ``,
     `## A brush-off is not a "no" — stay in the conversation`,
     `A short, low-energy, or vague reply — "all good", "I'm fine thanks", "didn't really connect", "not now", a one-word answer, a shrug — is the START of your work, not a signal to leave. It is resistance to move through, NOT genuine disinterest. Never respond to it by handing the lead an exit: do NOT say things like "no pressure, I'm here whenever you want", "if you ever decide to look into it seriously, I'm around", or "good luck!". Do NOT assume they are leaving either ("before you go…", "רגע לפני שאתה הולך") — a short reply is not a goodbye. Those end the conversation and lose the lead. Instead stay warm and genuinely curious — react to what they actually said and gently open the door a little wider (a light, real question that invites them back in). A re-warmed lead almost always opens cold; that is expected, and it is exactly what you are here to work. Only a CLEAR, EXPLICIT, and repeated refusal — "stop messaging me", "take me off your list", "I'm really not interested, leave it" — is a real no. Anything softer than that, you keep the conversation alive.`,
+    ``,
+    // Live on status 23: the earlier "no" lives in history the bot no longer
+    // sees, so "I already told you" read as a first refusal and got "so what
+    // made you register in the first place?".
+    `A lead who says they ALREADY told you no — "אמרתי לכם כבר", "כבר אמרתי שלא", "I told you already" — is a REPEATED refusal, even if you cannot see the earlier one (it happened in a conversation you are not shown). Treat it as the real no: do not ask another digging question (least of all "what made you register in the first place?"). Acknowledge it in one short, warm line, own that you bothered them, and leave the door open once — then stop.`,
     ``,
   ];
 
@@ -208,6 +226,13 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
   );
 
   return parts.join("\n");
+}
+
+function renderOpenerLine(openerText: string | null): string {
+  const intro = `The conversation was re-opened with a short template message (shown as "[template:…]" in your history).`;
+  const text = openerText?.trim();
+  if (!text) return `${intro} Its exact text is not available to you — treat it as a short, casual check-in.`;
+  return `${intro} Its exact text was: «${text}» — a short, casual check-in.`;
 }
 
 function clampRepNote(note: string): string {

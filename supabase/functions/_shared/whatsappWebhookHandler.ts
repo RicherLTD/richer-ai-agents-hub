@@ -74,6 +74,7 @@ import {
 } from "./warmingContextBlock.ts";
 import {
   buildPriorProfile,
+  findOpenerTemplateName,
   type PriorProfileFields,
   type TimedMessage,
   trimToWarmingStage,
@@ -925,7 +926,9 @@ async function loadActiveWarmingRule(
 /**
  * Render the CRM warming block. When earlier messages were withheld, the
  * stable facts the lead shared back then go in as background so the bot does
- * not re-ask them.
+ * not re-ask them. The opener's text is looked up too: the history holds only
+ * "[template:name]", and without the text the bot mistook it for the
+ * first-touch template the main prompt describes.
  */
 async function buildWarmingBlock(
   ctx: AgentLoopCtx,
@@ -942,6 +945,18 @@ async function buildWarmingBlock(
     priorProfile = buildPriorProfile((memory as PriorProfileFields | null) ?? null);
   }
 
+  let openerText: string | null = null;
+  const openerName = findOpenerTemplateName(turn.claudeMessages);
+  if (openerName) {
+    const { data: template } = await ctx.admin
+      .from("broadcast_templates")
+      .select("body_preview")
+      .eq("agent_id", ctx.agentId)
+      .eq("name", openerName)
+      .maybeSingle();
+    openerText = (template?.body_preview as string | null | undefined) ?? null;
+  }
+
   const { crm } = rule;
   return renderWarmingContextBlock({
     statusSub: crm.statusSub,
@@ -952,6 +967,7 @@ async function buildWarmingBlock(
     repNote: crm.repNote,
     hasHistory: turn.hiddenEarlierMessages > 0 || turn.claudeMessages.length > 1,
     priorProfile,
+    openerText,
   });
 }
 

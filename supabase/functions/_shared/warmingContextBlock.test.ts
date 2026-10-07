@@ -136,6 +136,36 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("Never mention the CRM");
   });
 
+  // Tester's call on status 23: acknowledging the earlier contact is natural
+  // ("I know you were in touch with us — where are you at today?"); only what
+  // was said on it stays hidden.
+  it("allows acknowledging the earlier contact without revealing what was said", () => {
+    const block = renderWarmingContextBlock(baseArgs);
+    expect(block).toContain("fine, and often the natural opening, to acknowledge that plainly");
+    expect(block).toContain("never say what was said on that contact");
+  });
+
+  describe("what the lead saw in this stage", () => {
+    // Live on status 23: the main prompt describes a first-touch template with
+    // four options; the bot took "[template:warming_1]" for it and asked
+    // "which of the four speaks to you?" — a list the lead never saw.
+    it("forbids referring to the first-touch options", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain('never refer to "the four options"');
+    });
+
+    it("quotes the opener when its text is known", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, openerText: "מה קורה?" });
+      expect(block).toContain("Its exact text was: «מה קורה?»");
+    });
+
+    it("falls back to a generic description when the opener text is unknown", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, openerText: null });
+      expect(block).not.toContain("Its exact text was");
+      expect(block).toContain("a short, casual check-in");
+    });
+  });
+
   // Live on status 20 the bot asked "what didn't click for you?" — surfacing an
   // objection the lead had never raised, exposing that it "knew" something.
   it("forbids voicing the status-implied objection unless the lead raised it", () => {
@@ -192,10 +222,11 @@ describe("renderWarmingContextBlock", () => {
         repNote: "א".repeat(MAX_REP_NOTE_CHARS + 5_000),
       });
       expect(block).toContain("נחתכה בשל אורך");
-      // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
-      // point is the note is clamped, so an UNclamped note (+5000 on top of the
-      // scaffolding) would blow past this.
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 8_000);
+      // Measured against the same block without a note, so growth in the
+      // behaviour rules doesn't break this. The 1000 covers the note's own
+      // wrapper; an UNclamped note (+5000) blows past it.
+      const withoutNote = renderWarmingContextBlock({ ...baseArgs, repNote: null });
+      expect(block.length).toBeLessThan(withoutNote.length + MAX_REP_NOTE_CHARS + 1_000);
     });
   });
 
@@ -300,6 +331,16 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain('A brush-off is not a "no"');
       expect(block).toContain("is the START of your work");
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
+    });
+
+    // Live on status 23: "אמרתי לכם כבר שלא באלי" got "so what made you
+    // register in the first place?". The earlier "no" sits in history the bot
+    // no longer sees, so it read a repeated refusal as a first one.
+    it("treats 'I already told you no' as a repeated refusal and stops digging", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("אמרתי לכם כבר");
+      expect(block).toContain("is a REPEATED refusal");
+      expect(block).toContain("do not ask another digging question");
     });
 
     // Live on status 22: history carries no dates, so a slot search left open

@@ -57,6 +57,25 @@ export function trimToWarmingStage(
   return { messages: messages.slice(firstCurrent), hiddenCount: firstCurrent };
 }
 
+const TEMPLATE_MARKER = /^\[template:([^\]\s]+)\]/;
+
+/**
+ * Name of the latest template the bot sent, read off the "[template:name]"
+ * marker the dispatcher stores as the outbound row. The history carries only
+ * that marker, so the warming block looks the text up by this name.
+ */
+export function findOpenerTemplateName(
+  messages: ReadonlyArray<{ role: "user" | "assistant"; content: string }>,
+): string | null {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i];
+    if (message.role !== "assistant") continue;
+    const match = TEMPLATE_MARKER.exec(message.content);
+    if (match) return match[1];
+  }
+  return null;
+}
+
 /** The lead_memory columns that describe the person, not the process. */
 export interface PriorProfileFields {
   q1_age: number | null;

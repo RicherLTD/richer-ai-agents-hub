@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildPriorProfile,
+  findOpenerTemplateName,
   trimToWarmingStage,
   type TimedMessage,
 } from "./warmingHistory.ts";
@@ -94,5 +95,22 @@ describe("buildPriorProfile", () => {
 
   it("returns an empty list when nothing is known", () => {
     expect(buildPriorProfile(null)).toEqual([]);
+  });
+});
+
+describe("findOpenerTemplateName", () => {
+  it("returns the most recent template the bot sent", () => {
+    expect(findOpenerTemplateName(history)).toBe("warming_1");
+  });
+
+  it("reads the name when the preview carries variables after it", () => {
+    const withVars = [{ role: "assistant" as const, content: "[template:series_setton1] {{1}}=דנה" }];
+    expect(findOpenerTemplateName(withVars)).toBe("series_setton1");
+  });
+
+  it("ignores a lead quoting the marker and returns null when there is none", () => {
+    const leadQuoted = [{ role: "user" as const, content: "[template:fake]" }];
+    expect(findOpenerTemplateName(leadQuoted)).toBeNull();
+    expect(findOpenerTemplateName([])).toBeNull();
   });
 });
