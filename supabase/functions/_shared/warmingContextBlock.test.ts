@@ -41,6 +41,82 @@ describe("shouldRenderWarmingBlock", () => {
     ).toBe(false);
   });
 
+  // Statuses 22 and 76 wait 30 days (delay_hours=720) before the opener goes
+  // out, but the window is 14 days from the event — so the lead answered an
+  // opener whose context had already expired, and the bot replied as a normal
+  // lead with the full stale history.
+  describe("opener sent after a long delay", () => {
+    it("keeps rendering while the opener itself is inside the window", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: daysAgo(1),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(true);
+    });
+
+    it("stops once the opener has aged out too", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: daysAgo(16),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it("anchors on the event when the opener predates it (an older episode)", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(3),
+            openerSentAt: daysAgo(40),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(true);
+    });
+
+    it("ignores an unparseable opener timestamp", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: "garbage",
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it("still renders nothing without an event, whatever the opener says", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: null,
+            openerSentAt: daysAgo(1),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+  });
+
   it("treats the window boundary as still inside", () => {
     expect(
       shouldRenderWarmingBlock(
@@ -136,6 +212,36 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("Never mention the CRM");
   });
 
+  // Tester's call on status 23: acknowledging the earlier contact is natural
+  // ("I know you were in touch with us — where are you at today?"); only what
+  // was said on it stays hidden.
+  it("allows acknowledging the earlier contact without revealing what was said", () => {
+    const block = renderWarmingContextBlock(baseArgs);
+    expect(block).toContain("fine, and often the natural opening, to acknowledge that plainly");
+    expect(block).toContain("never say what was said on that contact");
+  });
+
+  describe("what the lead saw in this stage", () => {
+    // Live on status 23: the main prompt describes a first-touch template with
+    // four options; the bot took "[template:warming_1]" for it and asked
+    // "which of the four speaks to you?" — a list the lead never saw.
+    it("forbids referring to the first-touch options", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain('never refer to "the four options"');
+    });
+
+    it("quotes the opener when its text is known", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, openerText: "מה קורה?" });
+      expect(block).toContain("Its exact text was: «מה קורה?»");
+    });
+
+    it("falls back to a generic description when the opener text is unknown", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, openerText: null });
+      expect(block).not.toContain("Its exact text was");
+      expect(block).toContain("a short, casual check-in");
+    });
+  });
+
   // Live on status 20 the bot asked "what didn't click for you?" — surfacing an
   // objection the lead had never raised, exposing that it "knew" something.
   it("forbids voicing the status-implied objection unless the lead raised it", () => {
@@ -192,23 +298,59 @@ describe("renderWarmingContextBlock", () => {
         repNote: "א".repeat(MAX_REP_NOTE_CHARS + 5_000),
       });
       expect(block).toContain("נחתכה בשל אורך");
-      // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
-      // point is the note is clamped, so an UNclamped note (+7000) would blow past this.
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 7_000);
+      // Measured against the same block without a note, so growth in the
+      // behaviour rules doesn't break this. The 1000 covers the note's own
+      // wrapper; an UNclamped note (+5000) blows past it.
+      const withoutNote = renderWarmingContextBlock({ ...baseArgs, repNote: null });
+      expect(block.length).toBeLessThan(withoutNote.length + MAX_REP_NOTE_CHARS + 1_000);
     });
   });
 
   describe("continuity", () => {
-    it("tells the bot to continue an existing conversation", () => {
+    it("tells the bot it knows the lead but is picking up after a gap", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true });
-      expect(block).toContain("CONTINUE that conversation");
-      expect(block).toContain("do not restart it");
+      expect(block).toContain("do not re-introduce yourself");
+      expect(block).toContain("picking up after a gap");
+    });
+
+    // "CONTINUE that conversation" read as "resume the open thread" — live on
+    // status 22 the bot answered "all good, you?" by resuming a months-old
+    // slot search. Continuity must not instruct resuming.
+    it("no longer instructs the bot to resume the old conversation", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true });
+      expect(block).not.toContain("CONTINUE that conversation");
+    });
+
+    // Live on status 22, with the old messages unseen the bot re-asked "what
+    // drew you in?" — something the lead had already answered.
+    it("lists what the lead already shared and tells the bot not to re-ask it", () => {
+      const block = renderWarmingContextBlock({
+        ...baseArgs,
+        hasHistory: true,
+        priorProfile: ["What drew them in: ראה את הסדרה ורצה לשמוע פרטים"],
+      });
+      expect(block).toContain("Do not ask about these again");
+      expect(block).toContain("- What drew them in: ראה את הסדרה ורצה לשמוע פרטים");
+    });
+
+    it("omits the shared-facts section when nothing is known", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true, priorProfile: [] });
+      expect(block).not.toContain("Do not ask about these again");
+    });
+
+    it("never renders shared facts for a first contact", () => {
+      const block = renderWarmingContextBlock({
+        ...baseArgs,
+        hasHistory: false,
+        priorProfile: ["Age: 34"],
+      });
+      expect(block).not.toContain("Age: 34");
     });
 
     it("tells the bot this is a first contact when there is no history", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: false });
       expect(block).toContain("first contact on WhatsApp");
-      expect(block).not.toContain("CONTINUE that conversation");
+      expect(block).not.toContain("picking up after a gap");
     });
   });
 
@@ -267,13 +409,82 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
+    // Live on status 52: "כולם רק רוצים למכור" got "...ובסוף מישהו לקח ממך
+    // כסף ונעלם" — an experience the lead never described.
+    it("forbids putting experiences in the lead's mouth", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Never assume experiences the lead did not tell you");
+    });
+
+    // Three of ~13 live rounds answered a bare "סבבה" with an odd opener:
+    // "אשר 😊", "נשמח 😊", "יאללה 😊 שמח שאתה בחיים". The first reply after
+    // the opener needs a plain, concrete pattern.
+    it("gives the first reply after the opener a plain acknowledgement pattern", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("## Your first reply after the opener");
+      expect(block).toContain("כיף לשמוע");
+    });
+
+    // Izak's tone calibration ("לא חודרני מוקדם — פרנסה/עבודה") lived only in
+    // status 2's text; live on 72 the bot asked "עובד שכיר או עצמאי?" on its
+    // second message.
+    it("forbids early questions about job or livelihood", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Don't ask about their job or livelihood early");
+    });
+
+    // Live on 26 and 51 the first reply asked about "הכיוון הזה" / "הכיוון
+    // שחיפשת" and the tester had to ask "מה זאת אומרת". The clarity rule was
+    // buried mid-paragraph; it needs its own heading and Hebrew examples.
+    it("tells the bot to name the subject plainly instead of 'this direction'", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("## Name the subject plainly");
+      expect(block).toContain("הכיוון הזה");
+    });
+
+    // Live on status 47: to reassure a 45-year-old the bot cited "graduates who
+    // started at 60+ — we taught them to install WhatsApp", a story that is in
+    // neither the prompt nor the brain. Invented proof is still invented.
+    it("forbids inventing social proof and points to questions instead", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Never invent social proof");
+      expect(block).toContain("ask instead of asserting");
+    });
+
+    // Live on status 23: "אמרתי לכם כבר שלא באלי" got "so what made you
+    // register in the first place?". The earlier "no" sits in history the bot
+    // no longer sees, so it read a repeated refusal as a first one.
+    it("treats 'I already told you no' as a repeated refusal and stops digging", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("אמרתי לכם כבר");
+      expect(block).toContain("is a REPEATED refusal");
+      expect(block).toContain("do not ask another digging question");
+    });
+
+    // Live on status 22: history carries no dates, so a slot search left open
+    // months earlier looked current. The bot replied to "all good, you?" with
+    // meeting times, and flagged the stale "when are you free" as a fresh
+    // booking request — skipping the qualification floor.
+    it("closes threads left open before the opener, including old booking requests", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("their open threads are CLOSED");
+      expect(block).toContain("[template:");
+      expect(block).toContain("do not offer meeting times");
+      expect(block).toContain("never set lead_requested_booking");
+    });
+
+    it("states the closed-threads rule only when there is history", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: false });
+      expect(block).not.toContain("their open threads are CLOSED");
+    });
+
     // These rules must sit before the operator's per-status instructions so they
     // frame (and outrank) the specific handling.
     it("places the behaviour rules before the per-status handling", () => {
       const block = renderWarmingContextBlock(baseArgs);
-      expect(block.indexOf("Answer what they just said")).toBeLessThan(
-        block.indexOf("## How to handle this lead"),
-      );
+      const perStatusIdx = block.indexOf("## How to handle this lead");
+      expect(block.indexOf("Answer what they just said")).toBeLessThan(perStatusIdx);
+      expect(block.indexOf("their open threads are CLOSED")).toBeLessThan(perStatusIdx);
     });
   });
 });

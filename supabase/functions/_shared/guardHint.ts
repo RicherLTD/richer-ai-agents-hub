@@ -24,10 +24,17 @@ export const GENERIC_GUARD_HINT =
  *
  * Any other reason falls back to GENERIC_GUARD_HINT.
  */
+/** warmingReplyGuard rejected a tone slip, not a safety leak: keep the
+ *  content, drop the self-narration. The generic hint would wrongly steer the
+ *  model away from times and numbers it may legitimately need. */
+const WARMING_TECHNIQUE_HINT =
+  "\n\n<!-- RETRY: your previous reply announced your own technique or narrated how you know things (e.g. \"I'm not here to interrogate you\", \"no pressure\", \"honestly\", \"I saw that we were in touch\"). Say the same thing without it — just behave warmly and ask your question; if you mention the earlier contact, say only that they were in touch with us before. Keep the reply in 1-2 sentences. -->";
+
 export function buildGuardHint(
   reason: string,
   allowedMeetingTimes: ReadonlyArray<string>,
 ): string {
+  if (reason === "warming_announced_technique") return WARMING_TECHNIQUE_HINT;
   if (reason !== "invented_meeting_time") return GENERIC_GUARD_HINT;
   if (allowedMeetingTimes.length > 0) {
     return (

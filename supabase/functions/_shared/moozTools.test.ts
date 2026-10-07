@@ -143,6 +143,46 @@ describe("MOOZ_TOOL_DEFS", () => {
   });
 });
 
+// 2026-10-07: soft red flags no longer mute the bot, so the booking tools are
+// now the place that keeps the old promise — no automatic Zoom for a flagged
+// lead; an advisor schedules them personally (and is alerted to).
+describe("dispatchMoozTool — red-flag booking gate", () => {
+  const FLAGGED = { ...QUALIFIED_MEMORY, red_flags: ["past_financial_trauma"] };
+
+  for (const tool of ["list_available_slots", "book_meeting"] as const) {
+    it(`${tool}: blocks a flagged lead even on an explicit booking request`, async () => {
+      const { admin } = makeAdmin({ leadMemory: FLAGGED });
+      const human: Array<{ reason: string; requestedDate: string; detail?: string }> = [];
+      const ctx = {
+        ...makeCtx(makeMoozStub({}), admin),
+        onNeedsHumanScheduling: async (info: { reason: string; requestedDate: string; detail?: string }) => {
+          human.push(info);
+        },
+      };
+      const r = await dispatchMoozTool(
+        tool,
+        { preferred_date: "2026-05-21", start_time: VALID_UTC, email: "s@example.com", lead_requested_booking: true },
+        ctx,
+      );
+      const parsed = JSON.parse(r.resultJson);
+      expect(parsed.blocked).toBe(true);
+      expect(parsed.reason).toBe("lead_has_red_flags");
+      expect(r.bookingCreated).toBe(false);
+      expect(r.offeredTimesIL).toEqual([]);
+      expect(human).toHaveLength(1);
+      expect(human[0].reason).toBe("red_flag");
+      expect(human[0].detail).toContain("past_financial_trauma");
+    });
+  }
+
+  it("lets an unflagged lead through to the normal gates", async () => {
+    const { admin } = makeAdmin({ leadMemory: { ...QUALIFIED_MEMORY, red_flags: [] } });
+    const ctx = makeCtx(makeMoozStub({}), admin);
+    const r = await dispatchMoozTool("list_available_slots", { preferred_date: "2026-05-21" }, ctx);
+    expect(JSON.parse(r.resultJson).reason).not.toBe("lead_has_red_flags");
+  });
+});
+
 describe("dispatchMoozTool — list_available_slots", () => {
   it("blocks until the lead clears the qualification floor", async () => {
     const { admin } = makeAdmin({ leadMemory: null });

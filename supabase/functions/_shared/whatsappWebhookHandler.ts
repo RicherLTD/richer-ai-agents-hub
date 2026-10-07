@@ -63,6 +63,7 @@ import { fireberryClientFromEnv } from "./fireberry.ts";
 import { type MoozDispatchCtx } from "./moozTools.ts";
 import { formatIlHHMM } from "./ilTime.ts";
 import { buildGuardHint } from "./guardHint.ts";
+import { withWarmingReplyGuard } from "./warmingReplyGuard.ts";
 import { loadBrainRows, buildBrainSection } from "./brainContext.ts";
 import {
   renderBookingStatusBlock,
@@ -72,6 +73,13 @@ import {
   renderWarmingContextBlock,
   shouldRenderWarmingBlock,
 } from "./warmingContextBlock.ts";
+import {
+  buildPriorProfile,
+  findOpenerTemplateName,
+  type PriorProfileFields,
+  splitTurnHistory,
+  type TimedMessage,
+} from "./warmingHistory.ts";
 import { alertOperators } from "./alertOperators.ts";
 import { isOptOutMessage } from "./optOut.ts";
 import { isQuietHourNow } from "./quietHours.ts";
@@ -190,6 +198,7 @@ const CLAUDE_MODEL = "claude-sonnet-4-6";
 interface HistoryRow {
   direction: "inbound" | "outbound";
   content: string | null;
+  timestamp: string | null;
 }
 
 function timingSafeEqual(a: string, b: string): boolean {
@@ -278,6 +287,12 @@ interface AgentTurnContext {
   /** UUID `prompts.id` — saved on the outbound row for replay/diff. */
   promptVersionId: string;
   claudeMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Full history for the memory extractor — never trimmed. Identical to
+   *  claudeMessages for every non-warming turn. */
+  memoryMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Earlier messages withheld from claudeMessages because they predate the
+   *  CRM warming stage (warmingHistory.ts). 0 for every non-warming turn. */
+  hiddenEarlierMessages: number;
 }
 
 /**
@@ -354,6 +369,7 @@ async function logAndDlq(
  */
 async function loadAgentTurnContext(
   ctx: AgentLoopCtx,
+  opts: { warmingCutoffAt: string | null },
 ): Promise<AgentTurnContext | null> {
   const { data: prompt, error: promptErr } = await ctx.admin
     .from("prompts")
@@ -397,7 +413,7 @@ async function loadAgentTurnContext(
   // bot: at >30 turns the model lost all recent context. (Fixed here.)
   const { data: history, error: histErr } = await ctx.admin
     .from("messages")
-    .select("direction, content")
+    .select("direction, content, timestamp")
     .eq("conversation_id", ctx.conversationId)
     .order("timestamp", { ascending: false })
     .limit(HISTORY_LIMIT)
@@ -414,56 +430,68 @@ async function loadAgentTurnContext(
   }
 
   const orderedHistory = history.slice().reverse();
-  const claudeMessages: Array<{ role: "user" | "assistant"; content: string }> = [];
+  const timedMessages: TimedMessage[] = [];
   for (const row of orderedHistory) {
     const text = row.content?.trim();
     if (!text) continue;
-    claudeMessages.push({
+    timedMessages.push({
       role: row.direction === "inbound" ? "user" : "assistant",
       content: text,
+      timestamp: row.timestamp,
     });
   }
+  // A warming lead's reply model sees only the current stage; the memory
+  // extractor always gets everything. Null cutoff for everyone else → both are
+  // the full history, so normal traffic is byte-identical to before.
+  const split = splitTurnHistory(timedMessages, opts.warmingCutoffAt);
 
   // The agent only speaks when the user spoke last. If we somehow ended
-  // on an assistant turn (race / replay), don't reply again.
-  const last = claudeMessages[claudeMessages.length - 1];
+  // on an assistant turn (race / replay), don't reply again. Trimming keeps
+  // the tail, so both histories end on the same message.
+  const last = split.forMemory[split.forMemory.length - 1];
   if (!last || last.role !== "user") return null;
 
-  // Compression: long conversations get the older portion replaced with
-  // the lead_memory.conversation_summary. Free because the memory
-  // extractor already populates it after every turn. Cuts tokens by ~60%
-  // on conversations > 20 turns.
-  let finalMessages = claudeMessages;
-  if (claudeMessages.length > COMPRESSION_THRESHOLD) {
-    const { data: mem } = await ctx.admin
-      .from("lead_memory")
-      .select("conversation_summary")
-      .eq("conversation_id", ctx.conversationId)
-      .maybeSingle();
-    const summary = (mem?.conversation_summary as string | null | undefined)?.trim();
-    if (summary && summary.length > 50) {
-      // Keep the most-recent N turns verbatim so tone + immediate context
-      // stay sharp; replace the rest with one summary turn.
-      const recent = claudeMessages.slice(-COMPRESSION_KEEP_RECENT);
-      // Synthesise an "assistant" turn carrying the summary so the
-      // chronology stays consistent (the bot was the last speaker before
-      // the compressed history; user came next).
-      finalMessages = [
-        {
-          role: "assistant",
-          content: `[סיכום שיחה עד כה]: ${summary}`,
-        },
-        ...recent,
-      ];
-    }
-  }
+  const fullHistory = await compressLongHistory(ctx, split.forMemory);
+  // Compression is skipped for a trimmed view: the summary describes the whole
+  // relationship, so it would hand back the stale threads we just hid.
+  const finalMessages = split.hiddenCount > 0 ? split.forModel : fullHistory;
 
   return {
     promptContent: prompt.content,
     promptVersion: prompt.version,
     promptVersionId: prompt.id,
     claudeMessages: finalMessages,
+    memoryMessages: fullHistory,
+    hiddenEarlierMessages: split.hiddenCount,
   };
+}
+
+/**
+ * Compression: long conversations get the older portion replaced with the
+ * lead_memory.conversation_summary. Free because the memory extractor already
+ * populates it after every turn. Cuts tokens by ~60% on conversations > 20
+ * turns.
+ */
+async function compressLongHistory(
+  ctx: AgentLoopCtx,
+  messages: Array<{ role: "user" | "assistant"; content: string }>,
+): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+  if (messages.length <= COMPRESSION_THRESHOLD) return messages;
+  const { data: mem } = await ctx.admin
+    .from("lead_memory")
+    .select("conversation_summary")
+    .eq("conversation_id", ctx.conversationId)
+    .maybeSingle();
+  const summary = (mem?.conversation_summary as string | null | undefined)?.trim();
+  if (!summary || summary.length <= 50) return messages;
+  // Keep the most-recent N turns verbatim so tone + immediate context stay
+  // sharp; replace the rest with one summary turn. Synthesise an "assistant"
+  // turn carrying the summary so the chronology stays consistent (the bot was
+  // the last speaker before the compressed history; user came next).
+  return [
+    { role: "assistant", content: `[סיכום שיחה עד כה]: ${summary}` },
+    ...messages.slice(-COMPRESSION_KEEP_RECENT),
+  ];
 }
 
 interface OutboundTrace {
@@ -848,34 +876,51 @@ interface CrmWarmingState {
   repNote: string | null;
 }
 
+/** The operator's rule for a warming lead's current status. */
+interface ActiveWarmingRule {
+  crm: CrmWarmingState & { statusSub: number };
+  statusLabel: string | null;
+  objectionKey: string | null;
+  instructions: string | null;
+}
+
 /**
- * Build the CRM warming block for this turn.
+ * The rule that steers this turn, or null when the lead is not warming.
  *
  * Costs ZERO extra queries for a normal lead: the predicate short-circuits on
  * the crm_* columns that came free with the lock claim, and only a lead that is
  * genuinely warming (inside its context window) triggers the single lookup of
  * the operator's rule.
  *
- * Returns the objection key alongside the text so the Langfuse trace can be
- * tagged without re-reading the rule.
+ * Loaded before the history, because a non-null rule is also what withholds
+ * the pre-warming messages — the two must agree, or the bot would lose its old
+ * context without getting the warming block that explains why.
  */
-async function buildWarmingBlock(
+async function loadActiveWarmingRule(
   ctx: AgentLoopCtx,
-  args: {
-    crm?: CrmWarmingState;
-    warmingContextDays: number;
-    hasHistory: boolean;
-  },
-): Promise<{ text: string; objectionKey: string | null }> {
+  args: { crm?: CrmWarmingState; warmingContextDays: number },
+): Promise<ActiveWarmingRule | null> {
   const crm = args.crm;
-  if (!crm || crm.statusSub === null) return { text: "", objectionKey: null };
+  if (!crm || crm.statusSub === null || crm.warmingStatus !== "warming") return null;
+
+  // One read, only for a lead that is actually warming.
+  const { data: opener } = await ctx.admin
+    .from("scheduled_messages")
+    .select("sent_at")
+    .eq("conversation_id", ctx.conversationId)
+    .eq("kind", "warming")
+    .not("sent_at", "is", null)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const shouldRender = shouldRenderWarmingBlock({
     crmWarmingStatus: crm.warmingStatus,
     crmStatusEventAt: crm.statusEventAt,
+    openerSentAt: (opener?.sent_at as string | null | undefined) ?? null,
     warmingContextDays: args.warmingContextDays,
   });
-  if (!shouldRender) return { text: "", objectionKey: null };
+  if (!shouldRender) return null;
 
   const { data: rule } = await ctx.admin
     .from("crm_status_rules")
@@ -888,21 +933,75 @@ async function buildWarmingBlock(
   // The rule was deactivated (or deleted) after the status event landed. The
   // operator's decision to switch it off should take effect immediately, so
   // stop steering rather than falling back to generic text.
-  if (!rule) return { text: "", objectionKey: null };
+  if (!rule) return null;
 
-  const objectionKey = (rule.objection_key as string | null) ?? null;
   return {
-    text: renderWarmingContextBlock({
-      statusSub: crm.statusSub,
-      statusMain: crm.statusMain,
-      statusLabel: (rule.status_label as string | null) ?? crm.warmingReason ?? "לא ידוע",
-      objectionKey: objectionKey ?? "unknown",
-      instructions: (rule.warming_instructions as string | null) ?? "",
-      repNote: crm.repNote,
-      hasHistory: args.hasHistory,
-    }),
-    objectionKey,
+    crm: { ...crm, statusSub: crm.statusSub },
+    statusLabel: (rule.status_label as string | null) ?? null,
+    objectionKey: (rule.objection_key as string | null) ?? null,
+    instructions: (rule.warming_instructions as string | null) ?? null,
   };
+}
+
+/**
+ * Render the CRM warming block. When earlier messages were withheld, the
+ * stable facts the lead shared back then go in as background so the bot does
+ * not re-ask them. The opener's text is looked up too: the history holds only
+ * "[template:name]", and without the text the bot mistook it for the
+ * first-touch template the main prompt describes.
+ */
+async function buildWarmingBlock(
+  ctx: AgentLoopCtx,
+  rule: ActiveWarmingRule,
+  turn: AgentTurnContext,
+): Promise<string> {
+  let priorProfile: string[] = [];
+  if (turn.hiddenEarlierMessages > 0) {
+    const { data: memory } = await ctx.admin
+      .from("lead_memory")
+      .select("q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency")
+      .eq("conversation_id", ctx.conversationId)
+      .maybeSingle();
+    priorProfile = buildPriorProfile((memory as PriorProfileFields | null) ?? null);
+  }
+
+  let openerText: string | null = null;
+  const openerName = findOpenerTemplateName(turn.claudeMessages);
+  if (openerName) {
+    const { data: template } = await ctx.admin
+      .from("broadcast_templates")
+      .select("body_preview")
+      .eq("agent_id", ctx.agentId)
+      .eq("name", openerName)
+      .maybeSingle();
+    openerText = (template?.body_preview as string | null | undefined) ?? null;
+  }
+
+  const { crm } = rule;
+  return renderWarmingContextBlock({
+    statusSub: crm.statusSub,
+    statusMain: crm.statusMain,
+    statusLabel: rule.statusLabel ?? crm.warmingReason ?? "לא ידוע",
+    objectionKey: rule.objectionKey ?? "unknown",
+    instructions: rule.instructions ?? "",
+    repNote: crm.repNote,
+    hasHistory: turn.hiddenEarlierMessages > 0 || turn.claudeMessages.length > 1,
+    priorProfile,
+    openerText,
+  });
+}
+
+async function logWarmingContextFailure(ctx: AgentLoopCtx, warmErr: unknown): Promise<void> {
+  await logError({
+    admin: ctx.admin,
+    source: AGENT_LOOP_SOURCE,
+    errorType: "warming_context_load_failed",
+    level: "warn",
+    message: warmErr instanceof Error ? warmErr.message : String(warmErr),
+    context: { lead_phone: ctx.leadPhone },
+    agentId: ctx.agentId,
+    conversationId: ctx.conversationId,
+  });
 }
 
 /**
@@ -987,7 +1086,18 @@ async function generateAndSendAgentResponseLocked(
     return;
   }
 
-  const turn = await loadAgentTurnContext(ctx);
+  // Best-effort: a failed CRM lookup degrades to a normal turn (full history,
+  // no warming block) — it must never cost a lead their reply.
+  let warmingRule: ActiveWarmingRule | null = null;
+  try {
+    warmingRule = await loadActiveWarmingRule(ctx, { crm: opts.crm, warmingContextDays });
+  } catch (warmErr) {
+    await logWarmingContextFailure(ctx, warmErr);
+  }
+
+  const turn = await loadAgentTurnContext(ctx, {
+    warmingCutoffAt: warmingRule?.crm.statusEventAt ?? null,
+  });
   if (!turn) return;
 
   // Build the Mooz tool-use context only when the agent has a meeting
@@ -1017,11 +1127,17 @@ async function generateAndSendAgentResponseLocked(
         // the lead an advisor will arrange it — so an advisor actually has to.
         // Queue + alert, and deliberately NOT a blocking tag: the lead is warm
         // and the bot keeps answering their questions meanwhile.
-        onNeedsHumanScheduling: async ({ reason, requestedDate }) => {
+        // Also: a flagged lead asked to book (red-flag gate) — no automatic
+        // Zoom, so an advisor must schedule them personally.
+        onNeedsHumanScheduling: async ({ reason, requestedDate, detail }) => {
           await flagNeedsAttention({
             admin: ctx.admin,
             conversationId: ctx.conversationId,
-            reason: reason === "calendar_closed" ? "calendar_closed" : "bot_failed",
+            reason: reason === "calendar_closed"
+              ? "calendar_closed"
+              : reason === "red_flag"
+              ? "red_flag"
+              : "bot_failed",
             sendAlert: async (label) => {
               await alertOperators({
                 admin: ctx.admin,
@@ -1032,7 +1148,7 @@ async function generateAndSendAgentResponseLocked(
                 conversationId: ctx.conversationId,
                 leadPhone: ctx.leadPhone,
                 failureType: label,
-                failureDetail: `הליד ביקש ${requestedDate}`,
+                failureDetail: detail ?? `הליד ביקש ${requestedDate}`,
                 dashboardBaseUrl: ctx.dashboardBaseUrl,
               });
             },
@@ -1167,26 +1283,13 @@ async function generateAndSendAgentResponseLocked(
   // the prompt below is byte-identical to what it was before this feature —
   // which also means no change to the cache_control prefix in agentTurn.ts.
   let warmingBlock = "";
-  let warmingObjectionKey: string | null = null;
-  try {
-    const warming = await buildWarmingBlock(ctx, {
-      crm: opts.crm,
-      warmingContextDays,
-      hasHistory: turn.claudeMessages.length > 1,
-    });
-    warmingBlock = warming.text;
-    warmingObjectionKey = warming.objectionKey;
-  } catch (warmErr) {
-    await logError({
-      admin: ctx.admin,
-      source: AGENT_LOOP_SOURCE,
-      errorType: "warming_context_load_failed",
-      level: "warn",
-      message: warmErr instanceof Error ? warmErr.message : String(warmErr),
-      context: { lead_phone: ctx.leadPhone },
-      agentId: ctx.agentId,
-      conversationId: ctx.conversationId,
-    });
+  const warmingObjectionKey = warmingRule?.objectionKey ?? null;
+  if (warmingRule) {
+    try {
+      warmingBlock = await buildWarmingBlock(ctx, warmingRule, turn);
+    } catch (warmErr) {
+      await logWarmingContextFailure(ctx, warmErr);
+    }
   }
 
   // Single source of truth for the system prompt — runAgentTurn AND
@@ -1367,7 +1470,12 @@ async function generateAndSendAgentResponseLocked(
       ...turnResult.offeredTimesIL,
       ...(existingBookingTimeIL ? [existingBookingTimeIL] : []),
     ];
-    const validation = validateAgentReply(rawReply, { allowedMeetingTimes });
+    // Warming turns also reject an announced technique ("not here to
+    // interrogate") on the first attempt; the retry below rewrites it.
+    const validation = withWarmingReplyGuard(
+      validateAgentReply(rawReply, { allowedMeetingTimes }),
+      { isWarming: warmingBlock !== "", isRetry: attempt > 0 },
+    );
 
     // Trace the FIRST attempt only — regardless of validation outcome.
     // Failed first attempts are exactly what operators want to see in
@@ -1571,13 +1679,38 @@ async function generateAndSendAgentResponseLocked(
       agentId: ctx.agentId,
       agentName: ctx.agentName,
       conversationId: ctx.conversationId,
+      // Full history, never the trimmed warming view — the extractor's upsert
+      // overwrites every field with what it can see.
       claudeMessages: [
-        ...turn.claudeMessages,
+        ...turn.memoryMessages,
         { role: "assistant", content: validation.text },
       ],
       handoffWebhookUrl: ctx.handoffWebhookUrl,
       handoffWebhookSecret: ctx.handoffWebhookSecret,
       dashboardBaseUrl: ctx.dashboardBaseUrl,
+      // A sensitive flag mutes the bot from the next message. Until
+      // 2026-10-07 nobody was told, and the lead waited in silence.
+      onSensitiveRedFlag: async (flags) => {
+        await flagNeedsAttention({
+          admin: ctx.admin,
+          conversationId: ctx.conversationId,
+          reason: "red_flag",
+          sendAlert: async (label) => {
+            await alertOperators({
+              admin: ctx.admin,
+              apiUrl: ctx.hookmyapp.apiUrl,
+              accessToken: ctx.hookmyapp.accessToken,
+              phoneNumberId: ctx.hookmyapp.phoneNumberId,
+              agentId: ctx.agentId,
+              conversationId: ctx.conversationId,
+              leadPhone: ctx.leadPhone,
+              failureType: label,
+              failureDetail: `הבוט הושתק; סימונים: ${flags.join(", ")}`,
+              dashboardBaseUrl: ctx.dashboardBaseUrl,
+            });
+          },
+        });
+      },
       // Records the extraction as a step inside this turn's trace, with an
       // extraction_ok score. Null when tracing is disabled or the trace
       // failed to create — extraction behaviour is unchanged either way.

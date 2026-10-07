@@ -24,6 +24,7 @@ import {
   type HandoffLeadMemory,
 } from "./fireHandoffWebhook.ts";
 import type { Langfuse } from "./langfuse.ts";
+import { splitRedFlags } from "./redFlagSeverity.ts";
 
 
 // Format an ISO timestamp into Asia/Jerusalem date / time / datetime
@@ -197,7 +198,10 @@ export function decideConversationTag(
   if (flags.some((f) => f.includes("underage"))) return "underage";
   // Other terminal tags otherwise stay (zoom_scheduled / opted_out / ghosted).
   if (currentTag && TERMINAL_TAGS.has(currentTag)) return null;
-  if (memory.red_flags.length > 0) return "requires_human";
+  // Only sensitive flags mute the bot (redFlagSeverity.ts). The rest are
+  // advisor notes: they still ride along in lead_memory and the handoff
+  // payload, and still block the consent handoff and bot bookings.
+  if (splitRedFlags(memory.red_flags).sensitive.length > 0) return "requires_human";
   return null;
 }
 
@@ -506,6 +510,11 @@ export interface RunMemoryExtractionInput {
    *  before. This step was invisible until 2026-07-29, which is how a
    *  ~95% failure rate survived for a month. */
   langfuse?: { client: Langfuse; traceId: string } | null;
+  /** Called once, when this turn moves the lead INTO requires_human, with
+   *  the sensitive flags. The bot goes silent from the next message, so a
+   *  person has to know: the caller queues + alerts the operators. Absent
+   *  → no alert (scripts, tests). Must not throw. */
+  onSensitiveRedFlag?: (sensitiveFlags: string[]) => Promise<void>;
 }
 
 /**
@@ -741,6 +750,16 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
         conversationId: input.conversationId,
       });
       return;
+    }
+  }
+
+  if (conversationUpdate.current_tag === "requires_human" && input.onSensitiveRedFlag) {
+    try {
+      await input.onSensitiveRedFlag(splitRedFlags(memory.red_flags).sensitive);
+    } catch (alertErr) {
+      console.error(
+        `[extractMemory] onSensitiveRedFlag threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`,
+      );
     }
   }
 
