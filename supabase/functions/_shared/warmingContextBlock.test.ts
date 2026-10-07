@@ -41,6 +41,82 @@ describe("shouldRenderWarmingBlock", () => {
     ).toBe(false);
   });
 
+  // Statuses 22 and 76 wait 30 days (delay_hours=720) before the opener goes
+  // out, but the window is 14 days from the event — so the lead answered an
+  // opener whose context had already expired, and the bot replied as a normal
+  // lead with the full stale history.
+  describe("opener sent after a long delay", () => {
+    it("keeps rendering while the opener itself is inside the window", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: daysAgo(1),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(true);
+    });
+
+    it("stops once the opener has aged out too", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: daysAgo(16),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it("anchors on the event when the opener predates it (an older episode)", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(3),
+            openerSentAt: daysAgo(40),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(true);
+    });
+
+    it("ignores an unparseable opener timestamp", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: daysAgo(30),
+            openerSentAt: "garbage",
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it("still renders nothing without an event, whatever the opener says", () => {
+      expect(
+        shouldRenderWarmingBlock(
+          {
+            crmWarmingStatus: "warming",
+            crmStatusEventAt: null,
+            openerSentAt: daysAgo(1),
+            warmingContextDays: 14,
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+  });
+
   it("treats the window boundary as still inside", () => {
     expect(
       shouldRenderWarmingBlock(

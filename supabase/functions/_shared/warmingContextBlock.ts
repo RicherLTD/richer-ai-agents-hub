@@ -37,6 +37,10 @@ export interface ShouldRenderWarmingArgs {
   /** conversations.crm_status_event_at — when the most recent Fireberry status
    *  event arrived. ISO string. */
   crmStatusEventAt: string | null;
+  /** When this episode's opener actually went out (latest sent warming row).
+   *  Statuses with a long delay (22/76 wait 30 days) send it after a
+   *  14-day window counted from the event alone would already have closed. */
+  openerSentAt?: string | null;
   /** agents.warming_context_days. */
   warmingContextDays: number;
 }
@@ -62,7 +66,13 @@ export function shouldRenderWarmingBlock(
   const eventAt = new Date(args.crmStatusEventAt);
   if (Number.isNaN(eventAt.getTime())) return false;
 
-  const ageMs = now.getTime() - eventAt.getTime();
+  // The window runs from the later of the event and the opener going out. An
+  // opener older than the event belongs to a previous episode and is ignored
+  // by the max; an unparseable one falls back to the event alone.
+  const openerAt = args.openerSentAt ? new Date(args.openerSentAt).getTime() : NaN;
+  const anchorMs = Number.isNaN(openerAt) ? eventAt.getTime() : Math.max(eventAt.getTime(), openerAt);
+
+  const ageMs = now.getTime() - anchorMs;
   // A future timestamp (clock skew between Fireberry and us) is treated as
   // fresh rather than expired — it is still the newest thing we know.
   if (ageMs < 0) return true;

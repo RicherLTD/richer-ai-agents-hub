@@ -893,11 +893,23 @@ async function loadActiveWarmingRule(
   args: { crm?: CrmWarmingState; warmingContextDays: number },
 ): Promise<ActiveWarmingRule | null> {
   const crm = args.crm;
-  if (!crm || crm.statusSub === null) return null;
+  if (!crm || crm.statusSub === null || crm.warmingStatus !== "warming") return null;
+
+  // One read, only for a lead that is actually warming.
+  const { data: opener } = await ctx.admin
+    .from("scheduled_messages")
+    .select("sent_at")
+    .eq("conversation_id", ctx.conversationId)
+    .eq("kind", "warming")
+    .not("sent_at", "is", null)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
   const shouldRender = shouldRenderWarmingBlock({
     crmWarmingStatus: crm.warmingStatus,
     crmStatusEventAt: crm.statusEventAt,
+    openerSentAt: (opener?.sent_at as string | null | undefined) ?? null,
     warmingContextDays: args.warmingContextDays,
   });
   if (!shouldRender) return null;
