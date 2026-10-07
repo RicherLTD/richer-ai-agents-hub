@@ -130,10 +130,26 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     `## A brush-off is not a "no" — stay in the conversation`,
     `A short, low-energy, or vague reply — "all good", "I'm fine thanks", "didn't really connect", "not now", a one-word answer, a shrug — is the START of your work, not a signal to leave. It is resistance to move through, NOT genuine disinterest. Never respond to it by handing the lead an exit: do NOT say things like "no pressure, I'm here whenever you want", "if you ever decide to look into it seriously, I'm around", or "good luck!". Do NOT assume they are leaving either ("before you go…", "רגע לפני שאתה הולך") — a short reply is not a goodbye. Those end the conversation and lose the lead. Instead stay warm and genuinely curious — react to what they actually said and gently open the door a little wider (a light, real question that invites them back in). A re-warmed lead almost always opens cold; that is expected, and it is exactly what you are here to work. Only a CLEAR, EXPLICIT, and repeated refusal — "stop messaging me", "take me off your list", "I'm really not interested, leave it" — is a real no. Anything softer than that, you keep the conversation alive.`,
     ``,
+  ];
+
+  // Failed live on status 22: the history carries no dates, so a slot search
+  // the bot left open months earlier looked like it was still in progress. The
+  // lead said "all good, you?" and got meeting times back — and the stale
+  // "when are you free" was flagged as a fresh booking request, which skips
+  // the qualification floor in moozTools.
+  if (args.hasHistory) {
+    parts.push(
+      `## Earlier messages are from a previous stage — their open threads are CLOSED`,
+      `The most recent template message in your history (shown as "[template:…]") is the opener we just sent to re-open this conversation. Everything before it happened at an earlier stage — often weeks or months ago, even though no dates are shown. Anything left open back then — meeting times that were offered or searched for, a Zoom the lead asked about, a question they never answered — is stale and CLOSED. Do NOT resume it: do not offer meeting times, do not look up slots, and never set lead_requested_booking because of anything said before that opener. Only what the lead says AFTER the opener is current. Use the older messages only as background on who this person is.`,
+      ``,
+    );
+  }
+
+  parts.push(
     `## How to handle this lead`,
     args.instructions.trim(),
     ``,
-  ];
+  );
 
   if (args.repNote && args.repNote.trim().length > 0) {
     parts.push(
@@ -162,7 +178,7 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
   parts.push(`## Continuity`);
   if (args.hasHistory) {
     parts.push(
-      `You have spoken with this lead before, and that history is in your messages. CONTINUE that conversation — do not restart it, do not re-introduce yourself, and do not behave as though this is a first contact. Refer naturally to what was already said, and weave the new angle in as a normal next thing to say rather than an abrupt subject change.`,
+      `You have spoken with this lead before, and that history is in your messages. You know this person: do not re-introduce yourself and do not behave as though this is a first contact. But you are picking up after a gap — move forward from the lead's latest reply, not from where the old conversation stopped (see "their open threads are CLOSED" above). You may draw on what you learned about them, as a natural part of the conversation rather than an abrupt subject change.`,
     );
   } else {
     parts.push(

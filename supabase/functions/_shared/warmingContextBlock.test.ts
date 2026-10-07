@@ -193,22 +193,31 @@ describe("renderWarmingContextBlock", () => {
       });
       expect(block).toContain("נחתכה בשל אורך");
       // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
-      // point is the note is clamped, so an UNclamped note (+7000) would blow past this.
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 7_000);
+      // point is the note is clamped, so an UNclamped note (+5000 on top of the
+      // scaffolding) would blow past this.
+      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 8_000);
     });
   });
 
   describe("continuity", () => {
-    it("tells the bot to continue an existing conversation", () => {
+    it("tells the bot it knows the lead but is picking up after a gap", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true });
-      expect(block).toContain("CONTINUE that conversation");
-      expect(block).toContain("do not restart it");
+      expect(block).toContain("do not re-introduce yourself");
+      expect(block).toContain("picking up after a gap");
+    });
+
+    // "CONTINUE that conversation" read as "resume the open thread" — live on
+    // status 22 the bot answered "all good, you?" by resuming a months-old
+    // slot search. Continuity must not instruct resuming.
+    it("no longer instructs the bot to resume the old conversation", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: true });
+      expect(block).not.toContain("CONTINUE that conversation");
     });
 
     it("tells the bot this is a first contact when there is no history", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: false });
       expect(block).toContain("first contact on WhatsApp");
-      expect(block).not.toContain("CONTINUE that conversation");
+      expect(block).not.toContain("picking up after a gap");
     });
   });
 
@@ -267,13 +276,30 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
+    // Live on status 22: history carries no dates, so a slot search left open
+    // months earlier looked current. The bot replied to "all good, you?" with
+    // meeting times, and flagged the stale "when are you free" as a fresh
+    // booking request — skipping the qualification floor.
+    it("closes threads left open before the opener, including old booking requests", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("their open threads are CLOSED");
+      expect(block).toContain("[template:");
+      expect(block).toContain("do not offer meeting times");
+      expect(block).toContain("never set lead_requested_booking");
+    });
+
+    it("states the closed-threads rule only when there is history", () => {
+      const block = renderWarmingContextBlock({ ...baseArgs, hasHistory: false });
+      expect(block).not.toContain("their open threads are CLOSED");
+    });
+
     // These rules must sit before the operator's per-status instructions so they
     // frame (and outrank) the specific handling.
     it("places the behaviour rules before the per-status handling", () => {
       const block = renderWarmingContextBlock(baseArgs);
-      expect(block.indexOf("Answer what they just said")).toBeLessThan(
-        block.indexOf("## How to handle this lead"),
-      );
+      const perStatusIdx = block.indexOf("## How to handle this lead");
+      expect(block.indexOf("Answer what they just said")).toBeLessThan(perStatusIdx);
+      expect(block.indexOf("their open threads are CLOSED")).toBeLessThan(perStatusIdx);
     });
   });
 });
