@@ -57,6 +57,36 @@ export function trimToWarmingStage(
   return { messages: messages.slice(firstCurrent), hiddenCount: firstCurrent };
 }
 
+export interface ChatMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+export interface TurnHistories {
+  /** What the reply model sees: the current warming stage only. */
+  forModel: ChatMessage[];
+  /** What the memory extractor sees: always the full history. Its upsert
+   *  overwrites every lead_memory field, so a trimmed view would erase what
+   *  the lead told us earlier (q1-q7, including the landing-page email). */
+  forMemory: ChatMessage[];
+  hiddenCount: number;
+}
+
+/** The one place that decides who sees which history in a turn. */
+export function splitTurnHistory(
+  messages: TimedMessage[],
+  cutoffIso: string | null,
+): TurnHistories {
+  const strip = (list: TimedMessage[]): ChatMessage[] =>
+    list.map(({ role, content }) => ({ role, content }));
+  const trimmed = trimToWarmingStage(messages, cutoffIso);
+  return {
+    forModel: strip(trimmed.messages),
+    forMemory: strip(messages),
+    hiddenCount: trimmed.hiddenCount,
+  };
+}
+
 const TEMPLATE_MARKER = /^\[template:([^\]\s]+)\]/;
 
 /**

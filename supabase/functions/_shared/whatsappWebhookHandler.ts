@@ -76,8 +76,8 @@ import {
   buildPriorProfile,
   findOpenerTemplateName,
   type PriorProfileFields,
+  splitTurnHistory,
   type TimedMessage,
-  trimToWarmingStage,
 } from "./warmingHistory.ts";
 import { alertOperators } from "./alertOperators.ts";
 import { isOptOutMessage } from "./optOut.ts";
@@ -286,8 +286,11 @@ interface AgentTurnContext {
   /** UUID `prompts.id` — saved on the outbound row for replay/diff. */
   promptVersionId: string;
   claudeMessages: Array<{ role: "user" | "assistant"; content: string }>;
-  /** Earlier messages withheld because they predate the CRM warming stage
-   *  (warmingHistory.ts). 0 for every non-warming turn. */
+  /** Full history for the memory extractor — never trimmed. Identical to
+   *  claudeMessages for every non-warming turn. */
+  memoryMessages: Array<{ role: "user" | "assistant"; content: string }>;
+  /** Earlier messages withheld from claudeMessages because they predate the
+   *  CRM warming stage (warmingHistory.ts). 0 for every non-warming turn. */
   hiddenEarlierMessages: number;
 }
 
@@ -436,54 +439,58 @@ async function loadAgentTurnContext(
       timestamp: row.timestamp,
     });
   }
-  // A warming lead sees only the current stage. Null cutoff for everyone else
-  // → untouched, so normal traffic is byte-identical to before.
-  const trimmed = trimToWarmingStage(timedMessages, opts.warmingCutoffAt);
-  const claudeMessages = trimmed.messages.map(({ role, content }) => ({ role, content }));
+  // A warming lead's reply model sees only the current stage; the memory
+  // extractor always gets everything. Null cutoff for everyone else → both are
+  // the full history, so normal traffic is byte-identical to before.
+  const split = splitTurnHistory(timedMessages, opts.warmingCutoffAt);
 
   // The agent only speaks when the user spoke last. If we somehow ended
-  // on an assistant turn (race / replay), don't reply again.
-  const last = claudeMessages[claudeMessages.length - 1];
+  // on an assistant turn (race / replay), don't reply again. Trimming keeps
+  // the tail, so both histories end on the same message.
+  const last = split.forMemory[split.forMemory.length - 1];
   if (!last || last.role !== "user") return null;
 
-  // Compression: long conversations get the older portion replaced with
-  // the lead_memory.conversation_summary. Free because the memory
-  // extractor already populates it after every turn. Cuts tokens by ~60%
-  // on conversations > 20 turns.
-  // Skipped once earlier messages were withheld: the summary describes the
-  // whole relationship, so it would hand back the stale threads we just hid.
-  let finalMessages = claudeMessages;
-  if (trimmed.hiddenCount === 0 && claudeMessages.length > COMPRESSION_THRESHOLD) {
-    const { data: mem } = await ctx.admin
-      .from("lead_memory")
-      .select("conversation_summary")
-      .eq("conversation_id", ctx.conversationId)
-      .maybeSingle();
-    const summary = (mem?.conversation_summary as string | null | undefined)?.trim();
-    if (summary && summary.length > 50) {
-      // Keep the most-recent N turns verbatim so tone + immediate context
-      // stay sharp; replace the rest with one summary turn.
-      const recent = claudeMessages.slice(-COMPRESSION_KEEP_RECENT);
-      // Synthesise an "assistant" turn carrying the summary so the
-      // chronology stays consistent (the bot was the last speaker before
-      // the compressed history; user came next).
-      finalMessages = [
-        {
-          role: "assistant",
-          content: `[סיכום שיחה עד כה]: ${summary}`,
-        },
-        ...recent,
-      ];
-    }
-  }
+  const fullHistory = await compressLongHistory(ctx, split.forMemory);
+  // Compression is skipped for a trimmed view: the summary describes the whole
+  // relationship, so it would hand back the stale threads we just hid.
+  const finalMessages = split.hiddenCount > 0 ? split.forModel : fullHistory;
 
   return {
     promptContent: prompt.content,
     promptVersion: prompt.version,
     promptVersionId: prompt.id,
     claudeMessages: finalMessages,
-    hiddenEarlierMessages: trimmed.hiddenCount,
+    memoryMessages: fullHistory,
+    hiddenEarlierMessages: split.hiddenCount,
   };
+}
+
+/**
+ * Compression: long conversations get the older portion replaced with the
+ * lead_memory.conversation_summary. Free because the memory extractor already
+ * populates it after every turn. Cuts tokens by ~60% on conversations > 20
+ * turns.
+ */
+async function compressLongHistory(
+  ctx: AgentLoopCtx,
+  messages: Array<{ role: "user" | "assistant"; content: string }>,
+): Promise<Array<{ role: "user" | "assistant"; content: string }>> {
+  if (messages.length <= COMPRESSION_THRESHOLD) return messages;
+  const { data: mem } = await ctx.admin
+    .from("lead_memory")
+    .select("conversation_summary")
+    .eq("conversation_id", ctx.conversationId)
+    .maybeSingle();
+  const summary = (mem?.conversation_summary as string | null | undefined)?.trim();
+  if (!summary || summary.length <= 50) return messages;
+  // Keep the most-recent N turns verbatim so tone + immediate context stay
+  // sharp; replace the rest with one summary turn. Synthesise an "assistant"
+  // turn carrying the summary so the chronology stays consistent (the bot was
+  // the last speaker before the compressed history; user came next).
+  return [
+    { role: "assistant", content: `[סיכום שיחה עד כה]: ${summary}` },
+    ...messages.slice(-COMPRESSION_KEEP_RECENT),
+  ];
 }
 
 interface OutboundTrace {
@@ -1660,8 +1667,10 @@ async function generateAndSendAgentResponseLocked(
       agentId: ctx.agentId,
       agentName: ctx.agentName,
       conversationId: ctx.conversationId,
+      // Full history, never the trimmed warming view — the extractor's upsert
+      // overwrites every field with what it can see.
       claudeMessages: [
-        ...turn.claudeMessages,
+        ...turn.memoryMessages,
         { role: "assistant", content: validation.text },
       ],
       handoffWebhookUrl: ctx.handoffWebhookUrl,

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildPriorProfile,
   findOpenerTemplateName,
+  splitTurnHistory,
   trimToWarmingStage,
   type TimedMessage,
 } from "./warmingHistory.ts";
@@ -112,5 +113,30 @@ describe("findOpenerTemplateName", () => {
     const leadQuoted = [{ role: "user" as const, content: "[template:fake]" }];
     expect(findOpenerTemplateName(leadQuoted)).toBeNull();
     expect(findOpenerTemplateName([])).toBeNull();
+  });
+});
+
+// Live on status 47: the extractor was handed the trimmed history, saw nothing
+// about the lead, and its upsert overwrote lead_memory with nulls (q2 lost;
+// q7_email from the landing page would go the same way, and with q3/q4 gone the
+// zoom gate would block booking). Hiding is for the reply model only.
+describe("splitTurnHistory", () => {
+  it("gives the reply model the current stage but the memory extractor everything", () => {
+    const split = splitTurnHistory(history, CUTOFF);
+    expect(split.forModel.map((m) => m.content)).toEqual(["[template:warming_1]", "הכל טוב, מה איתך?"]);
+    expect(split.forMemory).toHaveLength(history.length);
+    expect(split.hiddenCount).toBe(5);
+  });
+
+  it("returns identical histories for a normal lead", () => {
+    const split = splitTurnHistory(history, null);
+    expect(split.forModel).toEqual(split.forMemory);
+    expect(split.hiddenCount).toBe(0);
+  });
+
+  it("drops timestamps from both", () => {
+    const split = splitTurnHistory(history, CUTOFF);
+    expect(Object.keys(split.forMemory[0])).toEqual(["role", "content"]);
+    expect(Object.keys(split.forModel[0])).toEqual(["role", "content"]);
   });
 });
