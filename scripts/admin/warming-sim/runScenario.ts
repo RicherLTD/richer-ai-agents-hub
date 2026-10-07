@@ -10,7 +10,7 @@ import { generateLeadTurn } from "./leadActor.ts";
 import type { SimulationContext, StatusRule } from "./loadContext.ts";
 import { buildTurnPrompt } from "./promptAssembly.ts";
 import type { Scenario } from "./scenarios.ts";
-import type { TranscriptEntry } from "./transcript.ts";
+import { AGENT_FALLBACK_REPLY, type TranscriptEntry } from "./transcript.ts";
 import type { ScenarioRun } from "./types.ts";
 
 export interface RunDeps {
@@ -31,6 +31,10 @@ interface ConversationState {
 function openerEntry(context: SimulationContext): TranscriptEntry {
   const text = context.openerText ?? `[template:${context.openerTemplateName}]`;
   return { kind: "opener", text };
+}
+
+function lastBotMessage(chat: ReadonlyArray<ChatMessage>): string | undefined {
+  return chat.findLast((message) => message.role === "assistant")?.content;
 }
 
 async function playTurns(
@@ -57,6 +61,7 @@ async function playTurns(
         judge: (text) => deps.judge(text, tracker),
       },
       prompt.systemPrompt,
+      { isWarming: prompt.warmingBlock !== "", alreadyApologised: lastBotMessage(state.chat) === AGENT_FALLBACK_REPLY },
     );
     state.entries.push(...guarded.events);
     if (guarded.reply === null) continue;
@@ -87,7 +92,8 @@ export async function runScenario(
   const summarize = () => ({
     entries: state.entries,
     leadTurns: state.leadTurns,
-    silenceCount: state.entries.filter((e) => e.kind === "silence").length,
+    // Silence and the fallback apology are both guard failures for grading.
+    silenceCount: state.entries.filter((e) => e.kind === "silence" || e.kind === "fallback").length,
     cost: tracker.total,
   });
 

@@ -54,6 +54,7 @@ function renderEntry(entry: TranscriptEntry): string {
     case "bot": return `<div class="msg bot"><b>הבוט${entry.attempts > 1 ? " (ניסיון שני)" : ""}</b>${text}</div>`;
     case "tool": return `<div class="event tool">${text}</div>`;
     case "guard": return `<div class="event guard">${text}</div>`;
+    case "fallback": return `<div class="event silence">${text}</div>`;
     case "silence": return `<div class="event silence">${text}</div>`;
   }
 }
@@ -84,7 +85,7 @@ function renderCard(run: ScenarioRun): string {
   const summary = run.grade ? escapeHtml(run.grade.summaryHe) : escapeHtml(run.note ?? "");
   return `<section class="card ${badge}" id="${escapeHtml(run.id)}">
 <header><span class="badge ${badge}">${BADGE_LABEL[badge]}</span><h3>סטטוס ${run.statusSub}: ${escapeHtml(run.title)}</h3>
-<div class="meta">${escapeHtml(run.statusLabel)} · ${run.leadTurns} הודעות ליד · שתיקות: ${run.silenceCount} · $${run.cost.costUsd.toFixed(3)}</div></header>
+<div class="meta">${escapeHtml(run.statusLabel)} · ${run.leadTurns} הודעות ליד · שתיקות/תקלות guard: ${run.silenceCount} · $${run.cost.costUsd.toFixed(3)}</div></header>
 <p class="summary">${summary}</p>
 ${run.grade ? renderCriteria(run.grade.criteria) + renderScenarioChecks(run) : ""}
 <h4>תמלול</h4><div class="transcript">${run.entries.map(renderEntry).join("")}</div>

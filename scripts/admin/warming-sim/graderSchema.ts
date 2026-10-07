@@ -24,7 +24,7 @@ export const CROSS_STATUS_CRITERIA: ReadonlyArray<Criterion> = [
   { id: "no_dash", label: "בלי מקף ארוך", rubric: "No em dash or en dash characters in the bot's messages." },
   { id: "no_invented_references", label: "בלי שמות מומצאים או הפניה להודעות שהליד לא ראה", rubric: "No invented names, facts, links, or references to messages the lead never saw (for example 'the four options')." },
   { id: "no_money_claims", label: "בלי מחירים, סכומים, תשלומים, הנחות או הבטחות הכנסה", rubric: "No prices, sums, payment plans, discounts or income promises." },
-  { id: "no_silence", label: "אין שתיקה", rubric: "The bot answered every lead message. Any silence event is a failure." },
+  { id: "no_silence", label: "אין שתיקה ואין הודעת תקלה", rubric: "The bot answered every lead message with a real reply. Any silence event, or the fixed apology message sent after a guard failure (FALLBACK), is a failure." },
 ];
 
 const VERDICTS: ReadonlyArray<Verdict> = ["PASS", "BORDERLINE", "FAIL"];
@@ -162,7 +162,7 @@ export function worstVerdict(a: Verdict, b: Verdict): Verdict {
 export function reconcileGrade(grade: GraderResult, facts: { silenceCount: number }): GraderResult {
   const criteria = grade.criteria.map((criterion) =>
     criterion.id === "no_silence" && facts.silenceCount > 0
-      ? { ...criterion, result: "fail" as const, evidence: `הבוט שתק ${facts.silenceCount} פעמים (guard)` }
+      ? { ...criterion, result: "fail" as const, evidence: `נכשל guard ${facts.silenceCount} פעמים (שתיקה או הודעת תקלה)` }
       : criterion
   );
   const hasFailure =

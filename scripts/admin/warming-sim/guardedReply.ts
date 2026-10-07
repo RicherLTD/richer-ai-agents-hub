@@ -7,7 +7,8 @@
 
 import { buildGuardHint } from "../../../supabase/functions/_shared/guardHint.ts";
 import { validateAgentReply } from "../../../supabase/functions/_shared/validateAgentReply.ts";
-import { sanitizeDashes, type TranscriptEntry } from "./transcript.ts";
+import { withWarmingReplyGuard } from "../../../supabase/functions/_shared/warmingReplyGuard.ts";
+import { AGENT_FALLBACK_REPLY, sanitizeDashes, type TranscriptEntry } from "./transcript.ts";
 
 const MAX_GUARD_ATTEMPTS = 2;
 
@@ -31,9 +32,12 @@ export interface GuardedReplyDeps {
 }
 
 export interface GuardedReplyResult {
-  /** Sanitized reply, or null when both attempts were rejected (silence). */
+  /** Sanitized reply, or null when nothing reaches the lead. */
   reply: string | null;
-  silenceReason: string | null;
+  /** True when `reply` is the fixed apology sent after two rejections. */
+  isFallback: boolean;
+  /** Why both attempts were rejected; null when a real reply went out. */
+  failureReason: string | null;
   attempts: number;
   events: TranscriptEntry[];
 }
@@ -42,9 +46,17 @@ function toolEntries(lines: ReadonlyArray<string>): TranscriptEntry[] {
   return lines.map((text) => ({ kind: "tool", text }));
 }
 
+export interface GuardedReplyOptions {
+  /** warmingBlock !== "" in the handler. */
+  isWarming: boolean;
+  /** The handler skips the apology when it is already the last outbound. */
+  alreadyApologised: boolean;
+}
+
 export async function runGuardedReply(
   deps: GuardedReplyDeps,
   systemPrompt: string,
+  options: GuardedReplyOptions,
 ): Promise<GuardedReplyResult> {
   const events: TranscriptEntry[] = [];
   let guardHint = "";
@@ -54,9 +66,12 @@ export async function runGuardedReply(
     const generated = await deps.generate(systemPrompt + guardHint);
     events.push(...toolEntries(generated.toolLines));
 
-    const validation = validateAgentReply(generated.rawReply, {
-      allowedMeetingTimes: generated.offeredTimesIL,
-    });
+    // Same wrapping as the handler: warming turns also reject an announced
+    // technique on the first attempt.
+    const validation = withWarmingReplyGuard(
+      validateAgentReply(generated.rawReply, { allowedMeetingTimes: generated.offeredTimesIL }),
+      { isWarming: options.isWarming, isRetry: attempt > 0 },
+    );
     if (!validation.ok) {
       lastReason = validation.reason;
       events.push({ kind: "guard", text: `validateAgentReply rejected attempt ${attempt}: ${validation.reason}` });
@@ -72,9 +87,13 @@ export async function runGuardedReply(
       continue;
     }
 
-    return { reply: sanitizeDashes(validation.text), silenceReason: null, attempts: attempt + 1, events };
+    return { reply: sanitizeDashes(validation.text), isFallback: false, failureReason: null, attempts: attempt + 1, events };
   }
 
-  events.push({ kind: "silence", text: `SILENCE (guard: ${lastReason})` });
-  return { reply: null, silenceReason: lastReason, attempts: MAX_GUARD_ATTEMPTS, events };
+  if (options.alreadyApologised) {
+    events.push({ kind: "silence", text: `SILENCE (guard: ${lastReason}; apology already sent)` });
+    return { reply: null, isFallback: false, failureReason: lastReason, attempts: MAX_GUARD_ATTEMPTS, events };
+  }
+  events.push({ kind: "fallback", text: `FALLBACK (guard: ${lastReason})` });
+  return { reply: AGENT_FALLBACK_REPLY, isFallback: true, failureReason: lastReason, attempts: MAX_GUARD_ATTEMPTS, events };
 }

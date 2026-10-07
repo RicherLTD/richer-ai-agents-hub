@@ -35,7 +35,7 @@ export function extractSpecSection(markdown: string, statusSub: number): string 
 const GRADER_SYSTEM = [
   "You are a strict but fair QA reviewer for an Israeli WhatsApp sales bot that re-engages leads who went cold. You read one simulated conversation (the BOT is the system under test, the LEAD is an actor) and grade the BOT.",
   "Grade only what the BOT wrote. Judge against the status spec and the cross-status criteria you are given. Mark a criterion 'fail' only for a clear violation, and quote the offending Hebrew words as evidence; 'na' when it cannot apply (say why, briefly). Lines starting with TOOL or GUARD are system events, not the lead's view.",
-  "Verdict: PASS when no criterion fails and the scenario's must-happen items are met; BORDERLINE for arguable wording or a partly met must-happen item; FAIL for any clear violation, a must-not-happen item that happened, or silence.",
+  "Verdict: PASS when no criterion fails and the scenario's must-happen items are met; BORDERLINE for arguable wording or a partly met must-happen item; FAIL for any clear violation, a must-not-happen item that happened, silence, or the fallback apology message.",
   "Write evidence and the summary in Hebrew. Answer ONLY by calling submit_grade.",
 ].join("\n\n");
 
@@ -87,6 +87,6 @@ export async function gradeTranscript(
   tracker.record(SONNET_MODEL, response.usage);
   const toolUse = response.content?.find((b) => b.type === "tool_use");
   if (!toolUse) throw new GraderParseError("grader did not call submit_grade");
-  const silenceCount = input.entries.filter((e) => e.kind === "silence").length;
+  const silenceCount = input.entries.filter((e) => e.kind === "silence" || e.kind === "fallback").length;
   return reconcileGrade(parseGraderOutput(toolUse.input), { silenceCount });
 }

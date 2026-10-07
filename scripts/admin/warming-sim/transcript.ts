@@ -7,7 +7,8 @@ export type TranscriptEntry =
   | { kind: "bot"; text: string; attempts: number }
   | { kind: "tool"; text: string }
   | { kind: "guard"; text: string }
-  | { kind: "silence"; text: string };
+  | { kind: "silence"; text: string }
+  | { kind: "fallback"; text: string };
 
 const SPEAKER_LABEL: Record<TranscriptEntry["kind"], string> = {
   opener: "BOT (opener template)",
@@ -16,7 +17,15 @@ const SPEAKER_LABEL: Record<TranscriptEntry["kind"], string> = {
   tool: "TOOL",
   guard: "GUARD",
   silence: "BOT",
+  fallback: "BOT",
 };
+
+/**
+ * Mirror of AGENT_FALLBACK_REPLY in whatsappWebhookHandler.ts (not exported
+ * there): what production sends the lead when both guard attempts fail.
+ */
+export const AGENT_FALLBACK_REPLY =
+  "סליחה, נתקלתי בתקלה קטנה מהצד שלי 🙏 העברתי את זה לנציג שיחזור אליך ממש בקרוב.";
 
 /** Plain-text form fed to the lead actor and the grader. */
 export function formatTranscript(entries: ReadonlyArray<TranscriptEntry>): string {
