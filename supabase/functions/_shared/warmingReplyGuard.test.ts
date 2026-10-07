@@ -22,10 +22,19 @@ describe("findAnnouncedTechnique", () => {
     expect(findAnnouncedTechnique("אני רק רוצה לעזור")).toBe("just_helping");
   });
 
+  // Live on status 52: "בכנות - ראיתי שהיינו בקשר בעבר ולא יצא מזה כלום".
+  it("catches 'honestly' and narrating that it looked the lead up", () => {
+    expect(findAnnouncedTechnique("שאלה הוגנת 😄 בכנות - ראיתי שהיינו בקשר בעבר")).toBe("saw_records");
+    expect(findAnnouncedTechnique("בכנות, רציתי לבדוק מה שלומך")).toBe("honestly");
+    expect(findAnnouncedTechnique("אהיה כן איתך, זה לא לכל אחד")).toBe("honestly");
+  });
+
   it("leaves ordinary warm replies alone", () => {
     expect(findAnnouncedTechnique("מבין לגמרי. מה הכי עוצר אותך עכשיו?")).toBeNull();
     expect(findAnnouncedTechnique("זה לחץ אמיתי, מבין אותך")).toBeNull();
     expect(findAnnouncedTechnique("היועץ ישמח לעזור לך לבדוק את זה")).toBeNull();
+    expect(findAnnouncedTechnique("ראיתי שכתבת שזה יקר לך, מבין")).toBeNull();
+    expect(findAnnouncedTechnique("אני יודע שהיית איתנו בקשר לפני זמן מה")).toBeNull();
   });
 });
 

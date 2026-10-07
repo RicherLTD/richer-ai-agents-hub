@@ -409,6 +409,13 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
+    // Live on status 52: "כולם רק רוצים למכור" got "...ובסוף מישהו לקח ממך
+    // כסף ונעלם" — an experience the lead never described.
+    it("forbids putting experiences in the lead's mouth", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Never assume experiences the lead did not tell you");
+    });
+
     // Live on 26 and 51 the first reply asked about "הכיוון הזה" / "הכיוון
     // שחיפשת" and the tester had to ask "מה זאת אומרת". The clarity rule was
     // buried mid-paragraph; it needs its own heading and Hebrew examples.

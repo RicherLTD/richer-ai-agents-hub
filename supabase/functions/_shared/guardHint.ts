@@ -28,7 +28,7 @@ export const GENERIC_GUARD_HINT =
  *  content, drop the self-narration. The generic hint would wrongly steer the
  *  model away from times and numbers it may legitimately need. */
 const WARMING_TECHNIQUE_HINT =
-  "\n\n<!-- RETRY: your previous reply announced your own technique or intent (e.g. \"I'm not here to interrogate you\", \"no pressure\", \"I'm not trying to sell\", \"I just want to help\"). Say the same thing without naming it — just behave warmly and ask your question. Keep the reply in 1-2 sentences. -->";
+  "\n\n<!-- RETRY: your previous reply announced your own technique or narrated how you know things (e.g. \"I'm not here to interrogate you\", \"no pressure\", \"honestly\", \"I saw that we were in touch\"). Say the same thing without it — just behave warmly and ask your question; if you mention the earlier contact, say only that they were in touch with us before. Keep the reply in 1-2 sentences. -->";
 
 export function buildGuardHint(
   reason: string,
