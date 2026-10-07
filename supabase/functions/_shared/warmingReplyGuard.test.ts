@@ -29,6 +29,12 @@ describe("findAnnouncedTechnique", () => {
     expect(findAnnouncedTechnique("אהיה כן איתך, זה לא לכל אחד")).toBe("honestly");
   });
 
+  // Live on status 56: "מובן. לא כוונתי לדחוף." — same family as "no pressure".
+  it("catches 'I didn't mean to push'", () => {
+    expect(findAnnouncedTechnique("מובן. לא כוונתי לדחוף.")).toBe("not_pushing");
+    expect(findAnnouncedTechnique("לא התכוונתי ללחוץ עליך")).toBe("not_pushing");
+  });
+
   it("leaves ordinary warm replies alone", () => {
     expect(findAnnouncedTechnique("מבין לגמרי. מה הכי עוצר אותך עכשיו?")).toBeNull();
     expect(findAnnouncedTechnique("זה לחץ אמיתי, מבין אותך")).toBeNull();

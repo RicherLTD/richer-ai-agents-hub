@@ -25,6 +25,7 @@ const ANNOUNCED_TECHNIQUE_PATTERNS: ReadonlyArray<[label: string, pattern: RegEx
   ["not_interrogating", /(?:לא|אינני)\s*(?:פה|כאן)\s*(?:כדי\s*)?(?:ל)?חקור/],
   ["no_pressure", /(?:בלי|אין)\s+(?:שום\s+)?לחץ/],
   ["not_selling", /לא\s+(?:מנסה|בא|באתי|פה)\s+(?:כדי\s+)?(?:למכור|לדחוף|ללחוץ)/],
+  ["not_pushing", /לא\s+(?:התכוונתי|כוונתי)\s+(?:ל)?(?:דחוף|לחוץ|ללחוץ)/],
   ["just_helping", /(?:אני\s+)?רק\s+רוצה\s+לעזור/],
 ];
 
