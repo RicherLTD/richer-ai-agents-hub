@@ -409,6 +409,15 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
+    // Live on 26 and 51 the first reply asked about "הכיוון הזה" / "הכיוון
+    // שחיפשת" and the tester had to ask "מה זאת אומרת". The clarity rule was
+    // buried mid-paragraph; it needs its own heading and Hebrew examples.
+    it("tells the bot to name the subject plainly instead of 'this direction'", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("## Name the subject plainly");
+      expect(block).toContain("הכיוון הזה");
+    });
+
     // Live on status 47: to reassure a 45-year-old the bot cited "graduates who
     // started at 60+ — we taught them to install WhatsApp", a story that is in
     // neither the prompt nor the brain. Invented proof is still invented.

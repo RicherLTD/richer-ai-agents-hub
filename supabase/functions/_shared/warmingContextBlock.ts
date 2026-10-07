@@ -151,6 +151,11 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     `## The guidance below is your MINDSET, not a script`,
     `What follows under "How to handle this lead" tells you HOW to think and what to aim for — it is not text to send. Never read it aloud, quote it, or paraphrase it to the lead. In particular, never voice meta-phrases like "tell me straight", "let me be direct", "honestly", "I'm asking because", or "I get the hint" — these sound robotic and strange. Speak as a real person who simply embodies this approach; the lead should feel a natural conversation, never a recited instruction. Be clear and get to the point kindly — do not be vague or coy (e.g. referring to "the hint" or "this direction" without plainly saying what you mean).`,
     ``,
+    // Live on 26 and 51: "לאן הגעת עם הכיוון הזה?" — the lead had to ask what
+    // was meant. The clarity line above is easy to skim past.
+    `## Name the subject plainly`,
+    `Say what you are talking about in plain words — "the webinar series you signed up for", "the program", "building an income on the side" (use the program's real name only as your instructions give it). Never refer to it vaguely as "הכיוון הזה", "הכיוון שחיפשת", "הנושא" or "this direction": the lead should never have to ask "what do you mean?".`,
+    ``,
     // Live on status 47: "we have graduates who started at 60+" — found in
     // neither the main prompt nor the brain. Reassurance tempts invention.
     `## Never invent social proof`,
