@@ -54,6 +54,13 @@ bunx supabase functions deploy whatsapp-webhook whatsapp-webhook-dm --no-verify-
 ```
 (שתי הפונקציות חולקות את ה-handler. בלי `--no-verify-jwt` הן מתחילות להחזיר 401.)
 
+## 🚀 עלייה לאוויר (2026-10-07)
+- **אישור:** Izak אישר שלב 1 (הועבר ע"י הבודק בצ'אט). דף ההחלטה: https://claude.ai/artifact/W2HyeVQbMKxXD1W9ng133i
+- **שלב 1:** `agents.warming_daily_cap = 10` ל-`affiliate_marketing` (הוחל בפרוד). digital_marketing כבוי.
+- **תנאי מקדים:** פריסת `dispatch-scheduled-templates` מ-main (הגרסה החיה v32 בלי הגנות הקצב — התקרה לא נאכפת עד הפריסה).
+- **חיבור:** האוטומציה ב-Fireberry / n8n (`YeBmPoVmVDYfiCbL`) — צד Izak, אין לנו גישה.
+- **מתג כיבוי מלא (Live):** (1) `update agents set crm_warming_enabled=false where name='affiliate_marketing'` (2) `update scheduled_messages set status='cancelled', last_error='warming_kill_switch' where kind='warming' and status='pending'` (3) אופציונלי: `update conversations set crm_warming_status='warming_stopped' where crm_warming_status='warming'`.
+
 ## 📋 סטטוס הבדיקות — 29 פעילים
 | מצב | סטטוסים |
 |---|---|
