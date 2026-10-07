@@ -237,9 +237,27 @@ describe("decideConversationTag", () => {
     ).toBe("underage");
   });
 
-  it("returns 'requires_human' for any other non-empty red_flag set", () => {
+  it("returns 'requires_human' for a sensitive red flag", () => {
     expect(
       decideConversationTag({ ...baseMemory, red_flags: ["mental distress"] }, null),
+    ).toBe("requires_human");
+  });
+
+  // 2026-10-07: soft flags used to mute the bot with no operator alert —
+  // 165 live conversations, ~110 with the lead's last message unanswered.
+  // They are advisor notes now; the bot keeps talking.
+  it("leaves the tag alone for advisor-note flags", () => {
+    expect(
+      decideConversationTag(
+        { ...baseMemory, red_flags: ["past_financial_trauma", "procrastination", "no_computer"] },
+        null,
+      ),
+    ).toBeNull();
+  });
+
+  it("still escalates when a sensitive flag sits among notes", () => {
+    expect(
+      decideConversationTag({ ...baseMemory, red_flags: ["skeptical_of_financial_courses", "health_issues"] }, null),
     ).toBe("requires_human");
   });
 

@@ -1127,11 +1127,17 @@ async function generateAndSendAgentResponseLocked(
         // the lead an advisor will arrange it — so an advisor actually has to.
         // Queue + alert, and deliberately NOT a blocking tag: the lead is warm
         // and the bot keeps answering their questions meanwhile.
-        onNeedsHumanScheduling: async ({ reason, requestedDate }) => {
+        // Also: a flagged lead asked to book (red-flag gate) — no automatic
+        // Zoom, so an advisor must schedule them personally.
+        onNeedsHumanScheduling: async ({ reason, requestedDate, detail }) => {
           await flagNeedsAttention({
             admin: ctx.admin,
             conversationId: ctx.conversationId,
-            reason: reason === "calendar_closed" ? "calendar_closed" : "bot_failed",
+            reason: reason === "calendar_closed"
+              ? "calendar_closed"
+              : reason === "red_flag"
+              ? "red_flag"
+              : "bot_failed",
             sendAlert: async (label) => {
               await alertOperators({
                 admin: ctx.admin,
@@ -1142,7 +1148,7 @@ async function generateAndSendAgentResponseLocked(
                 conversationId: ctx.conversationId,
                 leadPhone: ctx.leadPhone,
                 failureType: label,
-                failureDetail: `הליד ביקש ${requestedDate}`,
+                failureDetail: detail ?? `הליד ביקש ${requestedDate}`,
                 dashboardBaseUrl: ctx.dashboardBaseUrl,
               });
             },
@@ -1682,6 +1688,29 @@ async function generateAndSendAgentResponseLocked(
       handoffWebhookUrl: ctx.handoffWebhookUrl,
       handoffWebhookSecret: ctx.handoffWebhookSecret,
       dashboardBaseUrl: ctx.dashboardBaseUrl,
+      // A sensitive flag mutes the bot from the next message. Until
+      // 2026-10-07 nobody was told, and the lead waited in silence.
+      onSensitiveRedFlag: async (flags) => {
+        await flagNeedsAttention({
+          admin: ctx.admin,
+          conversationId: ctx.conversationId,
+          reason: "red_flag",
+          sendAlert: async (label) => {
+            await alertOperators({
+              admin: ctx.admin,
+              apiUrl: ctx.hookmyapp.apiUrl,
+              accessToken: ctx.hookmyapp.accessToken,
+              phoneNumberId: ctx.hookmyapp.phoneNumberId,
+              agentId: ctx.agentId,
+              conversationId: ctx.conversationId,
+              leadPhone: ctx.leadPhone,
+              failureType: label,
+              failureDetail: `הבוט הושתק; סימונים: ${flags.join(", ")}`,
+              dashboardBaseUrl: ctx.dashboardBaseUrl,
+            });
+          },
+        });
+      },
       // Records the extraction as a step inside this turn's trace, with an
       // extraction_ok score. Null when tracing is disabled or the trace
       // failed to create — extraction behaviour is unchanged either way.

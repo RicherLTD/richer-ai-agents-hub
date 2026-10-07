@@ -163,10 +163,13 @@ export interface MoozDispatchCtx {
    *  Best-effort: it must never throw, and the tool result is returned to
    *  Claude regardless of whether it succeeded. */
   onNeedsHumanScheduling?: (info: {
-    /** "calendar_closed" | "calendar_unverified" */
+    /** "calendar_closed" | "calendar_unverified" | "red_flag" */
     reason: string;
-    /** The date the lead asked for (YYYY-MM-DD), for the alert body. */
+    /** The date the lead asked for (YYYY-MM-DD), for the alert body. Empty
+     *  when the block isn't about a date (red_flag). */
     requestedDate: string;
+    /** Extra context for the alert body, e.g. which red flags. */
+    detail?: string;
   }) => Promise<void>;
 }
 
@@ -211,6 +214,39 @@ export async function dispatchMoozTool(
   }
   return {
     resultJson: JSON.stringify({ error: `unknown tool: ${name}` }),
+    bookingCreated: false,
+    offeredTimesIL: [],
+  };
+}
+
+// ─── red-flag gate ───────────────────────────────────────────────────
+
+/**
+ * No automatic Zoom for a lead with ANY red flag — sensitive or a mere
+ * advisor note. Until 2026-10-07 every flag muted the bot outright, so a
+ * flagged lead never reached this tool; now soft flags keep the conversation
+ * going (redFlagSeverity.ts), and this gate keeps the booking side of the
+ * old promise: an advisor schedules them personally. Runs BEFORE the
+ * qualification bypass — an explicit "book me" does not lift it.
+ */
+async function checkRedFlagGate(ctx: MoozDispatchCtx): Promise<MoozDispatchResult | null> {
+  const { data: mem } = await ctx.admin
+    .from("lead_memory")
+    .select("red_flags")
+    .eq("conversation_id", ctx.conversationId)
+    .maybeSingle();
+  const raw = (mem as { red_flags?: unknown } | null)?.red_flags;
+  const flags = Array.isArray(raw) ? raw.filter((f): f is string => typeof f === "string" && f.trim() !== "") : [];
+  if (flags.length === 0) return null;
+  await notifyHumanScheduling(ctx, "red_flag", "", `ביקש לקבוע זום; סימונים: ${flags.join(", ")}`);
+  return {
+    resultJson: JSON.stringify({
+      blocked: true,
+      reason: "lead_has_red_flags",
+      guidance:
+        "אל תציע זמנים ואל תקבע פגישה בעצמך. אמור לליד בחום ובפשטות שיועץ לימודים יחזור אליו אישית כדי לתאם, " +
+        "והמשך לענות לו כרגיל על כל שאלה. אל תזכיר סימונים, בדיקות או מערכת.",
+    }),
     bookingCreated: false,
     offeredTimesIL: [],
   };
@@ -340,6 +376,8 @@ async function handleListSlots(
 ): Promise<MoozDispatchResult> {
   const requestedBooking =
     (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const flagged = await checkRedFlagGate(ctx);
+  if (flagged) return flagged;
   const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
   const fbBlocked = await checkFireberryStatusGate(ctx);
@@ -552,10 +590,11 @@ async function notifyHumanScheduling(
   ctx: MoozDispatchCtx,
   reason: string,
   requestedDate: string,
+  detail?: string,
 ): Promise<void> {
   if (!ctx.onNeedsHumanScheduling) return;
   try {
-    await ctx.onNeedsHumanScheduling({ reason, requestedDate });
+    await ctx.onNeedsHumanScheduling({ reason, requestedDate, ...(detail ? { detail } : {}) });
   } catch (err) {
     console.error(
       `[moozTools] onNeedsHumanScheduling threw: ${err instanceof Error ? err.message : String(err)}`,
@@ -632,6 +671,8 @@ async function handleBookMeeting(
 ): Promise<MoozDispatchResult> {
   const requestedBooking =
     (input as { lead_requested_booking?: unknown } | null)?.lead_requested_booking === true;
+  const flagged = await checkRedFlagGate(ctx);
+  if (flagged) return flagged;
   const blocked = await checkQualificationGate(ctx, requestedBooking);
   if (blocked) return blocked;
   const fbBlocked = await checkFireberryStatusGate(ctx);
