@@ -409,6 +409,15 @@ describe("renderWarmingContextBlock", () => {
       expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
     });
 
+    // Live on status 47: to reassure a 45-year-old the bot cited "graduates who
+    // started at 60+ — we taught them to install WhatsApp", a story that is in
+    // neither the prompt nor the brain. Invented proof is still invented.
+    it("forbids inventing social proof and points to questions instead", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Never invent social proof");
+      expect(block).toContain("ask instead of asserting");
+    });
+
     // Live on status 23: "אמרתי לכם כבר שלא באלי" got "so what made you
     // register in the first place?". The earlier "no" sits in history the bot
     // no longer sees, so it read a repeated refusal as a first one.

@@ -63,6 +63,7 @@ import { fireberryClientFromEnv } from "./fireberry.ts";
 import { type MoozDispatchCtx } from "./moozTools.ts";
 import { formatIlHHMM } from "./ilTime.ts";
 import { buildGuardHint } from "./guardHint.ts";
+import { withWarmingReplyGuard } from "./warmingReplyGuard.ts";
 import { loadBrainRows, buildBrainSection } from "./brainContext.ts";
 import {
   renderBookingStatusBlock,
@@ -1463,7 +1464,12 @@ async function generateAndSendAgentResponseLocked(
       ...turnResult.offeredTimesIL,
       ...(existingBookingTimeIL ? [existingBookingTimeIL] : []),
     ];
-    const validation = validateAgentReply(rawReply, { allowedMeetingTimes });
+    // Warming turns also reject an announced technique ("not here to
+    // interrogate") on the first attempt; the retry below rewrites it.
+    const validation = withWarmingReplyGuard(
+      validateAgentReply(rawReply, { allowedMeetingTimes }),
+      { isWarming: warmingBlock !== "", isRetry: attempt > 0 },
+    );
 
     // Trace the FIRST attempt only — regardless of validation outcome.
     // Failed first attempts are exactly what operators want to see in
