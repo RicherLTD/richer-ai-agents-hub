@@ -136,6 +136,14 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("Never mention the CRM");
   });
 
+  // Live on status 20 the bot asked "what didn't click for you?" — surfacing an
+  // objection the lead had never raised, exposing that it "knew" something.
+  it("forbids voicing the status-implied objection unless the lead raised it", () => {
+    const block = renderWarmingContextBlock(baseArgs);
+    expect(block).toContain("never name, quote, or even hint at the specific objection");
+    expect(block).toContain("UNLESS the lead has raised it with you first");
+  });
+
   describe("without a rep note", () => {
     it("instructs the bot to discover the objection instead of inventing one", () => {
       const block = renderWarmingContextBlock({ ...baseArgs, repNote: null });
@@ -184,7 +192,9 @@ describe("renderWarmingContextBlock", () => {
         repNote: "א".repeat(MAX_REP_NOTE_CHARS + 5_000),
       });
       expect(block).toContain("נחתכה בשל אורך");
-      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 4_000);
+      // Buffer covers the fixed block scaffolding (behaviour rules etc.); the
+      // point is the note is clamped, so an UNclamped note (+7000) would blow past this.
+      expect(block.length).toBeLessThan(MAX_REP_NOTE_CHARS + 7_000);
     });
   });
 
@@ -207,5 +217,63 @@ describe("renderWarmingContextBlock", () => {
     expect(block).toContain("no prices");
     expect(block).toContain("no income promises");
     expect(block).toContain("no invented facts");
+  });
+
+  // The core behaviour fix: a re-warmed lead's reply was being ignored while the
+  // bot reverted to the fresh-lead qualification script ("what brought you to
+  // register?"). These three rules, added before the per-status instructions,
+  // prevent that.
+  describe("core behaviour rules", () => {
+    it("tells the bot to answer the lead's latest message first", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Answer what they just said — FIRST");
+      expect(block).toContain("respond to it directly and specifically");
+    });
+
+    it("forbids the fresh-lead qualification script and asserts precedence over the main prompt", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("This is NOT a fresh lead");
+      expect(block).toContain("what brought you to register");
+      expect(block).toContain("takes precedence over any opening/qualification flow");
+    });
+
+    it("bans announcing the technique (show, don't tell)", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Show, don't tell");
+      expect(block).toContain("I'm not here to interrogate you");
+    });
+
+    it("tells the bot the per-status guidance is a mindset, not a script to recite", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("MINDSET, not a script");
+      expect(block).toContain("tell me straight");
+      expect(block).toContain("do not be vague or coy");
+    });
+
+    it("tells the bot to neutralize the objection before pitching the zoom", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain("Neutralize the objection BEFORE you go for the Zoom");
+      expect(block).toContain("do NOT repeat");
+      expect(block).toContain("The Zoom is the destination, not your tool");
+    });
+
+    // A live test on status 20 exposed the bot folding on the first soft reply
+    // ("all good" → "no pressure, I'm here"; "didn't connect" → "good luck!").
+    // A brush-off from a re-warmed lead is the start of the work, not a no.
+    it("forbids folding on a soft brush-off and raises the release threshold", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block).toContain('A brush-off is not a "no"');
+      expect(block).toContain("is the START of your work");
+      expect(block).toContain("CLEAR, EXPLICIT, and repeated refusal");
+    });
+
+    // These rules must sit before the operator's per-status instructions so they
+    // frame (and outrank) the specific handling.
+    it("places the behaviour rules before the per-status handling", () => {
+      const block = renderWarmingContextBlock(baseArgs);
+      expect(block.indexOf("Answer what they just said")).toBeLessThan(
+        block.indexOf("## How to handle this lead"),
+      );
+    });
   });
 });
