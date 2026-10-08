@@ -10,6 +10,7 @@ import {
   israelDayStartIso,
   sortByReleasePriority,
 } from "../_shared/warmingRelease.ts";
+import { isOutsideWarmingSendWindow } from "../_shared/warmingSendWindow.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -193,7 +194,7 @@ Deno.serve(async (req) => {
   ];
   const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, deferred_warming_off_hours: 0, cancelled: 0 };
   let auth401AlertSent = false;
 
   // CRM-warming rows need two facts the claim RPC doesn't return: whether the
@@ -273,7 +274,11 @@ Deno.serve(async (req) => {
   // the live bot depends on.
   const warmingApprovedIds = new Set<string>();
   const dayStartIso = israelDayStartIso();
-  for (const agentId of new Set([...warmingById.values()].map((w) => w.agentId))) {
+  // Off-hours nothing is approved, so the cap resetting at midnight can't
+  // release the backlog into the night.
+  const isWarmingOffHours = isOutsideWarmingSendWindow();
+  const warmingAgentIds = isWarmingOffHours ? [] : [...new Set([...warmingById.values()].map((w) => w.agentId))];
+  for (const agentId of warmingAgentIds) {
     const { data: agentCfg } = await admin
       .from("agents")
       .select("warming_min_gap_seconds, warming_daily_cap")
@@ -391,6 +396,11 @@ Deno.serve(async (req) => {
     // regardless of whether this template ever fires.
     if (warmingById.has(row.id)) {
       const meta = warmingById.get(row.id)!;
+      if (isWarmingOffHours) {
+        await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+        results.deferred_warming_off_hours++;
+        continue;
+      }
       if (isRecentInbound(meta.lastInbound)) {
         await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
         results.deferred_warming_active_chat++;
