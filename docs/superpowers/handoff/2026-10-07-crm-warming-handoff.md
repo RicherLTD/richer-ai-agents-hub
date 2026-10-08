@@ -65,6 +65,8 @@ bunx supabase functions deploy whatsapp-webhook whatsapp-webhook-dm --no-verify-
   - **תוויות שאומתו מול Fireberry** (רשימת "לא מעוניין", 20 ערכים): כל 18 סטטוסי החימום שבה ממופים נכון. לא אומתו: א"מ 3–7, ל"ר 26, ל"ב 47 (2 עבר בפועל). דיבאג: בריצה ב-n8n, פלט "Map Fireberry Fields" → `skip_reason` + `_debug_status_label`.
   - **סטטוסים ב-Fireberry בלי שורת חימום:** "להמשיך חימום", "ל"מ - רוצה ללמוד לבד" — מסוננים. ממתין להחלטה (המלצה: לחבר את "להמשיך חימום").
 - **אומת מקצה לקצה 2026-10-08:** שינוי סטטוס בכרטיס הבודק → n8n → webhook → פתיח יצא ונמסר (14:43). לידים אמיתיים: עד 14:47 יצאו 6 פתיחים; 2 בוטלו אוטומטית כי הליד ביקש הסרה בעבר (`opted_out_before_send`) — ההגנה עובדת. בדיקות על מספר הבודק **נספרות בתקרה היומית**.
+- **חלון שליחה 09:00–20:00 IL לחימום בלבד** (PR #105, dispatcher v34, נפרס 2026-10-08 14:57 IL ומוזג ל-main). הסיבה: ל-`affiliate_marketing` אין quiet hours (הבוט עונה 24/7 וזה צריך להישאר), והתקרה היומית מתאפסת בחצות — בלי החלון כל ה-backlog היה יוצא ב-00:00. מחוץ לחלון שורות warming נדחות (`deferred_warming_off_hours`), לא מבוטלות. first-touch ודיוורים לא מושפעים. **לא לשנות quiet hours של הסוכן כדי לפתור בעיות חימום** — זה משתיק גם את הבוט בלילה.
+- **קצב בפועל:** נציגים מעבירים לחימום ~14 לידים בשעה הראשונה. בתקרה 10 התור גדל כל יום; לידים עם `release_priority` נמוך (24 = 50) יחכו הכי הרבה.
 - **מתג כיבוי מלא (Live):** (1) `update agents set crm_warming_enabled=false where name='affiliate_marketing'` (2) `update scheduled_messages set status='cancelled', last_error='warming_kill_switch' where kind='warming' and status='pending'` (3) אופציונלי: `update conversations set crm_warming_status='warming_stopped' where crm_warming_status='warming'`.
 
 ## 📋 סטטוס הבדיקות — 29 פעילים
