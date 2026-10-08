@@ -1722,7 +1722,9 @@ async function generateAndSendAgentResponseLocked(
   }
 }
 
-const NON_TEXT_CANNED_REPLY = "היי 😊 רק שתדע, אני יותר טוב/ה בטקסט מאשר בקבצי קול. תוכל/י לכתוב לי את זה במקום? תודה!";
+// Gender-neutral on both sides (no "טוב/ה" / "תוכל/י" slashes, which read as
+// a form), and no "היי" — this usually lands mid-conversation.
+const NON_TEXT_CANNED_REPLY = "זה לא נפתח לי פה 🙈 אפשר לכתוב לי את זה בהודעה?";
 
 /**
  * Send a fixed "please type in text" reply when the lead sends voice /
