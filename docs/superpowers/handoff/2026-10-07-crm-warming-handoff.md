@@ -25,7 +25,7 @@
 | קוד | ⚠️ **לא הכל זהה ל-main** (נבדק 2026-10-07): `whatsapp-webhook` + `-dm` רצים מהענף `fix/crm-warming-stale-history` (2 commits מעל main, עוד לא ממוזג — **לא לפרוס מ-main לפני המיזוג**, זה יחזיר את הבאג). `dispatch-scheduled-templates` בפרוד = גרסה מ-2026-08-30, **לפני** #99/#100 — ראה מלכודות. עובדים מענף חדש מ-main לכל תיקון. |
 | DB (פרוד) | מיגרציות 0048 (קונפיג: כיבוי 3/5/16/19 + delays) ו-0049 (29 טקסטים) **כבר הוחלו** דרך Management API (לכן הן לא מופיעות ב-`schema_migrations`). שתיהן אידמפוטנטיות. |
 | מתג | `agents.crm_warming_enabled` = דלוק ל-`affiliate_marketing` בלבד (ראה "מי בודק ומה מותר לו"). digital_marketing / Leon_Richi = כבוי. |
-| חשיפה ללידים אמיתיים | נבדק 2026-10-07: **0** שיחות אמיתיות בחימום, **0** שליחות warming למספרים אמיתיים. |
+| חשיפה ללידים אמיתיים | ⚠️ **חי מ-2026-10-08** (שלב 1, תקרה 10 ביום, שיווק שותפים בלבד) — ראה "עלייה לאוויר". עד 2026-10-07: 0. |
 | טסטים | `bun run test` עובר (607; כולל `warmingContextBlock.test.ts` + `warmingHistory.test.ts`). |
 
 ## 🔁 שיטת העבודה — לולאת בדיקה לכל סטטוס
@@ -57,8 +57,14 @@ bunx supabase functions deploy whatsapp-webhook whatsapp-webhook-dm --no-verify-
 ## 🚀 עלייה לאוויר (2026-10-07)
 - **אישור:** Izak אישר שלב 1 (הועבר ע"י הבודק בצ'אט). דף ההחלטה: https://claude.ai/artifact/W2HyeVQbMKxXD1W9ng133i
 - **שלב 1:** `agents.warming_daily_cap = 10` ל-`affiliate_marketing` (הוחל בפרוד). digital_marketing כבוי.
-- **תנאי מקדים:** פריסת `dispatch-scheduled-templates` מ-main (הגרסה החיה v32 בלי הגנות הקצב — התקרה לא נאכפת עד הפריסה).
-- **חיבור:** האוטומציה ב-Fireberry / n8n (`YeBmPoVmVDYfiCbL`) — צד Izak, אין לנו גישה.
+- **תנאי מקדים:** ~~פריסת `dispatch-scheduled-templates` מ-main~~ ✅ נפרס 2026-10-08 (v33, זהה ל-main, עם הגנות הקצב).
+- **חיבור (חי מ-2026-10-08 ~14:15 IL):**
+  - **Fireberry:** אוטומציה "חימום CRM - שינוי סטטוס משני ל-n8n (בוט וואטסאפ)" על ליד, בעדכון, תנאי "סטטוס משני השתנה", פעולה "קריאה לכתובת אינטרנט" (POST JSON). אין בה סינון סטטוסים — **ה-whitelist ב-n8n הוא השער היחיד**.
+  - **n8n `YeBmPoVmVDYfiCbL`:** published. נתיב ה-webhook הוחלף לנתיב סודי (הישן מחזיר 404). **ה-URL הוא סוד** — מי שמחזיק אותו יכול להזריק חימום. לא להעתיק למסמכים/צ'אטים.
+  - ⚠️ **ה-placeholders של Fireberry מרנדרים תוויות תצוגה, לא מספרים/GUID:** `pcfsystemfield103` = `ל"מ - אחר (פרט)`, `pcfsystemfield122` = `🔴מסלול שיווק שותפים`, `statuscode` = `לא מעוניין`, `accountid` = **שם** הליד. לכן ה-node "Map Fireberry Fields" ממפה תווית→קוד: משווה אותיות+ספרות בלבד, ומסיר טקסט בסוגריים `(...)`/`[...]`. גרסה ראשונה בלי הסרת סוגריים סיננה בשקט את 24 ("ל"מ - אחר (פרט)") ואת 76 ("ל"מ - בן/בת זוג [גורם חיצוני]") — תוקן ופורסם 2026-10-08 14:40.
+  - **תוויות שאומתו מול Fireberry** (רשימת "לא מעוניין", 20 ערכים): כל 18 סטטוסי החימום שבה ממופים נכון. לא אומתו: א"מ 3–7, ל"ר 26, ל"ב 47 (2 עבר בפועל). דיבאג: בריצה ב-n8n, פלט "Map Fireberry Fields" → `skip_reason` + `_debug_status_label`.
+  - **סטטוסים ב-Fireberry בלי שורת חימום:** "להמשיך חימום", "ל"מ - רוצה ללמוד לבד" — מסוננים. ממתין להחלטה (המלצה: לחבר את "להמשיך חימום").
+- **אומת מקצה לקצה 2026-10-08:** שינוי סטטוס בכרטיס הבודק → n8n → webhook → פתיח יצא ונמסר (14:43). לידים אמיתיים: עד 14:47 יצאו 6 פתיחים; 2 בוטלו אוטומטית כי הליד ביקש הסרה בעבר (`opted_out_before_send`) — ההגנה עובדת. בדיקות על מספר הבודק **נספרות בתקרה היומית**.
 - **מתג כיבוי מלא (Live):** (1) `update agents set crm_warming_enabled=false where name='affiliate_marketing'` (2) `update scheduled_messages set status='cancelled', last_error='warming_kill_switch' where kind='warming' and status='pending'` (3) אופציונלי: `update conversations set crm_warming_status='warming_stopped' where crm_warming_status='warming'`.
 
 ## 📋 סטטוס הבדיקות — 29 פעילים
