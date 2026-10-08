@@ -19,6 +19,26 @@
 
 const META_API_VERSION = "v22.0";
 
+/** Which step of the pipeline gave up, so a silent fallback can still be
+ *  diagnosed. Never carries tokens or the signed media URL — only its host. */
+export interface TranscriptionFailure {
+  step: "media_lookup" | "media_lookup_no_url" | "media_download" | "whisper" | "whisper_empty" | "exception";
+  status?: number;
+  detail?: string;
+}
+
+type OnFailure = (failure: TranscriptionFailure) => void;
+
+const MAX_DETAIL_CHARS = 200;
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "(unparseable url)";
+  }
+}
+
 interface MediaBytes {
   bytes: Uint8Array;
   mimeType: string;
@@ -37,6 +57,7 @@ export async function downloadWhatsAppMedia(args: {
   apiUrl: string;
   /** Same access token used for the send endpoint. */
   accessToken: string;
+  onFailure?: OnFailure;
 }): Promise<MediaBytes | null> {
   try {
     // Step 1: resolve the media URL. The endpoint is /<media_id> with
@@ -47,21 +68,31 @@ export async function downloadWhatsAppMedia(args: {
     const metaRes = await fetch(metaUrl, {
       headers: { Authorization: `Bearer ${args.accessToken}` },
     });
-    if (!metaRes.ok) return null;
+    if (!metaRes.ok) {
+      args.onFailure?.({ step: "media_lookup", status: metaRes.status, detail: hostOf(metaUrl) });
+      return null;
+    }
     const meta = (await metaRes.json()) as { url?: string; mime_type?: string };
-    if (!meta.url) return null;
+    if (!meta.url) {
+      args.onFailure?.({ step: "media_lookup_no_url", detail: hostOf(metaUrl) });
+      return null;
+    }
 
     // Step 2: download the bytes.
     const bytesRes = await fetch(meta.url, {
       headers: { Authorization: `Bearer ${args.accessToken}` },
     });
-    if (!bytesRes.ok) return null;
+    if (!bytesRes.ok) {
+      args.onFailure?.({ step: "media_download", status: bytesRes.status, detail: hostOf(meta.url) });
+      return null;
+    }
     const arrayBuf = await bytesRes.arrayBuffer();
     return {
       bytes: new Uint8Array(arrayBuf),
       mimeType: meta.mime_type ?? "audio/ogg",
     };
-  } catch {
+  } catch (e) {
+    args.onFailure?.({ step: "exception", detail: String(e).slice(0, MAX_DETAIL_CHARS) });
     return null;
   }
 }
@@ -74,6 +105,7 @@ export async function downloadWhatsAppMedia(args: {
 export async function transcribeWithWhisper(args: {
   audio: MediaBytes;
   openaiApiKey: string;
+  onFailure?: OnFailure;
 }): Promise<string | null> {
   try {
     const form = new FormData();
@@ -93,31 +125,40 @@ export async function transcribeWithWhisper(args: {
       headers: { Authorization: `Bearer ${args.openaiApiKey}` },
       body: form,
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      args.onFailure?.({ step: "whisper", status: res.status, detail: body.slice(0, MAX_DETAIL_CHARS) });
+      return null;
+    }
     const text = (await res.text()).trim();
-    if (text.length < 2) return null;
+    if (text.length < 2) {
+      args.onFailure?.({ step: "whisper_empty", detail: `length=${text.length}` });
+      return null;
+    }
     return text;
-  } catch {
+  } catch (e) {
+    args.onFailure?.({ step: "exception", detail: String(e).slice(0, MAX_DETAIL_CHARS) });
     return null;
   }
 }
 
 /**
  * Convenience: full pipeline. Returns the Hebrew transcript or null on
- * any failure. Caller stays oblivious to whether it was a download
- * issue, a Whisper outage, or a missing env var.
+ * any failure; `onFailure` says which step gave up.
  */
 export async function transcribeVoiceNote(args: {
   mediaId: string;
   apiUrl: string;
   accessToken: string;
   openaiApiKey: string;
+  onFailure?: OnFailure;
 }): Promise<string | null> {
   const audio = await downloadWhatsAppMedia({
     mediaId: args.mediaId,
     apiUrl: args.apiUrl,
     accessToken: args.accessToken,
+    onFailure: args.onFailure,
   });
   if (!audio) return null;
-  return await transcribeWithWhisper({ audio, openaiApiKey: args.openaiApiKey });
+  return await transcribeWithWhisper({ audio, openaiApiKey: args.openaiApiKey, onFailure: args.onFailure });
 }

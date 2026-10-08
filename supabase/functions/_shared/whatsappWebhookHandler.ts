@@ -51,7 +51,7 @@ import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 import { callWithRetry } from "./anthropicRetry.ts";
 import { JUDGE_MODEL, judgeReply } from "./judgeReply.ts";
 import { flagNeedsAttention } from "./needsAttention.ts";
-import { transcribeVoiceNote } from "./transcribeVoice.ts";
+import { transcribeVoiceNote, type TranscriptionFailure } from "./transcribeVoice.ts";
 import { logError } from "./logError.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
 import { sendWhatsAppText, type SendResult } from "./whatsappSend.ts";
@@ -1722,7 +1722,9 @@ async function generateAndSendAgentResponseLocked(
   }
 }
 
-const NON_TEXT_CANNED_REPLY = "היי 😊 רק שתדע, אני יותר טוב/ה בטקסט מאשר בקבצי קול. תוכל/י לכתוב לי את זה במקום? תודה!";
+// Gender-neutral on both sides (no "טוב/ה" / "תוכל/י" slashes, which read as
+// a form), and no "היי" — this usually lands mid-conversation.
+const NON_TEXT_CANNED_REPLY = "זה לא נפתח לי פה 🙈 אפשר לכתוב לי את זה בהודעה?";
 
 /**
  * Send a fixed "please type in text" reply when the lead sends voice /
@@ -2074,12 +2076,28 @@ async function ingestInboundMessage(
     // the canned "please type" reply.
     const mediaId = message.audio?.id ?? message.voice?.id;
     let transcript: string | null = null;
+    let failure: TranscriptionFailure | null = mediaId ? null : { step: "media_lookup", detail: "no media id in payload" };
     if (mediaId) {
       transcript = await transcribeVoiceNote({
         mediaId,
         apiUrl: envForTranscription.apiUrl,
         accessToken: envForTranscription.accessToken,
         openaiApiKey: envForTranscription.openaiApiKey,
+        onFailure: (f) => { failure = f; },
+      });
+    }
+    // Every step falls back silently to the canned "please type" reply, so
+    // without this row nobody can tell that voice notes stopped transcribing.
+    if (!transcript && failure) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "voice_transcription_failed",
+        level: "warn",
+        message: `voice note not transcribed: step=${failure.step} status=${failure.status ?? "-"}`,
+        context: { ...failure },
+        agentId,
+        conversationId,
       });
     }
     if (transcript && transcript.length >= 2) {
