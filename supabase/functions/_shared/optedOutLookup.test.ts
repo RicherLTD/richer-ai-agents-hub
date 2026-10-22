@@ -41,6 +41,17 @@ describe("fetchOptedOutSet", () => {
     expect(set.size).toBe(0);
   });
 
+  it("throws when the opt_outs query fails, instead of treating everyone as sendable", async () => {
+    const failing = {
+      from: () => ({
+        select: () => ({
+          in: () => Promise.resolve({ data: null, error: { message: "boom" } }),
+        }),
+      }),
+    } as unknown as SupabaseClient;
+    await expect(fetchOptedOutSet(failing, ["972528524113"])).rejects.toThrow("opt_outs lookup failed");
+  });
+
   it("returns empty for no candidates", async () => {
     const set = await fetchOptedOutSet(fakeAdmin(["972528524113"]), []);
     expect(set.size).toBe(0);

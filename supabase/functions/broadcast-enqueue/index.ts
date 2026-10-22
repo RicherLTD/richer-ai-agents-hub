@@ -6,6 +6,10 @@ import { buildRecipientSet, type RawRecipient } from "../_shared/broadcastRecipi
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 const INSERT_CHUNK = 500;
+/** PostgREST caps every response at max_rows (1000 on this project). The
+ *  include_existing read used to be one unpaged query, so "all leads" silently
+ *  meant "the first 1000" — the 2026-08-20 broadcast reached 1000 of 3019. */
+const PAGE_SIZE = 1000;
 
 interface EnqueueBody {
   agent_id?: string;
@@ -16,8 +20,24 @@ interface EnqueueBody {
   scheduled_for?: string | null;
   /** When true, include ALL active leads of this agent (=product) as recipients. */
   include_existing?: boolean;
+  /** Optional registration window for include_existing, on conversations.created_at.
+   *  ISO timestamps; from is inclusive, before is exclusive. CSV rows are not filtered. */
+  registered_from?: string | null;
+  registered_before?: string | null;
+  /** Compute the audience and its suppression breakdown, write nothing. The
+   *  composer calls this to show "will send to N" before the operator commits. */
+  dry_run?: boolean;
   existing_lead_conversation_ids?: string[];
   csv_recipients?: Array<{ phone?: string; name?: string; variables?: string[] }>;
+}
+
+/** A valid ISO timestamp, null when absent; throws 400 on garbage. */
+function parseOptionalIso(value: unknown, field: string): string | null {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string" || Number.isNaN(new Date(value).getTime())) {
+    throw new HttpError(400, `${field} must be an ISO timestamp`);
+  }
+  return new Date(value).toISOString();
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -43,7 +63,12 @@ Deno.serve(async (req) => {
     const templateName = (body.template_name ?? "").trim();
     const templateLanguage = (body.template_language ?? "he").trim();
     const title = (body.title ?? "").trim();
-    if (!agentId || !templateName || !title) {
+    const dryRun = body.dry_run === true;
+    const registeredFrom = parseOptionalIso(body.registered_from, "registered_from");
+    const registeredBefore = parseOptionalIso(body.registered_before, "registered_before");
+    if (!agentId) throw new HttpError(400, "agent_id is required");
+    // A dry run only sizes the audience, so it needs no template or title yet.
+    if (!dryRun && (!templateName || !title)) {
       throw new HttpError(400, "agent_id, template_name and title are required");
     }
     const defaultVariables = Array.isArray(body.template_variables)
@@ -56,34 +81,37 @@ Deno.serve(async (req) => {
       .eq("id", agentId)
       .maybeSingle();
     if (!agent) throw new HttpError(404, "agent not found");
-    if (agent.is_paused) throw new HttpError(409, "agent is paused (kill switch on)");
+    if (agent.is_paused && !dryRun) throw new HttpError(409, "agent is paused (kill switch on)");
 
-    const { data: tpl } = await admin
-      .from("broadcast_templates")
-      .select("id")
-      .eq("agent_id", agentId)
-      .eq("name", templateName)
-      .eq("language", templateLanguage)
-      .eq("is_active", true)
-      .maybeSingle();
-    if (!tpl) throw new HttpError(400, "template is not a registered active broadcast template for this agent");
+    // Template + idempotency checks only matter when we are about to write.
+    if (!dryRun) {
+      const { data: tpl } = await admin
+        .from("broadcast_templates")
+        .select("id")
+        .eq("agent_id", agentId)
+        .eq("name", templateName)
+        .eq("language", templateLanguage)
+        .eq("is_active", true)
+        .maybeSingle();
+      if (!tpl) throw new HttpError(400, "template is not a registered active broadcast template for this agent");
 
-    const cutoff = new Date(Date.now() - 60_000).toISOString();
-    const { data: dup } = await admin
-      .from("broadcasts")
-      .select("id, total_recipients, suppressed_count, suppressed_breakdown")
-      .eq("agent_id", agentId)
-      .eq("title", title)
-      .eq("created_by", callerId)
-      .gte("created_at", cutoff)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    if (dup) {
-      return jsonResponse(
-        { broadcast_id: dup.id, total_recipients: dup.total_recipients, suppressed_count: dup.suppressed_count, suppressed_breakdown: dup.suppressed_breakdown, idempotent: true },
-        { headers: corsHeaders },
-      );
+      const cutoff = new Date(Date.now() - 60_000).toISOString();
+      const { data: dup } = await admin
+        .from("broadcasts")
+        .select("id, total_recipients, suppressed_count, suppressed_breakdown")
+        .eq("agent_id", agentId)
+        .eq("title", title)
+        .eq("created_by", callerId)
+        .gte("created_at", cutoff)
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (dup) {
+        return jsonResponse(
+          { broadcast_id: dup.id, total_recipients: dup.total_recipients, suppressed_count: dup.suppressed_count, suppressed_breakdown: dup.suppressed_breakdown, idempotent: true },
+          { headers: corsHeaders },
+        );
+      }
     }
 
     const raw: RawRecipient[] = [];
@@ -99,13 +127,21 @@ Deno.serve(async (req) => {
       }
     }
     if (body.include_existing === true) {
-      const { data: convs } = await admin
-        .from("conversations")
-        .select("id, lead_phone, lead_name")
-        .eq("agent_id", agentId)
-        .eq("status", "active");
-      for (const c of convs ?? []) {
-        raw.push({ phone: c.lead_phone as string, name: (c as { lead_name?: string }).lead_name ?? null, conversationId: c.id as string });
+      for (let from = 0; ; from += PAGE_SIZE) {
+        let query = admin
+          .from("conversations")
+          .select("id, lead_phone, lead_name")
+          .eq("agent_id", agentId)
+          .eq("status", "active");
+        if (registeredFrom) query = query.gte("created_at", registeredFrom);
+        if (registeredBefore) query = query.lt("created_at", registeredBefore);
+        // Stable order, or pages can overlap/skip while rows change underneath.
+        const { data: convs, error: convErr } = await query.order("id").range(from, from + PAGE_SIZE - 1);
+        if (convErr) throw new HttpError(500, `failed to load leads: ${convErr.message}`);
+        for (const c of convs ?? []) {
+          raw.push({ phone: c.lead_phone as string, name: (c as { lead_name?: string }).lead_name ?? null, conversationId: c.id as string });
+        }
+        if (!convs || convs.length < PAGE_SIZE) break;
       }
     }
     for (const r of body.csv_recipients ?? []) {
@@ -113,7 +149,15 @@ Deno.serve(async (req) => {
         raw.push({ phone: r.phone, name: r.name ?? null, variables: Array.isArray(r.variables) ? r.variables : null });
       }
     }
-    if (raw.length === 0) throw new HttpError(400, "no recipients supplied");
+    if (raw.length === 0) {
+      if (dryRun) {
+        return jsonResponse(
+          { dry_run: true, total_recipients: 0, suppressed_count: 0, suppressed_breakdown: {} },
+          { headers: corsHeaders },
+        );
+      }
+      throw new HttpError(400, "no recipients supplied");
+    }
 
     const candidatePhones = [
       ...new Set(raw.map((r) => toCanonicalPhone(r.phone)).filter((p): p is string => !!p)),
@@ -146,6 +190,18 @@ Deno.serve(async (req) => {
     }
 
     const set = buildRecipientSet({ recipients: raw, optedOutPhones, blockedPhones });
+
+    if (dryRun) {
+      return jsonResponse(
+        {
+          dry_run: true,
+          total_recipients: set.toSend.length,
+          suppressed_count: set.suppressedCount,
+          suppressed_breakdown: set.breakdown,
+        },
+        { headers: corsHeaders },
+      );
+    }
 
     const scheduledFor = body.scheduled_for ?? null;
     const { data: broadcast, error: bErr } = await admin

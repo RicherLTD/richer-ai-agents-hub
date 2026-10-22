@@ -51,6 +51,9 @@ export interface EnqueuePayload {
   title: string;
   scheduled_for: string | null;
   include_existing?: boolean;
+  /** Registration window for include_existing (ISO; from inclusive, before exclusive). */
+  registered_from?: string | null;
+  registered_before?: string | null;
   existing_lead_conversation_ids?: string[];
   csv_recipients?: Array<{ phone: string; name?: string; variables?: string[] }>;
 }
@@ -88,6 +91,44 @@ export async function enqueueBroadcast(payload: EnqueuePayload): Promise<Enqueue
   const { data, error } = await supabase.functions.invoke("broadcast-enqueue", { body: payload });
   if (error) throw error;
   return data as EnqueueResult;
+}
+
+export type AudiencePreview = Omit<EnqueueResult, "broadcast_id">;
+
+/**
+ * Size the audience exactly as a real send would — same lead query, opt-out
+ * and blocking-tag suppression — without writing anything (`dry_run`).
+ */
+export async function previewBroadcastAudience(
+  payload: Pick<EnqueuePayload, "agent_id" | "include_existing" | "registered_from" | "registered_before" | "csv_recipients">,
+): Promise<AudiencePreview> {
+  const { data, error } = await supabase.functions.invoke("broadcast-enqueue", {
+    body: { ...payload, dry_run: true },
+  });
+  if (error) throw error;
+  return data as AudiencePreview;
+}
+
+/**
+ * The operator picks whole days in Israel; the server filters on timestamps.
+ * `to` is inclusive, so the exclusive bound is the start of the next day.
+ * Uses the browser's local midnight — the dashboard is operated from Israel.
+ */
+export function registrationWindow(
+  fromDate: string,
+  toDate: string,
+): { registered_from: string | null; registered_before: string | null } {
+  const startOf = (day: string): Date | null => {
+    const d = new Date(`${day}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const from = fromDate ? startOf(fromDate) : null;
+  const to = toDate ? startOf(toDate) : null;
+  if (to) to.setDate(to.getDate() + 1);
+  return {
+    registered_from: from ? from.toISOString() : null,
+    registered_before: to ? to.toISOString() : null,
+  };
 }
 
 export async function cancelBroadcast(broadcastId: string): Promise<void> {
