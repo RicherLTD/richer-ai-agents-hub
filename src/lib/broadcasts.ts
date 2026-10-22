@@ -51,6 +51,12 @@ export interface EnqueuePayload {
   title: string;
   scheduled_for: string | null;
   include_existing?: boolean;
+  /** Registration window for include_existing (ISO; from inclusive, before exclusive). */
+  registered_from?: string | null;
+  registered_before?: string | null;
+  /** Fireberry status filters for include_existing; null = "no status". */
+  status_mains?: Array<number | null>;
+  status_subs?: Array<number | null>;
   existing_lead_conversation_ids?: string[];
   csv_recipients?: Array<{ phone: string; name?: string; variables?: string[] }>;
 }
@@ -88,6 +94,104 @@ export async function enqueueBroadcast(payload: EnqueuePayload): Promise<Enqueue
   const { data, error } = await supabase.functions.invoke("broadcast-enqueue", { body: payload });
   if (error) throw error;
   return data as EnqueueResult;
+}
+
+export type AudiencePreview = Omit<EnqueueResult, "broadcast_id">;
+
+/**
+ * Size the audience exactly as a real send would — same lead query, opt-out
+ * and blocking-tag suppression — without writing anything (`dry_run`).
+ */
+export async function previewBroadcastAudience(
+  payload: Pick<
+    EnqueuePayload,
+    "agent_id" | "include_existing" | "registered_from" | "registered_before" | "status_mains" | "status_subs" | "csv_recipients"
+  >,
+): Promise<AudiencePreview> {
+  const { data, error } = await supabase.functions.invoke("broadcast-enqueue", {
+    body: { ...payload, dry_run: true },
+  });
+  if (error) throw error;
+  return data as AudiencePreview;
+}
+
+/**
+ * The operator picks whole days in Israel; the server filters on timestamps.
+ * `to` is inclusive, so the exclusive bound is the start of the next day.
+ * Uses the browser's local midnight — the dashboard is operated from Israel.
+ */
+export function registrationWindow(
+  fromDate: string,
+  toDate: string,
+): { registered_from: string | null; registered_before: string | null } {
+  const startOf = (day: string): Date | null => {
+    const d = new Date(`${day}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  const from = fromDate ? startOf(fromDate) : null;
+  const to = toDate ? startOf(toDate) : null;
+  if (to) to.setDate(to.getDate() + 1);
+  return {
+    registered_from: from ? from.toISOString() : null,
+    registered_before: to ? to.toISOString() : null,
+  };
+}
+
+/** One status bucket for the picker; code null = no Fireberry status. */
+export interface StatusCount {
+  kind: "main" | "sub";
+  code: number | null;
+  name: string | null;
+  leads: number;
+}
+
+/** Active leads per Fireberry status, inside the registration window. */
+export async function fetchStatusCounts(
+  agentId: string,
+  window: { registered_from: string | null; registered_before: string | null },
+): Promise<StatusCount[]> {
+  const { data, error } = await supabase.rpc("broadcast_status_counts", {
+    p_agent_id: agentId,
+    p_registered_from: window.registered_from,
+    p_registered_before: window.registered_before,
+  });
+  if (error) throw error;
+  return (data ?? []).map((r) => ({
+    kind: r.kind === "main" ? "main" : "sub",
+    code: r.code,
+    name: r.name,
+    leads: Number(r.leads),
+  }));
+}
+
+export interface StatusSyncState {
+  last_run_at: string | null;
+  full_sync_done_at: string | null;
+  last_error: string | null;
+}
+
+/** Sync health for the agent's Fireberry product, or null if it has none. */
+export async function fetchStatusSyncState(agentId: string): Promise<StatusSyncState | null> {
+  const { data: agent, error: agentErr } = await supabase
+    .from("agents")
+    .select("fireberry_product_id")
+    .eq("id", agentId)
+    .maybeSingle();
+  if (agentErr) throw agentErr;
+  if (!agent?.fireberry_product_id) return null;
+  const { data, error } = await supabase
+    .from("fireberry_sync_state")
+    .select("last_run_at, full_sync_done_at, last_error")
+    .eq("product_id", agent.fireberry_product_id)
+    .maybeSingle();
+  if (error) throw error;
+  return data ?? { last_run_at: null, full_sync_done_at: null, last_error: null };
+}
+
+/** Kick a sync run now (it continues in the background for up to ~2 minutes). */
+export async function triggerStatusSync(): Promise<void> {
+  const { error } = await supabase.functions.invoke("fireberry-status-sync", { body: {} });
+  if (error) throw error;
 }
 
 export async function cancelBroadcast(broadcastId: string): Promise<void> {

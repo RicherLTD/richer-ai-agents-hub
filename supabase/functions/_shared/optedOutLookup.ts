@@ -17,9 +17,9 @@ export function optOutPhoneVariants(canonical: string): string[] {
 /**
  * Returns the subset of `canonicalPhones` that appear in `opt_outs`, in
  * canonical form, tolerant of the stored format. Chunked so the `.in()` list
- * stays bounded on large broadcasts. Fails open to an empty set only on a
- * thrown query — callers treat "not opted out" as sendable, so a hard DB error
- * must be surfaced by the caller, not swallowed here.
+ * stays bounded on large broadcasts. Throws on any failed query — callers
+ * treat "not opted out" as sendable, so a DB error must stop the broadcast,
+ * never shrink the opt-out set.
  */
 export async function fetchOptedOutSet(
   admin: SupabaseClient,
@@ -31,7 +31,10 @@ export async function fetchOptedOutSet(
   for (let i = 0; i < canonicalPhones.length; i += chunkSize) {
     const chunk = canonicalPhones.slice(i, i + chunkSize);
     const variants = chunk.flatMap(optOutPhoneVariants);
-    const { data } = await admin.from("opt_outs").select("lead_phone").in("lead_phone", variants);
+    const { data, error } = await admin.from("opt_outs").select("lead_phone").in("lead_phone", variants);
+    // supabase-js reports a failed query in `error` rather than throwing, so
+    // without this an unreachable opt_outs table read as "nobody opted out".
+    if (error) throw new Error(`opt_outs lookup failed: ${error.message}`);
     for (const row of (data ?? []) as Array<{ lead_phone: string }>) {
       const c = toCanonicalPhone(row.lead_phone);
       if (c) out.add(c);

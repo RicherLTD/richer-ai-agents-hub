@@ -111,6 +111,7 @@ export type Database = {
           display_name: string
           first_touch_delay_minutes: number
           first_touch_template_language: string
+          fireberry_product_id: string | null
           first_touch_template_name: string | null
           first_touch_template_variables_template: Json
           icon_url: string | null
@@ -148,6 +149,7 @@ export type Database = {
           display_name: string
           first_touch_delay_minutes?: number
           first_touch_template_language?: string
+          fireberry_product_id?: string | null
           first_touch_template_name?: string | null
           first_touch_template_variables_template?: Json
           icon_url?: string | null
@@ -185,6 +187,7 @@ export type Database = {
           display_name?: string
           first_touch_delay_minutes?: number
           first_touch_template_language?: string
+          fireberry_product_id?: string | null
           first_touch_template_name?: string | null
           first_touch_template_variables_template?: Json
           icon_url?: string | null
@@ -580,6 +583,13 @@ export type Database = {
           detected_language: string | null
           estimated_age: number | null
           experiment_variant: string | null
+          fb_account_id: string | null
+          fb_last_opportunity_at: string | null
+          fb_status_main: number | null
+          fb_status_main_name: string | null
+          fb_status_sub: number | null
+          fb_status_sub_name: string | null
+          fb_status_synced_at: string | null
           fireberry_lead_id: string | null
           funnel_stage: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id: string
@@ -634,6 +644,13 @@ export type Database = {
           detected_language?: string | null
           estimated_age?: number | null
           experiment_variant?: string | null
+          fb_account_id?: string | null
+          fb_last_opportunity_at?: string | null
+          fb_status_main?: number | null
+          fb_status_main_name?: string | null
+          fb_status_sub?: number | null
+          fb_status_sub_name?: string | null
+          fb_status_synced_at?: string | null
           fireberry_lead_id?: string | null
           funnel_stage?: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id?: string
@@ -690,6 +707,13 @@ export type Database = {
           detected_language?: string | null
           estimated_age?: number | null
           experiment_variant?: string | null
+          fb_account_id?: string | null
+          fb_last_opportunity_at?: string | null
+          fb_status_main?: number | null
+          fb_status_main_name?: string | null
+          fb_status_sub?: number | null
+          fb_status_sub_name?: string | null
+          fb_status_synced_at?: string | null
           fireberry_lead_id?: string | null
           funnel_stage?: Database["public"]["Enums"]["funnel_stage_enum"] | null
           id?: string
@@ -949,6 +973,36 @@ export type Database = {
             referencedColumns: ["id"]
           },
         ]
+      }
+      fireberry_sync_state: {
+        Row: {
+          cursor_ids: string[]
+          cursor_modified_on: string | null
+          full_sync_done_at: string | null
+          last_error: string | null
+          last_run_at: string | null
+          product_id: string
+          updated_at: string
+        }
+        Insert: {
+          cursor_ids?: string[]
+          cursor_modified_on?: string | null
+          full_sync_done_at?: string | null
+          last_error?: string | null
+          last_run_at?: string | null
+          product_id: string
+          updated_at?: string
+        }
+        Update: {
+          cursor_ids?: string[]
+          cursor_modified_on?: string | null
+          full_sync_done_at?: string | null
+          last_error?: string | null
+          last_run_at?: string | null
+          product_id?: string
+          updated_at?: string
+        }
+        Relationships: []
       }
       instagram_inbox_contacts: {
         Row: {
@@ -1585,6 +1639,23 @@ export type Database = {
       [_ in never]: never
     }
     Functions: {
+      apply_fireberry_statuses: {
+        Args: { p_agent_id: string; p_rows: Json }
+        Returns: number
+      }
+      broadcast_status_counts: {
+        Args: {
+          p_agent_id: string
+          p_registered_before?: string | null
+          p_registered_from?: string | null
+        }
+        Returns: {
+          code: number | null
+          kind: string
+          leads: number
+          name: string | null
+        }[]
+      }
       claim_scheduled_messages: {
         Args: { p_claim_grace_seconds?: number; p_limit: number; p_now: string }
         Returns: {
