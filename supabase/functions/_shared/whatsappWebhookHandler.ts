@@ -1008,6 +1008,12 @@ interface ActiveBroadcastRewarm {
  * Only consulted when the lead is NOT CRM-warming — that flow keeps its own
  * block and cutoff. Like the CRM rule, it is loaded before the history,
  * because its send time is also where the old messages are cut off.
+ *
+ * Reads the latest SENT template of any kind, not the latest broadcast: if a
+ * first-touch or other template went out after the broadcast (a lead who
+ * re-registered on the landing page), that newer flow owns the conversation
+ * and this mode stays off. Only rows broadcast-enqueue writes carry a
+ * broadcast_id.
  */
 async function loadActiveBroadcastRewarm(
   ctx: AgentLoopCtx,
@@ -1015,15 +1021,15 @@ async function loadActiveBroadcastRewarm(
 ): Promise<ActiveBroadcastRewarm | null> {
   const { data: latest } = await ctx.admin
     .from("scheduled_messages")
-    .select("template_name, sent_at")
+    .select("template_name, sent_at, broadcast_id")
     .eq("conversation_id", ctx.conversationId)
-    .not("broadcast_id", "is", null)
     .not("sent_at", "is", null)
     .order("sent_at", { ascending: false })
     .limit(1)
     .maybeSingle();
-  const sentAt = (latest?.sent_at as string | null | undefined) ?? null;
-  const templateName = (latest?.template_name as string | null | undefined) ?? null;
+  if (!latest?.broadcast_id) return null;
+  const sentAt = (latest.sent_at as string | null | undefined) ?? null;
+  const templateName = (latest.template_name as string | null | undefined) ?? null;
   if (!sentAt || !templateName) return null;
   if (!shouldRenderBroadcastRewarm({ openerSentAt: sentAt, contextDays })) return null;
   return { templateName, sentAt };
