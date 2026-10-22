@@ -64,6 +64,7 @@ import { type MoozDispatchCtx } from "./moozTools.ts";
 import { formatIlHHMM } from "./ilTime.ts";
 import { buildGuardHint } from "./guardHint.ts";
 import { withWarmingReplyGuard } from "./warmingReplyGuard.ts";
+import { withSystemLeakGuard } from "./systemLeakGuard.ts";
 import { loadBrainRows, buildBrainSection } from "./brainContext.ts";
 import {
   renderBookingStatusBlock,
@@ -73,6 +74,10 @@ import {
   renderWarmingContextBlock,
   shouldRenderWarmingBlock,
 } from "./warmingContextBlock.ts";
+import {
+  renderBroadcastRewarmBlock,
+  shouldRenderBroadcastRewarm,
+} from "./broadcastRewarmBlock.ts";
 import {
   buildPriorProfile,
   findOpenerTemplateName,
@@ -991,6 +996,82 @@ async function buildWarmingBlock(
   });
 }
 
+/** The broadcast this lead is replying to, while it still explains the turn. */
+interface ActiveBroadcastRewarm {
+  templateName: string;
+  sentAt: string;
+}
+
+/**
+ * The broadcast that re-opened this conversation, or null.
+ *
+ * Only consulted when the lead is NOT CRM-warming — that flow keeps its own
+ * block and cutoff. Like the CRM rule, it is loaded before the history,
+ * because its send time is also where the old messages are cut off.
+ *
+ * Reads the latest SENT template of any kind, not the latest broadcast: if a
+ * first-touch or other template went out after the broadcast (a lead who
+ * re-registered on the landing page), that newer flow owns the conversation
+ * and this mode stays off. Only rows broadcast-enqueue writes carry a
+ * broadcast_id.
+ */
+async function loadActiveBroadcastRewarm(
+  ctx: AgentLoopCtx,
+  contextDays: number,
+): Promise<ActiveBroadcastRewarm | null> {
+  const { data: latest } = await ctx.admin
+    .from("scheduled_messages")
+    .select("template_name, sent_at, broadcast_id")
+    .eq("conversation_id", ctx.conversationId)
+    .not("sent_at", "is", null)
+    .order("sent_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!latest?.broadcast_id) return null;
+  const sentAt = (latest.sent_at as string | null | undefined) ?? null;
+  const templateName = (latest.template_name as string | null | undefined) ?? null;
+  if (!sentAt || !templateName) return null;
+  if (!shouldRenderBroadcastRewarm({ openerSentAt: sentAt, contextDays })) return null;
+  return { templateName, sentAt };
+}
+
+/**
+ * Render the broadcast re-warm block: the template's text and the operator's
+ * per-template guidance, plus the stable facts from the hidden earlier
+ * conversation so the bot can refer to them without resuming it.
+ */
+async function buildBroadcastRewarmBlock(
+  ctx: AgentLoopCtx,
+  rewarm: ActiveBroadcastRewarm,
+  turn: AgentTurnContext,
+): Promise<string> {
+  let priorProfile: string[] = [];
+  if (turn.hiddenEarlierMessages > 0) {
+    const { data: memory } = await ctx.admin
+      .from("lead_memory")
+      .select("q1_age, q2_motivation, q3_dream_change, q4_blocker, q5_urgency")
+      .eq("conversation_id", ctx.conversationId)
+      .maybeSingle();
+    priorProfile = buildPriorProfile((memory as PriorProfileFields | null) ?? null);
+  }
+
+  const { data: template } = await ctx.admin
+    .from("broadcast_templates")
+    .select("body_preview, reply_instructions")
+    .eq("agent_id", ctx.agentId)
+    .eq("name", rewarm.templateName)
+    .maybeSingle();
+
+  return renderBroadcastRewarmBlock({
+    openerText: (template?.body_preview as string | null | undefined) ?? null,
+    templateInstructions: (template?.reply_instructions as string | null | undefined) ?? null,
+    // Only messages before the broadcast count as "history": a fresh CSV
+    // number has just the template marker and its reply.
+    hasHistory: turn.hiddenEarlierMessages > 0,
+    priorProfile,
+  });
+}
+
 async function logWarmingContextFailure(ctx: AgentLoopCtx, warmErr: unknown): Promise<void> {
   await logError({
     admin: ctx.admin,
@@ -1095,8 +1176,19 @@ async function generateAndSendAgentResponseLocked(
     await logWarmingContextFailure(ctx, warmErr);
   }
 
+  // Replying to a broadcast. CRM warming outranks it: a lead the CRM flow is
+  // working keeps that flow's block and cutoff. Same best-effort contract.
+  let broadcastRewarm: ActiveBroadcastRewarm | null = null;
+  if (!warmingRule) {
+    try {
+      broadcastRewarm = await loadActiveBroadcastRewarm(ctx, warmingContextDays);
+    } catch (warmErr) {
+      await logWarmingContextFailure(ctx, warmErr);
+    }
+  }
+
   const turn = await loadAgentTurnContext(ctx, {
-    warmingCutoffAt: warmingRule?.crm.statusEventAt ?? null,
+    warmingCutoffAt: warmingRule?.crm.statusEventAt ?? broadcastRewarm?.sentAt ?? null,
   });
   if (!turn) return;
 
@@ -1290,6 +1382,14 @@ async function generateAndSendAgentResponseLocked(
     } catch (warmErr) {
       await logWarmingContextFailure(ctx, warmErr);
     }
+  } else if (broadcastRewarm) {
+    // A reply to a broadcast gets the same re-warm treatment (and the same
+    // reply guard below), steered by the template instead of a CRM status.
+    try {
+      warmingBlock = await buildBroadcastRewarmBlock(ctx, broadcastRewarm, turn);
+    } catch (warmErr) {
+      await logWarmingContextFailure(ctx, warmErr);
+    }
   }
 
   // Single source of truth for the system prompt — runAgentTurn AND
@@ -1301,13 +1401,15 @@ async function generateAndSendAgentResponseLocked(
   // what they looked like before this feature. For a warming lead they make
   // "show me every conversation triggered by status 60, and what the bot said"
   // a filter in the Langfuse UI rather than a database query.
-  const warmingTraceTags = warmingBlock
-    ? [
+  const warmingTraceTags = !warmingBlock
+    ? []
+    : broadcastRewarm
+    ? ["broadcast_rewarm", `template:${broadcastRewarm.templateName}`]
+    : [
       "warming",
       `status:${opts.crm?.statusSub ?? "unknown"}`,
       `objection:${warmingObjectionKey ?? "unknown"}`,
-    ]
-    : [];
+    ];
 
   // The lead answered a warming opener. Recorded off the reply path, and only
   // for a conversation that is actually warming — every other lead skips this
@@ -1471,10 +1573,14 @@ async function generateAndSendAgentResponseLocked(
       ...(existingBookingTimeIL ? [existingBookingTimeIL] : []),
     ];
     // Warming turns also reject an announced technique ("not here to
-    // interrogate") on the first attempt; the retry below rewrites it.
-    const validation = withWarmingReplyGuard(
-      validateAgentReply(rawReply, { allowedMeetingTimes }),
-      { isWarming: warmingBlock !== "", isRetry: attempt > 0 },
+    // interrogate") on the first attempt, and every turn rejects narrating the
+    // system ("the system stopped me"); the retry below rewrites either.
+    const validation = withSystemLeakGuard(
+      withWarmingReplyGuard(
+        validateAgentReply(rawReply, { allowedMeetingTimes }),
+        { isWarming: warmingBlock !== "", isRetry: attempt > 0 },
+      ),
+      { isRetry: attempt > 0 },
     );
 
     // Trace the FIRST attempt only — regardless of validation outcome.

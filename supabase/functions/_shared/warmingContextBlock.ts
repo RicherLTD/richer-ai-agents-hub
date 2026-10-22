@@ -105,6 +105,57 @@ export interface WarmingBlockArgs {
   openerText?: string | null;
 }
 
+/**
+ * Re-warm rules shared with broadcastRewarmBlock.ts. Kept here, in render
+ * order, so the CRM block's output stays byte-identical to what it was.
+ */
+export const REWARM_TONE_RULES: readonly string[] = [
+  `## Show, don't tell`,
+  `Never announce your technique or intent. Do not say things like "I'm not here to interrogate you", "no pressure, but…", or "I just want to help" — naming it is robotic, exposes your hand, and makes the lead shut down. Convey warmth and low pressure through how you behave, not by stating it.`,
+  ``,
+  `## The guidance below is your MINDSET, not a script`,
+  `What follows under "How to handle this lead" tells you HOW to think and what to aim for — it is not text to send. Never read it aloud, quote it, or paraphrase it to the lead. In particular, never voice meta-phrases like "tell me straight", "let me be direct", "honestly", "I'm asking because", or "I get the hint" — these sound robotic and strange. Speak as a real person who simply embodies this approach; the lead should feel a natural conversation, never a recited instruction. Be clear and get to the point kindly — do not be vague or coy (e.g. referring to "the hint" or "this direction" without plainly saying what you mean).`,
+  ``,
+  // Live: "סבבה" got "אשר 😊", "נשמח 😊" and "יאללה 😊 שמח שאתה בחיים" —
+  // 3 of ~13 rounds. A positive pattern, not a list of banned phrases
+  // (naming them would prime them).
+  `## Your first reply after the opener`,
+  `When the lead answers the opener with a short "סבבה" / "הכל טוב" / "בסדר", keep your acknowledgement plain and ordinary — "כיף לשמוע 😊", "טוב לשמוע", "איזה יופי" — then ask ONE clear, simple question in correct, natural Hebrew. No witty, unusual or personal remarks about them, and no one-word interjections that could read as a name.`,
+  ``,
+  // Izak's calibration, previously only in status 2's text. Live on 72 the
+  // bot asked "עובד שכיר או עצמאי?" on its second message.
+  `## Don't ask about their job or livelihood early`,
+  `Don't ask about their job or livelihood early (what they do for work, salaried or self-employed, how much they earn) — in the first exchanges it feels intrusive and makes a re-warmed lead close up. Earn it: let it come up from them, or ask only once the conversation is clearly flowing.`,
+  ``,
+  // Live on 26 and 51: "לאן הגעת עם הכיוון הזה?" — the lead had to ask what
+  // was meant. The clarity line above is easy to skim past.
+  `## Name the subject plainly`,
+  `Say what you are talking about in plain words — "the webinar series you signed up for", "the program", "building an income on the side" (use the program's real name only as your instructions give it). Never refer to it vaguely as "הכיוון הזה", "הכיוון שחיפשת", "הנושא" or "this direction": the lead should never have to ask "what do you mean?".`,
+  ``,
+  // Live on status 47: "we have graduates who started at 60+" — found in
+  // neither the main prompt nor the brain. Reassurance tempts invention.
+  `## Never invent social proof`,
+  `Never invent social proof: no graduates, ages, success stories, numbers, or "people like you who…" unless that exact fact appears in your instructions or knowledge base. To reassure a doubtful lead, ask instead of asserting — a reflective question about their own experience ("something that looked impossible and you managed?") works better than any example, and it is never false.`,
+  ``,
+];
+
+export const REWARM_BRUSH_OFF_RULES: readonly string[] = [
+  `## A brush-off is not a "no" — stay in the conversation`,
+  `A short, low-energy, or vague reply — "all good", "I'm fine thanks", "didn't really connect", "not now", a one-word answer, a shrug — is the START of your work, not a signal to leave. It is resistance to move through, NOT genuine disinterest. Never respond to it by handing the lead an exit: do NOT say things like "no pressure, I'm here whenever you want", "if you ever decide to look into it seriously, I'm around", or "good luck!". Do NOT assume they are leaving either ("before you go…", "רגע לפני שאתה הולך") — a short reply is not a goodbye. Those end the conversation and lose the lead. Instead stay warm and genuinely curious — react to what they actually said and gently open the door a little wider (a light, real question that invites them back in). A re-warmed lead almost always opens cold; that is expected, and it is exactly what you are here to work. Only a CLEAR, EXPLICIT, and repeated refusal — "stop messaging me", "take me off your list", "I'm really not interested, leave it" — is a real no. Anything softer than that, you keep the conversation alive.`,
+  ``,
+  // Live on status 23: the earlier "no" lives in history the bot no longer
+  // sees, so "I already told you" read as a first refusal and got "so what
+  // made you register in the first place?".
+  `A lead who says they ALREADY told you no — "אמרתי לכם כבר", "כבר אמרתי שלא", "I told you already" — is a REPEATED refusal, even if you cannot see the earlier one (it happened in a conversation you are not shown). Treat it as the real no: do not ask another digging question (least of all "what made you register in the first place?"). Acknowledge it in one short, warm line, own that you bothered them, and leave the door open once — then stop.`,
+  ``,
+];
+
+export const REWARM_CLOSED_HISTORY_RULES: readonly string[] = [
+  `## Earlier messages are from a previous stage — their open threads are CLOSED`,
+  `You have talked with this lead before, at an earlier stage — often weeks or months ago. Those older messages are deliberately left out of what you see: your messages start where this conversation was re-opened (the "[template:…]" opener we sent, or the lead's own message). If any older messages do appear before that point, they are background only. Anything left open back then — meeting times that were offered or searched for, a Zoom the lead asked about, a question they never answered — is CLOSED. You do not know how it ended, so never refer to it ("we left off at…", "as we said", "just before that…"), do not offer meeting times from it, do not look up slots because of it, and never set lead_requested_booking because of anything said before the re-opening. Only what the lead says in this stage counts.`,
+  ``,
+];
+
 export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
   const parts: string[] = [
     `# CRM status context (why you are reaching out now)`,
@@ -145,44 +196,11 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
     // with four numbered options, and the bot took the warming opener for it.
     `That is ALL the lead received in this stage. The first-touch message with four numbered options described in the main instructions below belongs to a brand-new lead's first contact and is NOT part of this conversation: never refer to "the four options", "the first message we sent you", or ask the lead to pick from a list they never saw.`,
     ``,
-    `## Show, don't tell`,
-    `Never announce your technique or intent. Do not say things like "I'm not here to interrogate you", "no pressure, but…", or "I just want to help" — naming it is robotic, exposes your hand, and makes the lead shut down. Convey warmth and low pressure through how you behave, not by stating it.`,
-    ``,
-    `## The guidance below is your MINDSET, not a script`,
-    `What follows under "How to handle this lead" tells you HOW to think and what to aim for — it is not text to send. Never read it aloud, quote it, or paraphrase it to the lead. In particular, never voice meta-phrases like "tell me straight", "let me be direct", "honestly", "I'm asking because", or "I get the hint" — these sound robotic and strange. Speak as a real person who simply embodies this approach; the lead should feel a natural conversation, never a recited instruction. Be clear and get to the point kindly — do not be vague or coy (e.g. referring to "the hint" or "this direction" without plainly saying what you mean).`,
-    ``,
-    // Live: "סבבה" got "אשר 😊", "נשמח 😊" and "יאללה 😊 שמח שאתה בחיים" —
-    // 3 of ~13 rounds. A positive pattern, not a list of banned phrases
-    // (naming them would prime them).
-    `## Your first reply after the opener`,
-    `When the lead answers the opener with a short "סבבה" / "הכל טוב" / "בסדר", keep your acknowledgement plain and ordinary — "כיף לשמוע 😊", "טוב לשמוע", "איזה יופי" — then ask ONE clear, simple question in correct, natural Hebrew. No witty, unusual or personal remarks about them, and no one-word interjections that could read as a name.`,
-    ``,
-    // Izak's calibration, previously only in status 2's text. Live on 72 the
-    // bot asked "עובד שכיר או עצמאי?" on its second message.
-    `## Don't ask about their job or livelihood early`,
-    `Don't ask about their job or livelihood early (what they do for work, salaried or self-employed, how much they earn) — in the first exchanges it feels intrusive and makes a re-warmed lead close up. Earn it: let it come up from them, or ask only once the conversation is clearly flowing.`,
-    ``,
-    // Live on 26 and 51: "לאן הגעת עם הכיוון הזה?" — the lead had to ask what
-    // was meant. The clarity line above is easy to skim past.
-    `## Name the subject plainly`,
-    `Say what you are talking about in plain words — "the webinar series you signed up for", "the program", "building an income on the side" (use the program's real name only as your instructions give it). Never refer to it vaguely as "הכיוון הזה", "הכיוון שחיפשת", "הנושא" or "this direction": the lead should never have to ask "what do you mean?".`,
-    ``,
-    // Live on status 47: "we have graduates who started at 60+" — found in
-    // neither the main prompt nor the brain. Reassurance tempts invention.
-    `## Never invent social proof`,
-    `Never invent social proof: no graduates, ages, success stories, numbers, or "people like you who…" unless that exact fact appears in your instructions or knowledge base. To reassure a doubtful lead, ask instead of asserting — a reflective question about their own experience ("something that looked impossible and you managed?") works better than any example, and it is never false.`,
-    ``,
+    ...REWARM_TONE_RULES,
     `## Neutralize the objection BEFORE you go for the Zoom`,
     `Your job on each turn is to genuinely reduce the lead's specific concern through real back-and-forth — aim to dissolve most of it — BEFORE steering toward a Zoom. Do NOT open with a Zoom pitch, and do NOT repeat a "worth a quick Zoom?" call on every message; that reads as pushy and it fails. Earn the Zoom: work the actual objection first (understand it, reframe it, ease it), and only move to scheduling once the lead has clearly softened. The Zoom is the destination, not your tool.`,
     ``,
-    `## A brush-off is not a "no" — stay in the conversation`,
-    `A short, low-energy, or vague reply — "all good", "I'm fine thanks", "didn't really connect", "not now", a one-word answer, a shrug — is the START of your work, not a signal to leave. It is resistance to move through, NOT genuine disinterest. Never respond to it by handing the lead an exit: do NOT say things like "no pressure, I'm here whenever you want", "if you ever decide to look into it seriously, I'm around", or "good luck!". Do NOT assume they are leaving either ("before you go…", "רגע לפני שאתה הולך") — a short reply is not a goodbye. Those end the conversation and lose the lead. Instead stay warm and genuinely curious — react to what they actually said and gently open the door a little wider (a light, real question that invites them back in). A re-warmed lead almost always opens cold; that is expected, and it is exactly what you are here to work. Only a CLEAR, EXPLICIT, and repeated refusal — "stop messaging me", "take me off your list", "I'm really not interested, leave it" — is a real no. Anything softer than that, you keep the conversation alive.`,
-    ``,
-    // Live on status 23: the earlier "no" lives in history the bot no longer
-    // sees, so "I already told you" read as a first refusal and got "so what
-    // made you register in the first place?".
-    `A lead who says they ALREADY told you no — "אמרתי לכם כבר", "כבר אמרתי שלא", "I told you already" — is a REPEATED refusal, even if you cannot see the earlier one (it happened in a conversation you are not shown). Treat it as the real no: do not ask another digging question (least of all "what made you register in the first place?"). Acknowledge it in one short, warm line, own that you bothered them, and leave the door open once — then stop.`,
-    ``,
+    ...REWARM_BRUSH_OFF_RULES,
   ];
 
   // Failed live on status 22: the history carries no dates, so a slot search
@@ -193,9 +211,7 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
   // messages (warmingHistory.ts); this rule covers anything that still shows.
   if (args.hasHistory) {
     parts.push(
-      `## Earlier messages are from a previous stage — their open threads are CLOSED`,
-      `You have talked with this lead before, at an earlier stage — often weeks or months ago. Those older messages are deliberately left out of what you see: your messages start where this conversation was re-opened (the "[template:…]" opener we sent, or the lead's own message). If any older messages do appear before that point, they are background only. Anything left open back then — meeting times that were offered or searched for, a Zoom the lead asked about, a question they never answered — is CLOSED. You do not know how it ended, so never refer to it ("we left off at…", "as we said", "just before that…"), do not offer meeting times from it, do not look up slots because of it, and never set lead_requested_booking because of anything said before the re-opening. Only what the lead says in this stage counts.`,
-      ``,
+      ...REWARM_CLOSED_HISTORY_RULES,
     );
   }
 
@@ -259,7 +275,7 @@ export function renderWarmingContextBlock(args: WarmingBlockArgs): string {
   return parts.join("\n");
 }
 
-function renderOpenerLine(openerText: string | null): string {
+export function renderOpenerLine(openerText: string | null): string {
   const intro = `The conversation was re-opened with a short template message (shown as "[template:…]" in your history).`;
   const text = openerText?.trim();
   if (!text) return `${intro} Its exact text is not available to you — treat it as a short, casual check-in.`;

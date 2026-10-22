@@ -9,7 +9,7 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { CheckCircle2, Loader2, Plus, Trash2 } from "lucide-react";
+import { CheckCircle2, Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -30,6 +30,14 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import {
   Table,
   TableBody,
   TableCell,
@@ -43,6 +51,7 @@ import {
   deleteBroadcastTemplate,
   listAllBroadcastTemplates,
   setBroadcastTemplateActive,
+  updateBroadcastTemplateTexts,
   type BroadcastTemplateFull,
 } from "@/lib/broadcasts";
 
@@ -56,6 +65,10 @@ export function BroadcastTemplatesTab() {
   const [label, setLabel] = useState("");
   const [variableCount, setVariableCount] = useState("0");
   const [bodyPreview, setBodyPreview] = useState("");
+  const [replyInstructions, setReplyInstructions] = useState("");
+  const [editing, setEditing] = useState<BroadcastTemplateFull | null>(null);
+  const [editBody, setEditBody] = useState("");
+  const [editInstructions, setEditInstructions] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState<BroadcastTemplateFull | null>(null);
 
   const queryKey = ["broadcast-templates-admin", agentId] as const;
@@ -77,6 +90,7 @@ export function BroadcastTemplatesTab() {
       setLabel("");
       setVariableCount("0");
       setBodyPreview("");
+      setReplyInstructions("");
       void invalidate();
     },
     onError: (err: unknown) =>
@@ -84,6 +98,29 @@ export function BroadcastTemplatesTab() {
         description: err instanceof Error ? err.message : undefined,
       }),
   });
+
+  const editMutation = useMutation({
+    mutationFn: ({ id, body, instructions }: { id: string; body: string; instructions: string }) =>
+      updateBroadcastTemplateTexts(id, {
+        body_preview: body.trim() || null,
+        reply_instructions: instructions.trim() || null,
+      }),
+    onSuccess: () => {
+      toast.success("התבנית עודכנה");
+      setEditing(null);
+      void invalidate();
+    },
+    onError: (err: unknown) =>
+      toast.error("עדכון התבנית נכשל", {
+        description: err instanceof Error ? err.message : undefined,
+      }),
+  });
+
+  const openEdit = (row: BroadcastTemplateFull) => {
+    setEditing(row);
+    setEditBody(row.body_preview ?? "");
+    setEditInstructions(row.reply_instructions ?? "");
+  };
 
   const toggleMutation = useMutation({
     mutationFn: ({ id, isActive }: { id: string; isActive: boolean }) =>
@@ -125,6 +162,7 @@ export function BroadcastTemplatesTab() {
       label: trimmedLabel,
       variable_count: Number.isNaN(parsedCount) || parsedCount < 0 ? 0 : parsedCount,
       body_preview: bodyPreview.trim() || null,
+      reply_instructions: replyInstructions.trim() || null,
     });
   };
 
@@ -195,6 +233,21 @@ export function BroadcastTemplatesTab() {
                 placeholder="היי {{1}}, יש לנו עדכון בשבילך..."
                 rows={3}
               />
+              <p className="text-xs text-muted-foreground">
+                הבוט רואה את הטקסט הזה כדי לדעת מה הליד קיבל. מומלץ למלא.
+              </p>
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bt-instructions">הנחיות לבוט כשליד עונה להודעה (אופציונלי)</Label>
+              <Textarea
+                id="bt-instructions"
+                value={replyInstructions}
+                onChange={(e) => setReplyInstructions(e.target.value)}
+                rows={4}
+              />
+              <p className="text-xs text-muted-foreground">
+                הבוט מקבל את זה כשליד עונה להודעה הזו, בנוסף לכללי החימום מחדש שכל תשובה לדיוור מקבלת. למשל: מה לעשות אם הוא עונה שכן, ומה אם הוא עונה שירד מזה.
+              </p>
             </div>
             <div className="flex justify-end">
               <Button type="submit" disabled={createMutation.isPending || !agentId}>
@@ -232,7 +285,7 @@ export function BroadcastTemplatesTab() {
                 <TableHead className="w-16">שפה</TableHead>
                 <TableHead className="w-20">משתנים</TableHead>
                 <TableHead className="w-28">פעילה</TableHead>
-                <TableHead className="w-16"></TableHead>
+                <TableHead className="w-24"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -275,7 +328,16 @@ export function BroadcastTemplatesTab() {
                         )}
                       </div>
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="whitespace-nowrap">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        aria-label="ערוך טקסט והנחיות"
+                        onClick={() => openEdit(row)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
                       <Button
                         type="button"
                         variant="ghost"
@@ -294,6 +356,55 @@ export function BroadcastTemplatesTab() {
           </Table>
         </div>
       )}
+
+      <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
+        <DialogContent dir="rtl" className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>עריכת "{editing?.label}"</DialogTitle>
+            <DialogDescription dir="ltr" className="text-start">
+              {editing?.name}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="bt-edit-body">הטקסט של ההודעה</Label>
+              <Textarea
+                id="bt-edit-body"
+                value={editBody}
+                onChange={(e) => setEditBody(e.target.value)}
+                rows={3}
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bt-edit-instructions">הנחיות לבוט כשליד עונה להודעה</Label>
+              <Textarea
+                id="bt-edit-instructions"
+                value={editInstructions}
+                onChange={(e) => setEditInstructions(e.target.value)}
+                rows={8}
+              />
+              <p className="text-xs text-muted-foreground">
+                הבוט מקבל את זה כשליד עונה להודעה הזו, בנוסף לכללי החימום מחדש שכל תשובה לדיוור מקבלת. למשל: מה לעשות אם הוא עונה שכן, ומה אם הוא עונה שירד מזה.
+              </p>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setEditing(null)}>
+              ביטול
+            </Button>
+            <Button
+              type="button"
+              disabled={editMutation.isPending}
+              onClick={() =>
+                editing &&
+                editMutation.mutate({ id: editing.id, body: editBody, instructions: editInstructions })
+              }
+            >
+              {editMutation.isPending ? "שומר..." : "שמור"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog
         open={Boolean(confirmingDelete)}

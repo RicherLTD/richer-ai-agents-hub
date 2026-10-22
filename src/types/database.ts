@@ -385,6 +385,7 @@ export type Database = {
           label: string
           language: string
           name: string
+          reply_instructions: string | null
           variable_count: number
         }
         Insert: {
@@ -396,6 +397,7 @@ export type Database = {
           label: string
           language?: string
           name: string
+          reply_instructions?: string | null
           variable_count?: number
         }
         Update: {
@@ -407,6 +409,7 @@ export type Database = {
           label?: string
           language?: string
           name?: string
+          reply_instructions?: string | null
           variable_count?: number
         }
         Relationships: [
