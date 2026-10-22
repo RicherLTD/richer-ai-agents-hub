@@ -17,7 +17,30 @@ export interface BroadcastRow {
   scheduled_for: string | null;
   total_recipients: number;
   suppressed_count: number;
+  suppressed_breakdown: Record<string, number> | null;
   created_at: string;
+}
+
+/** Why a candidate was dropped, in the operator's words. */
+export const SUPPRESSION_LABELS: Record<string, string> = {
+  invalid_phone: "מספר לא תקין",
+  opt_out: "ביקשו הסרה",
+  blocking_tag: "תג חוסם (זום נקבע / טיפול אנושי)",
+  duplicate: "כפילות",
+};
+
+/**
+ * One-line Hebrew reason list, e.g. `מספר לא תקין: 7 · ביקשו הסרה: 2`.
+ * Without this the operator only sees "0 recipients / 7 suppressed" and has no
+ * way to tell a bad CSV apart from a correctly-filtered audience.
+ */
+export function describeSuppression(breakdown: Record<string, number> | null | undefined): string {
+  if (!breakdown) return "";
+  return Object.entries(breakdown)
+    .filter(([, n]) => n > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([reason, n]) => `${SUPPRESSION_LABELS[reason] ?? reason}: ${n}`)
+    .join(" · ");
 }
 
 export interface EnqueuePayload {
@@ -53,7 +76,7 @@ export async function listBroadcastTemplates(agentId: string): Promise<Broadcast
 export async function listBroadcasts(agentId: string): Promise<BroadcastRow[]> {
   const { data, error } = await supabase
     .from("broadcasts")
-    .select("id, title, template_name, status, scheduled_for, total_recipients, suppressed_count, created_at")
+    .select("id, title, template_name, status, scheduled_for, total_recipients, suppressed_count, suppressed_breakdown, created_at")
     .eq("agent_id", agentId)
     .order("created_at", { ascending: false })
     .limit(100);
