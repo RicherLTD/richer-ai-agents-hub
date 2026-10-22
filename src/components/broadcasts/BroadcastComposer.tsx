@@ -1,17 +1,22 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { useAgent } from "@/contexts/AgentContext";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   listBroadcastTemplates,
   enqueueBroadcast,
   describeSuppression,
+  fetchStatusCounts,
+  fetchStatusSyncState,
   previewBroadcastAudience,
   registrationWindow,
+  triggerStatusSync,
   type EnqueueResult,
 } from "@/lib/broadcasts";
 import { parseBroadcastCsv, type ParsedCsvRecipient } from "@/lib/parseBroadcastCsv";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { StatusPicker } from "./StatusPicker";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -42,6 +47,9 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
   const [includeExisting, setIncludeExisting] = useState(false);
   const [regFrom, setRegFrom] = useState("");
   const [regTo, setRegTo] = useState("");
+  const [statusMains, setStatusMains] = useState<Array<number | null>>([]);
+  const [statusSubs, setStatusSubs] = useState<Array<number | null>>([]);
+  const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [csv, setCsv] = useState<{ rows: ParsedCsvRecipient[]; errors: string[] }>({ rows: [], errors: [] });
   const [csvFileName, setCsvFileName] = useState<string | null>(null);
@@ -65,18 +73,61 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
     () => (includeExisting ? registrationWindow(regFrom, regTo) : { registered_from: null, registered_before: null }),
     [includeExisting, regFrom, regTo],
   );
+  // Status filters also only narrow "all registered leads".
+  const statusFilters = useMemo(
+    () => (includeExisting ? { status_mains: statusMains, status_subs: statusSubs } : { status_mains: [], status_subs: [] }),
+    [includeExisting, statusMains, statusSubs],
+  );
+
+  const statusCounts = useQuery({
+    queryKey: ["broadcast-status-counts", agentId, regWindow.registered_from, regWindow.registered_before],
+    queryFn: () => fetchStatusCounts(agentId, regWindow),
+    enabled: !!agentId && includeExisting,
+    staleTime: 60_000,
+  });
+  const syncState = useQuery({
+    queryKey: ["fireberry-sync-state", agentId],
+    queryFn: () => fetchStatusSyncState(agentId),
+    enabled: !!agentId && includeExisting,
+    refetchInterval: 30_000,
+  });
+  const syncNow = useMutation({
+    mutationFn: triggerStatusSync,
+    onSuccess: () => {
+      toast.success("הסנכרון מ-Fireberry התחיל — הסטטוסים יתעדכנו תוך כ-2 דקות");
+      // The run continues in the background; refresh what depends on it after.
+      setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ["broadcast-status-counts", agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["fireberry-sync-state", agentId] });
+        void queryClient.invalidateQueries({ queryKey: ["broadcast-preview", agentId] });
+      }, 120_000);
+    },
+    onError: (err: unknown) =>
+      toast.error("הפעלת הסנכרון נכשלה", { description: err instanceof Error ? err.message : undefined }),
+  });
+
   const csvKey = useMemo(() => csvFingerprint(csv.rows.map((r) => r.phone)), [csv.rows]);
   const hasAudience = includeExisting || csv.rows.length > 0;
 
   // Same server path as the real send, with dry_run — so the number shown is
   // the number that will be queued, after opt-outs and blocking tags.
   const preview = useQuery({
-    queryKey: ["broadcast-preview", agentId, includeExisting, regWindow.registered_from, regWindow.registered_before, csvKey],
+    queryKey: [
+      "broadcast-preview",
+      agentId,
+      includeExisting,
+      regWindow.registered_from,
+      regWindow.registered_before,
+      statusFilters.status_mains.join(","),
+      statusFilters.status_subs.join(","),
+      csvKey,
+    ],
     queryFn: () =>
       previewBroadcastAudience({
         agent_id: agentId,
         include_existing: includeExisting,
         ...regWindow,
+        ...statusFilters,
         csv_recipients: csv.rows.map((r) => ({ phone: r.phone, name: r.name, variables: r.variables })),
       }),
     enabled: !!agentId && hasAudience,
@@ -105,6 +156,7 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
         scheduled_for: timing === "scheduled" && scheduledFor ? new Date(scheduledFor).toISOString() : null,
         include_existing: includeExisting,
         ...regWindow,
+        ...statusFilters,
         csv_recipients: csv.rows.map((r) => ({ phone: r.phone, name: r.name, variables: r.variables })),
       });
       setResult(res);
@@ -168,6 +220,49 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
             <p className="text-xs text-muted-foreground">
               לפי התאריך שבו הליד נכנס למערכת. שני התאריכים כלולים. שדה ריק = בלי הגבלה מאותו צד.
             </p>
+
+            <p className="pt-2 text-sm font-medium">רק סטטוסים מסוימים ב-Fireberry (אופציונלי)</p>
+            <div className="flex flex-wrap gap-2">
+              <StatusPicker
+                label="סטטוס ראשי"
+                options={(statusCounts.data ?? []).filter((c) => c.kind === "main")}
+                selected={statusMains}
+                onChange={setStatusMains}
+                loading={statusCounts.isLoading}
+              />
+              <StatusPicker
+                label="סטטוס משני"
+                options={(statusCounts.data ?? []).filter((c) => c.kind === "sub")}
+                selected={statusSubs}
+                onChange={setStatusSubs}
+                loading={statusCounts.isLoading}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span>
+                {syncState.data?.last_run_at
+                  ? `הסטטוסים עודכנו מ-Fireberry: ${new Date(syncState.data.last_run_at).toLocaleString("he-IL")}`
+                  : "הסטטוסים עוד לא סונכרנו מ-Fireberry"}
+              </span>
+              <Button
+                type="button"
+                variant="link"
+                size="sm"
+                className="h-auto p-0 text-xs"
+                disabled={syncNow.isPending}
+                onClick={() => syncNow.mutate()}
+              >
+                {syncNow.isPending ? "מפעיל…" : "רענן עכשיו"}
+              </Button>
+            </div>
+            {syncState.data && !syncState.data.full_sync_done_at && (
+              <p className="text-xs text-amber-700">
+                הסנכרון הראשון מ-Fireberry עדיין רץ — חלק מהלידים מופיעים כרגע כ"ללא סטטוס".
+              </p>
+            )}
+            {syncState.data?.last_error && (
+              <p className="text-xs text-destructive">הסנכרון האחרון נכשל: {syncState.data.last_error}</p>
+            )}
           </div>
         )}
       </div>

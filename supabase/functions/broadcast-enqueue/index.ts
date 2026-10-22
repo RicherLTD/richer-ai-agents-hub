@@ -24,6 +24,10 @@ interface EnqueueBody {
    *  ISO timestamps; from is inclusive, before is exclusive. CSV rows are not filtered. */
   registered_from?: string | null;
   registered_before?: string | null;
+  /** Optional Fireberry status filters for include_existing (conversations.fb_status_*,
+   *  mirrored by fireberry-status-sync). null in the list = "no status". */
+  status_mains?: Array<number | null> | null;
+  status_subs?: Array<number | null> | null;
   /** Compute the audience and its suppression breakdown, write nothing. The
    *  composer calls this to show "will send to N" before the operator commits. */
   dry_run?: boolean;
@@ -38,6 +42,27 @@ function parseOptionalIso(value: unknown, field: string): string | null {
     throw new HttpError(400, `${field} must be an ISO timestamp`);
   }
   return new Date(value).toISOString();
+}
+
+/**
+ * PostgREST `or` expression for "column is one of these statuses", where a
+ * null entry means "has no status". Null when there is no filter; 400 on junk.
+ */
+function statusFilter(column: string, values: unknown, field: string): string | null {
+  if (values === undefined || values === null) return null;
+  if (!Array.isArray(values)) throw new HttpError(400, `${field} must be an array`);
+  if (values.length === 0) return null;
+  const codes: number[] = [];
+  let includeNone = false;
+  for (const v of values) {
+    if (v === null) includeNone = true;
+    else if (typeof v === "number" && Number.isInteger(v)) codes.push(v);
+    else throw new HttpError(400, `${field} entries must be integers or null`);
+  }
+  const parts: string[] = [];
+  if (codes.length > 0) parts.push(`${column}.in.(${codes.join(",")})`);
+  if (includeNone) parts.push(`${column}.is.null`);
+  return parts.join(",");
 }
 
 function chunk<T>(arr: T[], size: number): T[][] {
@@ -66,6 +91,8 @@ Deno.serve(async (req) => {
     const dryRun = body.dry_run === true;
     const registeredFrom = parseOptionalIso(body.registered_from, "registered_from");
     const registeredBefore = parseOptionalIso(body.registered_before, "registered_before");
+    const mainFilter = statusFilter("fb_status_main", body.status_mains, "status_mains");
+    const subFilter = statusFilter("fb_status_sub", body.status_subs, "status_subs");
     if (!agentId) throw new HttpError(400, "agent_id is required");
     // A dry run only sizes the audience, so it needs no template or title yet.
     if (!dryRun && (!templateName || !title)) {
@@ -135,6 +162,9 @@ Deno.serve(async (req) => {
           .eq("status", "active");
         if (registeredFrom) query = query.gte("created_at", registeredFrom);
         if (registeredBefore) query = query.lt("created_at", registeredBefore);
+        // Two `or` groups are ANDed: (main in …) AND (sub in …).
+        if (mainFilter) query = query.or(mainFilter);
+        if (subFilter) query = query.or(subFilter);
         // Stable order, or pages can overlap/skip while rows change underneath.
         const { data: convs, error: convErr } = await query.order("id").range(from, from + PAGE_SIZE - 1);
         if (convErr) throw new HttpError(500, `failed to load leads: ${convErr.message}`);
