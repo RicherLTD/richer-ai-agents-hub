@@ -2,7 +2,7 @@ import { Fragment, useState } from "react";
 import { useAgent } from "@/contexts/AgentContext";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { ChevronDown, ChevronLeft } from "lucide-react";
-import { listBroadcasts, cancelBroadcast } from "@/lib/broadcasts";
+import { listBroadcasts, cancelBroadcast, describeSuppression } from "@/lib/broadcasts";
 import { getBroadcastFunnel } from "@/lib/template-funnel";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -102,8 +102,20 @@ export function BroadcastList() {
                 </td>
                 <td className="p-2">{b.title}</td>
                 <td className="p-2">{b.template_name}</td>
-                <td className="p-2">{b.total_recipients}</td>
-                <td className="p-2">{b.suppressed_count}</td>
+                <td className="p-2">
+                  {b.total_recipients}
+                  {b.total_recipients === 0 && (
+                    <span className="ms-1 text-xs text-destructive">(לא נשלח לאף אחד)</span>
+                  )}
+                </td>
+                <td className="p-2">
+                  {b.suppressed_count}
+                  {b.suppressed_count > 0 && (
+                    <div className="text-xs text-muted-foreground">
+                      {describeSuppression(b.suppressed_breakdown)}
+                    </div>
+                  )}
+                </td>
                 <td className="p-2">{b.status}</td>
                 <td className="p-2">
                   {b.status !== "cancelled" && b.status !== "completed" && (

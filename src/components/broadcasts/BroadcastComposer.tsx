@@ -1,7 +1,12 @@
 import { useMemo, useState } from "react";
 import { useAgent } from "@/contexts/AgentContext";
 import { useQuery } from "@tanstack/react-query";
-import { listBroadcastTemplates, enqueueBroadcast, type EnqueueResult } from "@/lib/broadcasts";
+import {
+  listBroadcastTemplates,
+  enqueueBroadcast,
+  describeSuppression,
+  type EnqueueResult,
+} from "@/lib/broadcasts";
 import { parseBroadcastCsv, type ParsedCsvRecipient } from "@/lib/parseBroadcastCsv";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,6 +20,7 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
   const [scheduledFor, setScheduledFor] = useState("");
   const [includeExisting, setIncludeExisting] = useState(false);
   const [csv, setCsv] = useState<{ rows: ParsedCsvRecipient[]; errors: string[] }>({ rows: [], errors: [] });
+  const [csvFileName, setCsvFileName] = useState<string | null>(null);
   const [result, setResult] = useState<EnqueueResult | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -32,7 +38,10 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
 
   function onCsvFile(file: File) {
     const reader = new FileReader();
-    reader.onload = () => setCsv(parseBroadcastCsv(String(reader.result ?? "")));
+    reader.onload = () => {
+      setCsvFileName(file.name);
+      setCsv(parseBroadcastCsv(String(reader.result ?? "")));
+    };
     reader.readAsText(file);
   }
 
@@ -98,9 +107,16 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
         <label className="mb-1 block text-sm font-medium">קובץ נמענים (CSV: טלפון, שם) — אופציונלי</label>
         <input type="file" accept=".csv,text/csv" onChange={(e) => e.target.files?.[0] && onCsvFile(e.target.files[0])} />
         <p className="mt-1 text-sm">{csv.rows.length} נמענים נטענו מהקובץ</p>
+        {csvFileName && csv.rows.length === 0 && (
+          <p className="mt-1 text-sm font-medium text-destructive">
+            אף מספר בקובץ לא תקין — אם הקובץ נשמר מאקסל, ודא שעמודה A היא הטלפון ושהמספר
+            מלא (למשל 0528524113). ראה פירוט למטה.
+          </p>
+        )}
         {csv.errors.length > 0 && (
           <ul className="mt-1 text-xs text-destructive">
-            {csv.errors.slice(0, 5).map((er, i) => <li key={i}>{er}</li>)}
+            {csv.errors.slice(0, 10).map((er, i) => <li key={i}>{er}</li>)}
+            {csv.errors.length > 10 && <li>…ועוד {csv.errors.length - 10} שורות</li>}
           </ul>
         )}
       </div>
@@ -122,9 +138,19 @@ export function BroadcastComposer({ onDone }: { onDone: () => void }) {
 
       {error && <p className="text-sm text-destructive">{error}</p>}
       {result && (
-        <p className="text-sm text-green-700">
-          נכנסו לתור: {result.total_recipients} · סוננו: {result.suppressed_count}
-        </p>
+        <div className="text-sm">
+          <p className={result.total_recipients === 0 ? "font-medium text-destructive" : "text-green-700"}>
+            {result.total_recipients === 0
+              ? "לא נכנס אף נמען לתור — הדיוור לא יישלח לאף אחד."
+              : `נכנסו לתור: ${result.total_recipients}`}
+            {" · "}סוננו: {result.suppressed_count}
+          </p>
+          {result.suppressed_count > 0 && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              סיבות סינון — {describeSuppression(result.suppressed_breakdown)}
+            </p>
+          )}
+        </div>
       )}
 
       <Button onClick={submit} disabled={!canSubmit}>{busy ? "שולח…" : "שלח דיוור"}</Button>
