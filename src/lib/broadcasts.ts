@@ -109,6 +109,8 @@ export interface BroadcastTemplateFull {
   label: string;
   variable_count: number;
   body_preview: string | null;
+  /** Bot guidance for replies to this template (broadcastRewarmBlock). */
+  reply_instructions: string | null;
   is_active: boolean;
   created_at: string;
 }
@@ -120,12 +122,13 @@ export interface NewBroadcastTemplate {
   label: string;
   variable_count: number;
   body_preview: string | null;
+  reply_instructions: string | null;
 }
 
 export async function listAllBroadcastTemplates(agentId: string): Promise<BroadcastTemplateFull[]> {
   const { data, error } = await supabase
     .from("broadcast_templates")
-    .select("id, agent_id, name, language, label, variable_count, body_preview, is_active, created_at")
+    .select("id, agent_id, name, language, label, variable_count, body_preview, reply_instructions, is_active, created_at")
     .eq("agent_id", agentId)
     .order("created_at", { ascending: false });
   if (error) throw error;
@@ -134,6 +137,15 @@ export async function listAllBroadcastTemplates(agentId: string): Promise<Broadc
 
 export async function createBroadcastTemplate(input: NewBroadcastTemplate): Promise<void> {
   const { error } = await supabase.from("broadcast_templates").insert(input);
+  if (error) throw error;
+}
+
+/** The two free-text fields the operator can edit after creation. */
+export async function updateBroadcastTemplateTexts(
+  id: string,
+  texts: { body_preview: string | null; reply_instructions: string | null },
+): Promise<void> {
+  const { error } = await supabase.from("broadcast_templates").update(texts).eq("id", id);
   if (error) throw error;
 }
 

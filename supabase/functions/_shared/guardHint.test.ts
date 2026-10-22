@@ -8,6 +8,12 @@ describe("buildGuardHint", () => {
     expect(hint).not.toBe(GENERIC_GUARD_HINT);
   });
 
+  it("asks to drop the system narration after a system-leak rejection", () => {
+    const hint = buildGuardHint("system_internals_leak", []);
+    expect(hint).toContain("how this conversation is run");
+    expect(hint).not.toBe(GENERIC_GUARD_HINT);
+  });
+
   it("returns the generic hint for non-time rejections", () => {
     expect(buildGuardHint("hallucination_currency_mention", [])).toBe(GENERIC_GUARD_HINT);
     expect(buildGuardHint("income_guarantee", ["10:30"])).toBe(GENERIC_GUARD_HINT);

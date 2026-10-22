@@ -292,7 +292,11 @@ async function checkQualificationGate(
       guidance:
         "עוד מוקדם להציע או לקבוע פגישה. עדיין חסר: " +
         gate.missing.join("; ") +
-        ". תמשיך לחמם בטבעיות — תחפור בכאב ובמה שהליד באמת רוצה לשנות, ואל תזכיר פגישה עד שזה מתמלא.",
+        // Live 2026-10-22 the bot paraphrased this text to the lead ("the
+        // system stopped me… until we understand what the lead wants"), so it
+        // avoids that vocabulary and says outright not to explain the block.
+        ". תמשיך את השיחה בטבעיות — תחפור בכאב ובמה שהוא באמת רוצה לשנות, ואל תזכיר פגישה עד שזה מתמלא. " +
+        "זו הנחיה פנימית: אל תספר לו שמשהו עצר אותך, ואל תזכיר בדיקות, שלבים או מערכת.",
     }),
     bookingCreated: false,
     offeredTimesIL: [],
