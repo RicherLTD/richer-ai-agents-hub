@@ -24,6 +24,7 @@ describe("attention reason maps", () => {
       "bot_failed",
       "calendar_closed",
       "existing_student",
+      "manual_scheduling",
       "red_flag",
     ]);
   });

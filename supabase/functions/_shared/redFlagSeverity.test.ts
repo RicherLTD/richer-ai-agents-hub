@@ -19,17 +19,46 @@ describe("isSensitiveRedFlag", () => {
 
   // The 2026-05-19 Hodaya rule: a lead in serious financial distress gets a
   // human, never an automatic Zoom. Must survive this change.
-  it("keeps current financial distress sensitive", () => {
+  it("keeps serious financial distress sensitive on the flag alone", () => {
     for (const flag of [
-      "vulnerable_financial",
-      "financial_distress",
-      "financial_stress",
-      "financially_stressed",
       "מצב כלכלי קריטי",
       "חרדה משמעותית בנושא כסף — משתקת אותה",
+      "heavy_debt",
+      "financial_crisis",
     ]) {
       expect(isSensitiveRedFlag(flag), flag).toBe(true);
     }
+  });
+
+  // Real October 2026 cases: the extractor wrote "financial_distress" for a
+  // plain money objection and the bot went silent on a warm lead.
+  it("treats a generic financial flag as a note when the lead only objected on money", () => {
+    const objections = [
+      "אין כסף להשקיע ונפשית כרגע",
+      "אין לי זמן וכסף לשלם על זה",
+      "תשמע בכנות אגיד לך... כסף להשקיע שוב אין לי",
+    ];
+    for (const flag of ["financial_distress", "financial_stress", "vulnerable_financial"]) {
+      for (const leadText of objections) {
+        expect(isSensitiveRedFlag(flag, leadText), `${flag} / ${leadText}`).toBe(false);
+      }
+      expect(isSensitiveRedFlag(flag), flag).toBe(false);
+    }
+  });
+
+  it("keeps a generic financial flag sensitive when the lead wrote about real trouble", () => {
+    for (const leadText of [
+      "התראות לפני עיקול",
+      "החודש חסמו לי את הכרטיס ואין לי איך להתמודד, חשבתי לקחת הלוואה",
+      "אני מקבל ביטוח לאומי ויש לי נכות 100",
+      "מהתחלה לסגור את כל החובות",
+    ]) {
+      expect(isSensitiveRedFlag("financial_distress", leadText), leadText).toBe(true);
+    }
+  });
+
+  it("does not read 'חוב' inside another word", () => {
+    expect(isSensitiveRedFlag("financial_stress", "אני גר ברחוב הרצל, זה חובה בשבילי")).toBe(false);
   });
 
   // Notes for the advisor. Silencing the bot over these left warm leads

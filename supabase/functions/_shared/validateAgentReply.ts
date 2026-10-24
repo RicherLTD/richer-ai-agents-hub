@@ -26,6 +26,11 @@ const PLACEHOLDER_RE = /\[MISSING\]|\[UNKNOWN\]|\[TODO\]|\[PLACEHOLDER\]|\{\{[^}
 interface HallucinationRule {
   pattern: RegExp;
   reason: string;
+  /** The rule is about a NUMBER (a price, an income sum). When every number
+   *  around the match is one the lead wrote themself ("my pension is 2,000
+   *  ש"ח", "I need another 8,000 a month"), the bot is reflecting the lead's
+   *  own words back, not quoting a price or promising income. */
+  excusedByLeadNumbers?: boolean;
 }
 
 const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
@@ -34,21 +39,17 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
     pattern: /\b(ChatGPT|GPT[-\s]?[345]|OpenAI|Claude|Anthropic|Gemini|LLM|GPT)\b/i,
     reason: "ai_brand_leak",
   },
-  // Hebrew "I am an AI / bot / language model" self-disclosure.
-  {
-    pattern: /אני\s*(?:AI|בוט|רובוט|מודל|בינה|תוכנה)/,
-    reason: "hebrew_ai_self_disclosure",
-  },
-  {
-    pattern: /(?:מודל\s*שפה|בינה\s*מלאכותית|מערכת\s*אוטומטית|זה\s*לא\s*בנאדם|לא\s*בן\s*אדם)/,
-    reason: "hebrew_ai_self_disclosure",
-  },
+  // No Hebrew "I am a bot" rule. The policy is transparency: the prompt tells
+  // the bot to say it is a digital agent when asked, and blocking exactly that
+  // sentence turned every "are you a bot?" into a dead end — the lead got the
+  // "I hit a glitch" fallback instead (13 operator alerts, Sep–Oct 2026).
   // Currency symbols + Hebrew currency words. The prompt forbids any
   // price discussion — that has to happen on the Zoom with the advisor.
   // No \b on Hebrew tokens (see file header).
   {
     pattern: /[₪$€£]|ש["״']ח|שקלים?|דולר(?:ים)?|יורו/,
     reason: "currency_mention",
+    excusedByLeadNumbers: true,
   },
   // Numeric prices without a currency symbol. Catches "5000", "5K", "5,000"
   // etc when they appear near price-related verbs/nouns. Common bypass: the
@@ -70,6 +71,7 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   {
     pattern: /(?<![א-ת])(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,40}(?:\d{4,}|\d{2,}[\s]*(?:אלף|אלפים|K\b|k\b|₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
+    excusedByLeadNumbers: true,
   },
   // Standalone large numbers paired with money words (אלף / K / אלפים).
   // Tightened to avoid false-positives on non-price contexts like
@@ -79,6 +81,7 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   {
     pattern: /(?:(?:עולה|מחיר|תוכנית|השקעה|תשלום|חבילה|קורס|הכשרה|תעלה)[^.!?\n]{0,60}\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)|\d{1,3}[\s,]*(?:אלף|אלפים|K\b|k\b)\s*(?:₪|\$|€|שקל(?:ים)?|ש["״']ח|דולר(?:ים)?))/,
     reason: "currency_mention",
+    excusedByLeadNumbers: true,
   },
   // Income guarantees — narrow set of legally-binding terms ONLY.
   // "מובטח" (passive guarantee) and "ערבות" (warranty) are stop-words.
@@ -105,12 +108,48 @@ const HALLUCINATION_RULES: ReadonlyArray<HallucinationRule> = [
   {
     pattern: /(?:תרוויח|תכניס|תעשה|תרוויחי|תכניסי|תעשי)[^.!?\n]{0,40}\d+[^.!?\n]{0,20}(?:בחודש|בשנה|ביום|לחודש|לשנה|ליום)/,
     reason: "income_guarantee",
+    excusedByLeadNumbers: true,
   },
 ];
 
-export function findHallucinationReason(text: string): string | null {
+/** Every number in `text`, separators dropped so "2,000" and "2000" match. */
+function numbersIn(text: string): string[] {
+  return (text.match(/\d[\d,.]*\d|\d/g) ?? []).map((n) => n.replace(/[,.]/g, ""));
+}
+
+/** How far around a match we look for the number it is about. */
+const NUMBER_CONTEXT_CHARS = 15;
+
+/**
+ * True when every match of `rule` only restates numbers the lead wrote.
+ * A match with no number nearby (a bare "שקלים") is never excused.
+ */
+function matchesOnlyLeadNumbers(
+  text: string,
+  rule: HallucinationRule,
+  leadNumbers: ReadonlySet<string>,
+): boolean {
+  const flags = rule.pattern.flags.includes("g") ? rule.pattern.flags : rule.pattern.flags + "g";
+  for (const m of text.matchAll(new RegExp(rule.pattern.source, flags))) {
+    const start = Math.max(0, (m.index ?? 0) - NUMBER_CONTEXT_CHARS);
+    const end = (m.index ?? 0) + m[0].length + NUMBER_CONTEXT_CHARS;
+    const nums = numbersIn(text.slice(start, end));
+    if (nums.length === 0 || nums.some((n) => !leadNumbers.has(n))) return false;
+  }
+  return true;
+}
+
+export function findHallucinationReason(text: string, leadText = ""): string | null {
+  const leadNumbers = new Set(numbersIn(leadText));
   for (const rule of HALLUCINATION_RULES) {
-    if (rule.pattern.test(text)) return rule.reason;
+    if (!rule.pattern.test(text)) continue;
+    if (
+      rule.excusedByLeadNumbers && leadNumbers.size > 0 &&
+      matchesOnlyLeadNumbers(text, rule, leadNumbers)
+    ) {
+      continue;
+    }
+    return rule.reason;
   }
   return null;
 }
@@ -133,6 +172,11 @@ function normalizeHHMM(token: string): string {
   return `${parseInt(m[1], 10)}:${m[2]}`;
 }
 
+/** Every HH:MM time stated in `text`, canonicalised ("09:30" → "9:30"). */
+export function meetingTimesIn(text: string): string[] {
+  return (text.match(TIME_HH_MM_RE) ?? []).map(normalizeHHMM);
+}
+
 export interface ValidateOptions {
   /** The set of meeting times (Asia/Jerusalem "HH:MM") the bot is allowed
    *  to state THIS turn — every slot that came back from
@@ -142,6 +186,9 @@ export interface ValidateOptions {
    *  blocked. Defaults to empty, so a reply that names a time without any
    *  tool grounding is always rejected — the bot may never invent times. */
   allowedMeetingTimes?: ReadonlyArray<string>;
+  /** What the lead wrote in this conversation. Numbers the lead stated
+   *  themself may be echoed back (see `excusedByLeadNumbers`). */
+  leadText?: string;
 }
 
 export function validateAgentReply(
@@ -161,7 +208,7 @@ export function validateAgentReply(
   if (PLACEHOLDER_RE.test(text.toUpperCase())) {
     return { ok: false, reason: "reply_contains_placeholder" };
   }
-  const hallucination = findHallucinationReason(text);
+  const hallucination = findHallucinationReason(text, opts.leadText);
   if (hallucination) {
     return { ok: false, reason: `hallucination_${hallucination}` };
   }

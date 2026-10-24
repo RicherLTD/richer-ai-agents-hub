@@ -78,11 +78,16 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("אני מ-OpenAI").ok).toBe(false);
   });
 
-  it("blocks Hebrew AI self-disclosure", () => {
-    expect(validateAgentReply("שלום, אני AI").ok).toBe(false);
-    expect(validateAgentReply("אני בוט שמטפל בפניות").ok).toBe(false);
-    expect(validateAgentReply("אני מודל שפה ולא יכול לענות").ok).toBe(false);
-    expect(validateAgentReply("אני בינה מלאכותית ובאתי לעזור").ok).toBe(false);
+  // Policy: transparent when asked. These are the real replies the old rule
+  // blocked, each of which sent the lead the "I hit a glitch" fallback.
+  it("allows the bot to say it is a digital agent", () => {
+    for (const reply of [
+      "אני כפיר, סוכן דיגיטלי של התוכנית 🙂 לא בן אדם, אבל כאן כדי להבין אם זה רלוונטי אליך.",
+      "לא, אני לא אנושי — אני בוט שמייצג את המסלול 🙂",
+      "אני בוט 😊 אבל כזה שבאמת כאן כדי להבין אותך.",
+    ]) {
+      expect(validateAgentReply(reply).ok, reply).toBe(true);
+    }
   });
 
   it("blocks currency mentions (₪, $, ש\"ח, שקלים)", () => {
@@ -116,9 +121,9 @@ describe("validateAgentReply — hallucination guards", () => {
   });
 
   it("returns a specific hallucination reason in the error", () => {
-    const r1 = validateAgentReply("אני AI");
+    const r1 = validateAgentReply("בעזרת ChatGPT");
     expect(r1.ok).toBe(false);
-    if (!r1.ok) expect(r1.reason).toContain("hallucination_hebrew_ai_self_disclosure");
+    if (!r1.ok) expect(r1.reason).toContain("hallucination_ai_brand_leak");
 
     const r2 = validateAgentReply("5000 ש\"ח");
     expect(r2.ok).toBe(false);
@@ -138,12 +143,6 @@ describe("validateAgentReply — hallucination guards", () => {
     expect(validateAgentReply("תכניס סכומים גדולים בחודש").ok).toBe(false);
     expect(validateAgentReply("תעשה הרבה כסף בשנה").ok).toBe(false);
     expect(validateAgentReply("תרוויחי טוב בחודש").ok).toBe(false);
-  });
-
-  it("blocks broader AI self-disclosure phrasings", () => {
-    expect(validateAgentReply("זה לא בנאדם, זאת מערכת").ok).toBe(false);
-    expect(validateAgentReply("מערכת אוטומטית עונה לך").ok).toBe(false);
-    expect(validateAgentReply("אני לא בן אדם").ok).toBe(false);
   });
 
   it("still passes innocent uses of similar-looking phrases", () => {
@@ -244,5 +243,31 @@ describe("validateAgentReply — invented meeting time guard (grounded)", () => 
   it("does not false-positive on '24/7' / non-time digits", () => {
     expect(validateAgentReply("היועצים זמינים 24/7 לפניות").ok).toBe(true);
     expect(validateAgentReply("הקורס בנוי מ-3 מסלולים").ok).toBe(true);
+  });
+});
+
+describe("validateAgentReply — numbers the lead wrote", () => {
+  it("allows echoing the lead's own sum back", () => {
+    const leadText = "אני מקבלת פנסיה של 2,000 ש\"ח וזה לא מספיק";
+    expect(
+      validateAgentReply("השאלה שלי: ה-2,000 ש\"ח האלה — את רוצה שזה ישתנה?", { leadText }).ok,
+    ).toBe(true);
+  });
+
+  it("still blocks a sum the lead never wrote", () => {
+    const leadText = "אני מקבלת פנסיה של 2,000 ש\"ח";
+    const r = validateAgentReply("התוכנית עולה 5,000 ש\"ח", { leadText });
+    expect(r.ok).toBe(false);
+  });
+
+  it("still blocks a bare currency word with no number", () => {
+    const r = validateAgentReply("יש מוצרים שנותנים עד מאות שקלים על עסקה", { leadText: "כמה 100" });
+    expect(r.ok).toBe(false);
+  });
+
+  it("blocks when one of two numbers is invented", () => {
+    const leadText = "אני מרוויח 6000";
+    const r = validateAgentReply("מ-6000 ₪ אפשר להגיע ל-15000 ₪", { leadText });
+    expect(r.ok).toBe(false);
   });
 });
