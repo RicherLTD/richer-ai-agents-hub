@@ -63,7 +63,13 @@ describe("shouldAlertNow", () => {
 
 describe("ATTENTION_REASON_LABELS", () => {
   it("gives every reason a Hebrew label for the operator alert", () => {
-    for (const reason of ["bot_failed", "calendar_closed", "existing_student", "red_flag"] as const) {
+    for (const reason of [
+      "bot_failed",
+      "calendar_closed",
+      "manual_scheduling",
+      "existing_student",
+      "red_flag",
+    ] as const) {
       expect(ATTENTION_REASON_LABELS[reason]).toBeTruthy();
       // The label lands in a Meta template variable — no newlines allowed.
       expect(ATTENTION_REASON_LABELS[reason]).not.toMatch(/[\n\r\t]/);

@@ -189,6 +189,9 @@ export function coerceExtractedMemory(parsed: unknown): ExtractedMemory | null {
 export function decideConversationTag(
   memory: ExtractedMemory,
   currentTag: string | null,
+  /** What the lead wrote — decides whether a generic financial flag is
+   *  serious enough to mute the bot (redFlagSeverity.ts). */
+  leadText = "",
 ): string | null {
   const flags = memory.red_flags.map((f) => f.toLowerCase());
   // SAFETY OVERRIDE: underage red_flag wins over EVERYTHING including
@@ -201,7 +204,7 @@ export function decideConversationTag(
   // Only sensitive flags mute the bot (redFlagSeverity.ts). The rest are
   // advisor notes: they still ride along in lead_memory and the handoff
   // payload, and still block the consent handoff and bot bookings.
-  if (splitRedFlags(memory.red_flags).sensitive.length > 0) return "requires_human";
+  if (splitRedFlags(memory.red_flags, leadText).sensitive.length > 0) return "requires_human";
   return null;
 }
 
@@ -700,7 +703,11 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
   }
   const currentTag = (existing?.current_tag as string | null | undefined) ?? null;
   const currentStage = (existing?.funnel_stage as string | null | undefined) ?? null;
-  const nextTag = decideConversationTag(memory, currentTag);
+  const leadText = input.claudeMessages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content)
+    .join("\n");
+  const nextTag = decideConversationTag(memory, currentTag, leadText);
   const nextStage = decideFunnelStage(memory, currentTag, currentStage);
   const handoff = shouldTriggerZoomHandoff(
     memory,
@@ -755,7 +762,7 @@ export async function runMemoryExtraction(input: RunMemoryExtractionInput): Prom
 
   if (conversationUpdate.current_tag === "requires_human" && input.onSensitiveRedFlag) {
     try {
-      await input.onSensitiveRedFlag(splitRedFlags(memory.red_flags).sensitive);
+      await input.onSensitiveRedFlag(splitRedFlags(memory.red_flags, leadText).sensitive);
     } catch (alertErr) {
       console.error(
         `[extractMemory] onSensitiveRedFlag threw: ${alertErr instanceof Error ? alertErr.message : String(alertErr)}`,

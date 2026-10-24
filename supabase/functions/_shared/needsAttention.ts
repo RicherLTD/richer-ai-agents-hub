@@ -14,6 +14,9 @@
 //                    was also broken.
 //   calendar_closed  the lead wants to book and Mooz has no open slot
 //                    anywhere in the horizon — an advisor schedules manually.
+//   manual_scheduling the lead is setting a time the bot could not ground in
+//                    the calendar (asked for 21:00, gave "Monday after 17:00").
+//                    The bot told them an advisor will coordinate.
 //
 // Both leave the bot active. The flag drives the dashboard queue and one
 // WhatsApp alert to the operators.
@@ -26,6 +29,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 export type AttentionReason =
   | "bot_failed"
   | "calendar_closed"
+  | "manual_scheduling"
   | "existing_student"
   | "red_flag";
 
@@ -35,6 +39,7 @@ export type AttentionReason =
 export const ATTENTION_REASON_LABELS: Record<AttentionReason, string> = {
   bot_failed: "הבוט לא הצליח לענות — הליד ממתין לתשובה",
   calendar_closed: "אין זמינות ביומן — צריך לתאם זום ידנית",
+  manual_scheduling: "הליד רוצה לקבוע זום — צריך לתאם איתו שעה ידנית",
   existing_student: "כבר תלמיד רשום או ברשימה שחורה",
   red_flag: "עלה דגל אדום בשיחה",
 };
@@ -145,6 +150,30 @@ export async function flagNeedsAttention(
     }
   }
   return result;
+}
+
+/**
+ * Clear a `bot_failed` flag once the bot itself got a reply through. The lead
+ * is no longer waiting, so the queue entry is stale — 140 of them piled up by
+ * 2026-10-24 and buried the leads who really were still waiting. Other
+ * reasons stay: a later bot reply does not schedule a Zoom or settle a red
+ * flag. Never throws.
+ */
+export async function clearBotFailedAttention(args: {
+  admin: SupabaseClient;
+  conversationId: string;
+}): Promise<void> {
+  try {
+    await args.admin
+      .from("conversations")
+      .update({ needs_attention: null, needs_attention_at: null })
+      .eq("id", args.conversationId)
+      .eq("needs_attention", "bot_failed");
+  } catch (err) {
+    console.error(
+      `[needsAttention] clearBotFailed threw: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
 }
 
 /**

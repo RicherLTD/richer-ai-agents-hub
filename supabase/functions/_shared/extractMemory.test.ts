@@ -261,10 +261,25 @@ describe("decideConversationTag", () => {
     ).toBe("requires_human");
   });
 
-  it("returns 'requires_human' for the new vulnerable_financial red flag", () => {
+  it("returns 'requires_human' for vulnerable_financial when the lead wrote about real trouble", () => {
     expect(
-      decideConversationTag({ ...baseMemory, red_flags: ["vulnerable_financial"] }, null),
+      decideConversationTag(
+        { ...baseMemory, red_flags: ["vulnerable_financial"] },
+        null,
+        "קיבלתי התראות לפני עיקול",
+      ),
     ).toBe("requires_human");
+  });
+
+  // A money objection is not distress — muting the bot left the lead unanswered.
+  it("keeps the bot talking on vulnerable_financial for a plain money objection", () => {
+    expect(
+      decideConversationTag(
+        { ...baseMemory, red_flags: ["vulnerable_financial"] },
+        null,
+        "אין לי כסף להשקיע כרגע",
+      ),
+    ).toBeNull();
   });
 
   it("does not overwrite terminal tags", () => {

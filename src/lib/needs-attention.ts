@@ -10,10 +10,12 @@
  *                    the lead and they are sitting in silence
  *   calendar_closed  the lead wants to book but Mooz has no open slot at
  *                    all — an advisor has to schedule it by hand
+ *   manual_scheduling the lead asked for a time the bot could not confirm
+ *                    from the calendar; they were told an advisor will call
  *
  * The queue is cleared automatically when an operator replies from the
- * dashboard or a Zoom gets booked, so what is listed here is genuinely
- * still waiting.
+ * dashboard or a Zoom gets booked (and `bot_failed` also when the bot later
+ * gets a reply through), so what is listed here is genuinely still waiting.
  */
 import { supabase } from "./supabase/client";
 import type { Conversation } from "@/types/conversation";
@@ -21,6 +23,7 @@ import type { Conversation } from "@/types/conversation";
 export const ATTENTION_REASONS = [
   "bot_failed",
   "calendar_closed",
+  "manual_scheduling",
   "existing_student",
   "red_flag",
 ] as const;
@@ -30,6 +33,7 @@ export type AttentionReason = (typeof ATTENTION_REASONS)[number];
 export const ATTENTION_LABEL: Record<AttentionReason, string> = {
   bot_failed: "הבוט לא ענה",
   calendar_closed: "לתאם זום ידנית",
+  manual_scheduling: "לתאם שעה ידנית",
   existing_student: "תלמיד קיים",
   red_flag: "דגל אדום",
 };
@@ -38,6 +42,8 @@ export const ATTENTION_LABEL: Record<AttentionReason, string> = {
 export const ATTENTION_DESCRIPTION: Record<AttentionReason, string> = {
   bot_failed: "הבוט נכשל בניסוח תשובה והליד קיבל הודעת גיבוי בלבד — צריך לענות לו.",
   calendar_closed: "הליד רצה לקבוע זום ואין זמינות ביומן — צריך לתאם איתו פרטנית.",
+  manual_scheduling:
+    "הליד ביקש שעה שהבוט לא יכול היה לאשר מהיומן, ונאמר לו שיועץ יחזור אליו — צריך לתאם איתו שעה.",
   existing_student: "הליד כבר רשום כתלמיד או נמצא ברשימה שחורה.",
   red_flag: "עלה דגל אדום בשיחה שדורש בדיקה של נציג.",
 };

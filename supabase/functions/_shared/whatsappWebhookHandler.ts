@@ -50,12 +50,16 @@ import Anthropic from "https://esm.sh/@anthropic-ai/sdk@0.88.0";
 
 import { callWithRetry } from "./anthropicRetry.ts";
 import { JUDGE_MODEL, judgeReply } from "./judgeReply.ts";
-import { flagNeedsAttention } from "./needsAttention.ts";
+import {
+  type AttentionReason,
+  clearBotFailedAttention,
+  flagNeedsAttention,
+} from "./needsAttention.ts";
 import { transcribeVoiceNote } from "./transcribeVoice.ts";
 import { logError } from "./logError.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
 import { sendWhatsAppText, type SendResult } from "./whatsappSend.ts";
-import { validateAgentReply } from "./validateAgentReply.ts";
+import { meetingTimesIn, validateAgentReply } from "./validateAgentReply.ts";
 import { runMemoryExtraction } from "./extractMemory.ts";
 import { runAgentTurn } from "./agentTurn.ts";
 import { moozClientFromEnv } from "./mooz.ts";
@@ -63,6 +67,7 @@ import { fireberryClientFromEnv } from "./fireberry.ts";
 import { type MoozDispatchCtx } from "./moozTools.ts";
 import { formatIlHHMM } from "./ilTime.ts";
 import { buildGuardHint } from "./guardHint.ts";
+import { isBusinessAutoReply } from "./autoReplyDetect.ts";
 import { withWarmingReplyGuard } from "./warmingReplyGuard.ts";
 import { withSystemLeakGuard } from "./systemLeakGuard.ts";
 import { loadBrainRows, buildBrainSection } from "./brainContext.ts";
@@ -312,6 +317,9 @@ async function logAndDlq(
   message: string,
   errorDetail: string | null,
   payload: Record<string, unknown>,
+  /** Queue reason + what the operator alert says. Defaults to bot_failed with
+   *  the machine error as the detail. */
+  attention: { reason: AttentionReason; detail?: string } = { reason: "bot_failed" },
 ): Promise<void> {
   await logError({
     admin: ctx.admin,
@@ -339,7 +347,7 @@ async function logAndDlq(
     await flagNeedsAttention({
       admin: ctx.admin,
       conversationId: ctx.conversationId,
-      reason: "bot_failed",
+      reason: attention.reason,
       sendAlert: async (label) => {
         await alertOperators({
           admin: ctx.admin,
@@ -352,7 +360,7 @@ async function logAndDlq(
           // The operator reads the human-readable reason first; the machine
           // code stays in the detail line.
           failureType: label,
-          failureDetail: errorDetail ?? message,
+          failureDetail: attention.detail ?? errorDetail ?? message,
           dashboardBaseUrl: ctx.dashboardBaseUrl,
         });
       },
@@ -583,6 +591,12 @@ async function recordOutbound(
 const AGENT_FALLBACK_REPLY =
   "סליחה, נתקלתי בתקלה קטנה מהצד שלי 🙏 העברתי את זה לנציג שיחזור אליך ממש בקרוב.";
 
+// The lead is setting a Zoom time the bot could not confirm from the calendar
+// (asked for 21:00, gave "Monday after 17:00"). Not a glitch — an advisor
+// coordinates the time by hand, and the operators get a scheduling alert.
+const SCHEDULING_FALLBACK_REPLY =
+  "כדי לא לטעות לך בשעה 🙏 העברתי ליועץ לימודים שיחזור אליך ממש בקרוב ויתאם איתך את הזום בשעה שנוחה לך.";
+
 /**
  * The lead-facing half of the safety net: make sure SOMETHING reaches the
  * lead when the agent loop gives up. The queue + operator alert half lives in
@@ -592,7 +606,10 @@ const AGENT_FALLBACK_REPLY =
  * failure on top. The conversation is deliberately left ACTIVE so the next
  * inbound gets a fresh, possibly successful, attempt.
  */
-async function sendFallbackReplyToLead(ctx: AgentLoopCtx): Promise<void> {
+async function sendFallbackReplyToLead(
+  ctx: AgentLoopCtx,
+  body: string = AGENT_FALLBACK_REPLY,
+): Promise<void> {
   // Don't repeat the apology if it is already the last thing the lead saw —
   // a lead who keeps writing into a broken turn would otherwise get it over
   // and over. They are in the operator queue either way.
@@ -606,8 +623,7 @@ async function sendFallbackReplyToLead(ctx: AgentLoopCtx): Promise<void> {
       .order("timestamp", { ascending: false })
       .limit(1)
       .maybeSingle();
-    alreadyApologised =
-      ((last as { content?: string | null } | null)?.content ?? "") === AGENT_FALLBACK_REPLY;
+    alreadyApologised = ((last as { content?: string | null } | null)?.content ?? "") === body;
   } catch {
     // Can't tell → send it. A duplicate apology beats silence.
   }
@@ -619,7 +635,7 @@ async function sendFallbackReplyToLead(ctx: AgentLoopCtx): Promise<void> {
       accessToken: ctx.hookmyapp.accessToken,
       phoneNumberId: ctx.hookmyapp.phoneNumberId,
       to: ctx.leadPhone,
-      body: AGENT_FALLBACK_REPLY,
+      body,
     });
     if (!sent.ok) {
       await logError({
@@ -638,7 +654,7 @@ async function sendFallbackReplyToLead(ctx: AgentLoopCtx): Promise<void> {
       conversation_id: ctx.conversationId,
       direction: "outbound",
       message_type: "text",
-      content: AGENT_FALLBACK_REPLY,
+      content: body,
       timestamp: ts,
       meta_message_id: sent.metaMessageId ?? null,
     });
@@ -699,6 +715,8 @@ async function sendAndRecordReply(
     ...trace,
     metaMessageId: sendResult.metaMessageId,
   });
+  // The lead got a real answer — a stale "bot failed" queue entry is done.
+  await clearBotFailedAttention({ admin: ctx.admin, conversationId: ctx.conversationId });
 }
 
 /**
@@ -1127,6 +1145,60 @@ async function recordWarmingReplyScore(ctx: AgentLoopCtx): Promise<void> {
   );
 }
 
+/**
+ * True when the lead's latest message is a WhatsApp Business greeting that
+ * fired in reply to ours (see autoReplyDetect.ts). Logged at info level so the
+ * skip is auditable. Any read failure → false: answering a robot is a far
+ * smaller harm than ignoring a person.
+ */
+async function latestInboundIsBusinessAutoReply(ctx: AgentLoopCtx): Promise<boolean> {
+  try {
+    const { data: lastIn } = await ctx.admin
+      .from("messages")
+      .select("content, timestamp")
+      .eq("conversation_id", ctx.conversationId)
+      .eq("direction", "inbound")
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const inbound = lastIn as { content?: string | null; timestamp?: string | null } | null;
+    if (!inbound?.content || !inbound.timestamp) return false;
+    const { data: lastOut } = await ctx.admin
+      .from("messages")
+      .select("timestamp")
+      .eq("conversation_id", ctx.conversationId)
+      .eq("direction", "outbound")
+      .lt("timestamp", inbound.timestamp)
+      .order("timestamp", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const outTs = (lastOut as { timestamp?: string | null } | null)?.timestamp ?? null;
+    const secondsSinceOurLastMessage = outTs
+      ? (Date.parse(inbound.timestamp) - Date.parse(outTs)) / 1000
+      : null;
+    if (!isBusinessAutoReply({ text: inbound.content, secondsSinceOurLastMessage })) return false;
+    await logError({
+      admin: ctx.admin,
+      source: AGENT_LOOP_SOURCE,
+      errorType: "business_auto_reply_skip",
+      level: "info",
+      message: "lead's latest message is a business auto-reply — not answering, no alert",
+      context: {
+        seconds_after_our_message: secondsSinceOurLastMessage,
+        inbound: inbound.content.slice(0, 200),
+      },
+      agentId: ctx.agentId,
+      conversationId: ctx.conversationId,
+    });
+    return true;
+  } catch (err) {
+    console.error(
+      `[autoReply] check failed: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return false;
+  }
+}
+
 async function generateAndSendAgentResponseLocked(
   ctx: AgentLoopCtx,
   opts: { alreadyZoomScheduled?: boolean; crm?: CrmWarmingState } = {},
@@ -1166,6 +1238,10 @@ async function generateAndSendAgentResponseLocked(
     });
     return;
   }
+
+  // A business number answering our message by itself. Nothing to reply to,
+  // and nobody to alert — wait for the person behind the business.
+  if (await latestInboundIsBusinessAutoReply(ctx)) return;
 
   // Best-effort: a failed CRM lookup degrades to a normal turn (full history,
   // no warming block) — it must never cost a lead their reply.
@@ -1495,6 +1571,17 @@ async function generateAndSendAgentResponseLocked(
     await Promise.all(jobs);
   };
 
+  // What the lead wrote, for the guards: a number or a word the lead used
+  // themself may be reflected back (their pension, the gap they want to close).
+  const leadMessages = turn.claudeMessages
+    .filter((m) => m.role === "user")
+    .map((m) => m.content);
+  const leadWords = leadMessages.join("\n");
+  const recentLeadMessages = leadMessages.slice(-3).join("\n");
+  const timesWeAlreadySent = turn.claudeMessages
+    .filter((m) => m.role === "assistant")
+    .flatMap((m) => meetingTimesIn(m.content));
+
   for (let attempt = 0; attempt < 2; attempt++) {
     const systemPromptThisAttempt = fullSystemPrompt + guardHint;
 
@@ -1568,16 +1655,21 @@ async function generateAndSendAgentResponseLocked(
     // list_available_slots, get back daytime slots, and still tell the lead
     // "21:30" — an invented time that passed because a tool had run. Any
     // HH:MM not in this allow-list is now blocked.
+    //
+    // Times we already sent in earlier turns are grounded too: they passed
+    // this same guard when they went out (or an operator typed them). Without
+    // them the lead picking yesterday's offer ("נשאר על 14:00?") was blocked.
     const allowedMeetingTimes = [
       ...turnResult.offeredTimesIL,
       ...(existingBookingTimeIL ? [existingBookingTimeIL] : []),
+      ...timesWeAlreadySent,
     ];
     // Warming turns also reject an announced technique ("not here to
     // interrogate") on the first attempt, and every turn rejects narrating the
     // system ("the system stopped me"); the retry below rewrites either.
     const validation = withSystemLeakGuard(
       withWarmingReplyGuard(
-        validateAgentReply(rawReply, { allowedMeetingTimes }),
+        validateAgentReply(rawReply, { allowedMeetingTimes, leadText: leadWords }),
         { isWarming: warmingBlock !== "", isRetry: attempt > 0 },
       ),
       { isRetry: attempt > 0 },
@@ -1658,7 +1750,11 @@ async function generateAndSendAgentResponseLocked(
         guardHint = buildGuardHint(validation.reason, allowedMeetingTimes);
         continue;
       }
-      // attempt === 1: give up — full DLQ path
+      // attempt === 1: give up — full DLQ path.
+      // A meeting time the calendar can't back is not a glitch: the lead
+      // wants to book. Tell them an advisor will coordinate and alert the
+      // operators as a scheduling task, not as "the bot failed".
+      const needsScheduling = validation.reason === "invented_meeting_time";
       await logAndDlq(
         ctx,
         "claude_invalid_reply",
@@ -1674,8 +1770,17 @@ async function generateAndSendAgentResponseLocked(
           cost_usd: costUsd,
           lead_phone: ctx.leadPhone,
         },
+        needsScheduling
+          ? {
+            reason: "manual_scheduling",
+            detail: "הבוט לא יכול היה לאשר את השעה מהיומן ואמר לליד שיועץ יחזור אליו",
+          }
+          : undefined,
       );
-      await sendFallbackReplyToLead(ctx);
+      await sendFallbackReplyToLead(
+        ctx,
+        needsScheduling ? SCHEDULING_FALLBACK_REPLY : AGENT_FALLBACK_REPLY,
+      );
       await flushTurnObservability();
       return;
     }
@@ -1696,7 +1801,7 @@ async function generateAndSendAgentResponseLocked(
         agentId: ctx.agentId,
         conversationId: ctx.conversationId,
       });
-    });
+    }, recentLeadMessages);
     // Buffered — the judge's own model call becomes a step inside this
     // turn's trace, and its verdict becomes a score on the turn.
     if (attempt === 0) {
