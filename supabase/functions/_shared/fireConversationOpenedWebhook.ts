@@ -13,6 +13,10 @@
 // Never throws — the conversation has already been created in the DB by
 // the time this fires. A failed webhook just means the CRM iframe embed
 // doesn't get written; recoverable, must not block the caller.
+//
+// Caller contract: `url` must come from server config
+// (CONVERSATION_OPENED_WEBHOOK_URL), never from request data.
+// Request-derived values belong in `payload` only.
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAYS_MS: ReadonlyArray<number> = [1000, 2000];

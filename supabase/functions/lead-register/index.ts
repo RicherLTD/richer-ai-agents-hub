@@ -267,6 +267,9 @@ function fireNewConversationWebhookBestEffort(args: {
     });
     // Fire-and-forget, but survive past the response: EdgeRuntime.waitUntil
     // keeps the POST alive after the isolate would otherwise be torn down.
+    // The target is CONVERSATION_OPENED_WEBHOOK_URL from env; registration
+    // fields only become the JSON body.
+    // deepcode ignore Ssrf: fetch target comes from server env only; request fields only fill the JSON body
     fireAndForget(fireConversationOpenedWebhook({ url: convWebhookUrl, payload: webhookPayload }));
   } catch {
     // Payload build failed for some reason — swallow, registration must not fail.

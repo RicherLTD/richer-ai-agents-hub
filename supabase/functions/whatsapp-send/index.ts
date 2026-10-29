@@ -149,6 +149,11 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Every endpoint piece here is server config: apiUrl/token come from env,
+    // and the agent's phone id is used only when it is already a key of
+    // channelByPhoneId (built from env above). The request body only picks
+    // the conversation and the message text, which lands in the JSON body.
+    // deepcode ignore Ssrf: endpoint restricted to env-configured channels; request data only fills the JSON body
     const sendResult = await sendWhatsAppText({
       apiUrl: sendApiUrl,
       accessToken: sendToken,

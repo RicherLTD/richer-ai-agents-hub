@@ -17,6 +17,10 @@
 // Returns a discriminated result instead of throwing — callers in
 // edge-function background tasks need to keep going on failure to
 // record the DLQ entry without an unhandled rejection.
+//
+// Caller contract: `apiUrl` and `phoneNumberId` build the fetch target, so
+// they must come from server config (env / an env-keyed channel map), never
+// from request data. Request-derived values belong in `to` / `body` only.
 
 export interface SendWhatsAppTextArgs {
   apiUrl: string;

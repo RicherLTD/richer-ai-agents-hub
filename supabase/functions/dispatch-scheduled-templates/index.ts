@@ -110,6 +110,9 @@ Deno.serve(async (req) => {
     }
     if (!conversationId) return j({ error: "no conversation available for this agent" }, 400);
 
+    // `channel` only chooses between the two env-configured channels; the
+    // body's ids only pick which lead details appear in the alert text.
+    // deepcode ignore Ssrf: endpoint restricted to env-configured channels; request data only fills the message body
     const res = await alertOperators({
       admin,
       apiUrl: chApiUrl,

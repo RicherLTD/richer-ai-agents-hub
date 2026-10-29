@@ -18,6 +18,9 @@
 //
 // Never throws — the lead has already been routed in the DB by the time
 // this fires. A failed webhook is recoverable (DLQ) but must not block.
+//
+// Caller contract: `url` must come from server config (HANDOFF_WEBHOOK_URL),
+// never from request data. Request-derived values belong in `payload` only.
 
 const HANDOFF_EVENT = "zoom_scheduled";
 const MAX_ATTEMPTS = 3;
