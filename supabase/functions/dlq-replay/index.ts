@@ -58,6 +58,9 @@ async function replayHookmyappSend(
   if (!text || !phone) {
     return { ok: false, detail: "payload missing reply_text or lead_phone" };
   }
+  // Outbound target is env-only (apiUrl + phoneNumberId above). The DLQ row
+  // supplies just `to` and `body`, which land in the JSON body, not the URL.
+  // deepcode ignore Ssrf: fetch target comes from server env only; row data only fills the JSON body
   const result = await sendWhatsAppText({
     apiUrl,
     accessToken,
@@ -80,6 +83,8 @@ async function replayHandoffWebhook(
   // The original handoff payload is the entire row.payload (we stash it
   // verbatim on enqueue). Re-fire as-is.
   const payload = row.payload as unknown as HandoffPayload;
+  // `url` is HANDOFF_WEBHOOK_URL from env; the row only becomes the JSON body.
+  // deepcode ignore Ssrf: fetch target comes from server env only; row data only fills the JSON body
   const result = await fireHandoffWebhook({ url, secret, payload });
   if (!result.ok) {
     return {
