@@ -320,6 +320,7 @@
 | Handoff | `meeting_consented_at` + `q7_email` חובה | handoff מוקדם לפני שהליד הסכים |
 | Dispatcher | `claimed_at` + `FOR UPDATE … SKIP LOCKED` ב־`claim_scheduled_messages` v3 | race בין ticks אם tick גולש מעל 60s |
 | Dispatcher | `conversation_manual_mode_since` → דחיית טמפלייט (לא ביטול) | טמפלייט אוטומטי נכנס לשיחה שאופרטור השתלט עליה |
+| Dispatcher | קריאת `agents` נכשלה → כל השליחות ב-tick נדחות (claim משוחרר, בלי attempt) + `agent_lookup_failed` | טמפלייט ללקוח digital_marketing ממספר ה-affiliate |
 | Loop | `zoomGate.ts` — רצפת הכשרה דטרמיניסטית | חשיפת כלי ההזמנה לליד שעוד לא הוכשר |
 | Loop | `fireberry.ts` — חסימת auto-book לתלמיד רשום (statuscode 2) / רשימה שחורה (11) | הזמנת זום ללקוח קיים |
 | Mooz webhook | `mooz_webhook_events` UNIQUE + `X-Idempotency-Key` | עיבוד כפול של אותו booking event |

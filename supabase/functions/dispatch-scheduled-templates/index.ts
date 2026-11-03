@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { logError } from "../_shared/logError.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { partitionOptedOut } from "../_shared/optOutFilter.ts";
 import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
@@ -206,7 +207,7 @@ Deno.serve(async (req) => {
   ];
   const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, deferred_warming_off_hours: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, deferred_warming_off_hours: 0, deferred_agent_lookup_failed: 0, cancelled: 0 };
   let auth401AlertSent = false;
 
   // CRM-warming rows need two facts the claim RPC doesn't return: whether the
@@ -344,16 +345,30 @@ Deno.serve(async (req) => {
   // the global (affiliate) channel — i.e. unchanged behavior for affiliate.
   //
   // Map each batch agent_id -> its whatsapp_phone_number_id (from the DB), in
-  // ONE read for the whole tick. If that read fails, every row in the tick
-  // falls back to the global channel (unlike resolveAgentWhatsAppChannel,
-  // which throws) — the dispatcher's long-standing behavior, kept as is.
+  // ONE read for the whole tick.
   const agentPhoneById = new Map<string, string>();
+  let agentLookupFailed = false;
   const batchAgentIds = [...new Set(rows.map((r) => r.agent_id))];
   if (batchAgentIds.length > 0) {
-    const { data: agentRows } = await admin
+    const { data: agentRows, error: agentErr } = await admin
       .from("agents")
       .select("id, whatsapp_phone_number_id")
       .in("id", batchAgentIds);
+    if (agentErr) {
+      // Without the phone ids we can't tell which number a row belongs to,
+      // and guessing the global one would send a digital_marketing lead a
+      // template from the affiliate number. Skip this tick's sends instead
+      // (rows are released in the loop below) — same rule as
+      // resolveAgentWhatsAppChannel in whatsapp-send / dlq-replay.
+      agentLookupFailed = true;
+      await logError({
+        admin,
+        source: "dispatch-scheduled-templates",
+        errorType: "agent_lookup_failed",
+        message: agentErr.message,
+        context: { agent_ids: batchAgentIds },
+      });
+    }
     for (const a of agentRows ?? []) {
       const pid = (a as { whatsapp_phone_number_id?: string | null }).whatsapp_phone_number_id;
       if (pid) agentPhoneById.set(a.id as string, pid);
@@ -419,7 +434,15 @@ Deno.serve(async (req) => {
       results.deferred_quiet_hours++;
       continue;
     }
-    const ch = pickWhatsAppChannel(channels, agentPhoneById.get(row.agent_id)) ?? globalChannel;
+    if (agentLookupFailed) {
+      // Release the claim WITHOUT counting an attempt: the failure is ours,
+      // not Meta's, so it must not push the row toward status "failed". The
+      // next tick retries it.
+      await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+      results.deferred_agent_lookup_failed++;
+      continue;
+    }
+    const ch =pickWhatsAppChannel(channels, agentPhoneById.get(row.agent_id)) ?? globalChannel;
     const variables: string[] = Array.isArray(row.template_variables)
       ? (row.template_variables as unknown[]).filter((v) => typeof v === "string") as string[]
       : [];
