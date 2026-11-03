@@ -12,7 +12,12 @@ import {
   sortByReleasePriority,
 } from "../_shared/warmingRelease.ts";
 import { isOutsideWarmingSendWindow } from "../_shared/warmingSendWindow.ts";
-import { pickWhatsAppChannel, whatsAppChannelsFromEnv } from "../_shared/whatsappChannel.ts";
+import {
+  pickWhatsAppChannel,
+  resolveAgentWhatsAppChannel,
+  type WhatsAppChannel,
+  whatsAppChannelsFromEnv,
+} from "../_shared/whatsappChannel.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -156,9 +161,33 @@ Deno.serve(async (req) => {
     const { data: convo } = await admin.from("conversations").select("id, lead_phone, agent_id").eq("id", convoId).maybeSingle();
     if (!convo) return j({ error: "conversation not found" }, 404);
     const lead_phone = convo.lead_phone as string;
-    const res = await fetch(`${apiUrl}/${phoneId}/messages`, {
+    // Send from the conversation's own agent channel: a digital_marketing lead
+    // must get this text from the DM number, not the global (affiliate) one.
+    // A failed agents read stops the send instead of guessing a number — same
+    // rule as whatsapp-send, dlq-replay and the cron path below.
+    const agentId = (convo.agent_id as string | null) ?? null;
+    let ch: WhatsAppChannel;
+    try {
+      ch = (await resolveAgentWhatsAppChannel(admin, agentId, channels)) ?? globalChannel;
+    } catch (err) {
+      await logError({
+        admin,
+        source: "dispatch-scheduled-templates",
+        errorType: "agent_lookup_failed",
+        message: err instanceof Error ? err.message : String(err),
+        context: { mode: "send_text" },
+        agentId,
+        conversationId: convoId,
+      });
+      return j({ error: "agent lookup failed — message not sent" }, 500);
+    }
+    // Every endpoint piece here is server config: `ch` comes from the env-keyed
+    // channel map, and the agent's phone id is only a lookup key into it. The
+    // request body only picks the conversation and the text (JSON body).
+    // deepcode ignore Ssrf: endpoint restricted to env-configured channels; request data only fills the JSON body
+    const res = await fetch(`${ch.apiUrl}/${ch.phoneNumberId}/messages`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${ch.accessToken}`, "Content-Type": "application/json" },
       body: JSON.stringify({ messaging_product: "whatsapp", to: lead_phone, type: "text", text: { body: text } }),
     });
     const respText = await res.text().catch(() => "");
