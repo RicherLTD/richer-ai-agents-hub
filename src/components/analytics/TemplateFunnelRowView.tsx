@@ -15,6 +15,33 @@ interface Step {
   strong?: boolean;
 }
 
+type RefusedTone = "muted" | "warning" | "danger";
+
+const REFUSED_TONE_CLASS: Record<RefusedTone, string> = {
+  muted: "text-muted-foreground",
+  warning: "text-amber-700",
+  danger: "font-semibold text-destructive",
+};
+
+/**
+ * How loudly to show the "refused by Meta" line. A baseline of refusals is
+ * normal (invalid numbers, people not on WhatsApp, some per-user marketing
+ * limit), so only a clear jump above it turns amber or red — a line that is
+ * always red gets ignored.
+ *
+ *   - Under 20 sends a couple of bad numbers swing the % wildly → never shout.
+ *   - Total refused ≥ 40% → danger; ≥ 25% → warning (normal sits below that).
+ *   - The 131049 share escalates on its own (≥ 30% danger, ≥ 15% warning):
+ *     it is the one refusal Meta says gets WORSE if you keep sending.
+ */
+function refusedTone(row: TemplateFunnelRow): RefusedTone {
+  if (row.sent < 20) return "muted";
+  const limitPct = (row.refusedMarketingLimit / row.sent) * 100;
+  if (row.refusedRatePct >= 40 || limitPct >= 30) return "danger";
+  if (row.refusedRatePct >= 25 || limitPct >= 15) return "warning";
+  return "muted";
+}
+
 export function TemplateFunnelRowView({ row }: { row: TemplateFunnelRow }) {
   const steps: Step[] = [
     { label: "נשלח", n: row.sent, pct: null, width: 100 },
@@ -70,6 +97,25 @@ export function TemplateFunnelRowView({ row }: { row: TemplateFunnelRow }) {
           </div>
         ))}
       </div>
+
+      {row.refused > 0 && (
+        <div
+          className={`mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs ${REFUSED_TONE_CLASS[refusedTone(row)]}`}
+          title="Meta קיבלה את השליחה ואז סירבה למסור אותה לליד. מכסת שיווק (131049) = Meta מגבילה כמה הודעות שיווק משתמש מקבל — שליחה חוזרת לפני 24 שעות רק מחמירה."
+        >
+          <span>
+            נחסם ע״י Meta:{" "}
+            <span className="tabular-nums">
+              {row.refused} · {row.refusedRatePct}%
+            </span>
+          </span>
+          {row.refusedMarketingLimit > 0 && (
+            <span>
+              מתוכם מכסת שיווק: <span className="tabular-nums">{row.refusedMarketingLimit}</span>
+            </span>
+          )}
+        </div>
+      )}
 
       {(row.selfZoom > 0 || row.consentHandoff > 0 || row.legacyZoom > 0 || row.failed > 0) && (
         <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">

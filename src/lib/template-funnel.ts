@@ -19,6 +19,12 @@
  * when they happened. `failed` sends have no `sent_at`, so they are windowed by
  * `created_at`. All filtering happens here (not in SQL) so it is unit-testable.
  *
+ * META REFUSALS (migration 0053) — `failed` is OUR side (bad token, 3 retries).
+ * `refused` is META's side: the API accepted the send, then Meta's status
+ * webhook said `failed` (131049 = per-user marketing limit, 131026 = not
+ * reachable, ...). A person counts as refused only if NO in-window send of the
+ * template reached them — a later delivered send wins over an earlier refusal.
+ *
  * ZOOM ATTRIBUTION (conversations.zoom_booked_by, migration 0033) — only
  * `agent` (the bot booked it in-chat) is the conversion metric. `self`,
  * `consent_handoff`, and `legacy` (a pre-attribution zoom: current_tag is
@@ -37,8 +43,15 @@ export interface SendRow {
   created_at: string;
   delivered_at: string | null;
   read_at: string | null;
+  /** Meta's status webhook reported `failed` for this send (async refusal). */
+  meta_failed_at: string | null;
+  meta_error_code: number | null;
   lead_phone: string;
 }
+
+/** Meta error code for "not delivered to maintain healthy ecosystem
+ *  engagement" — the per-user marketing template limit. */
+export const META_MARKETING_LIMIT_CODE = 131049;
 
 /** A conversation row, used only for outcome signals. */
 export interface ConversationOutcomeRow {
@@ -70,6 +83,12 @@ export interface TemplateFunnelRow {
   agentZoomPerAnsweredPct: number;
   /** agentZoom / sent. */
   agentZoomPerSentPct: number;
+  /** Sent, never delivered, and Meta reported a refusal. */
+  refused: number;
+  /** Subset of `refused` with code 131049 (per-user marketing limit). */
+  refusedMarketingLimit: number;
+  /** refused / sent. */
+  refusedRatePct: number;
 }
 
 /** Digits-only phone key so `+972…` and `972…` collapse to one person. */
@@ -129,6 +148,10 @@ interface Bucket {
   consentHandoff: Set<string>;
   legacyZoom: Set<string>;
   failed: Set<string>;
+  /** People with at least one Meta-refused in-window send (before the
+   *  "delivered wins" subtraction at output time). */
+  refused: Set<string>;
+  refusedMarketingLimit: Set<string>;
 }
 
 function emptyBucket(): Bucket {
@@ -142,7 +165,16 @@ function emptyBucket(): Bucket {
     consentHandoff: new Set(),
     legacyZoom: new Set(),
     failed: new Set(),
+    refused: new Set(),
+    refusedMarketingLimit: new Set(),
   };
+}
+
+/** |a \ b| — members of `a` that are not in `b`. */
+function countExcluding(a: Set<string>, b: Set<string>): number {
+  let n = 0;
+  for (const k of a) if (!b.has(k)) n++;
+  return n;
 }
 
 /**
@@ -189,6 +221,10 @@ export function aggregateTemplateFunnel(
       b.sent.add(key);
       if (s.delivered_at || s.read_at) b.delivered.add(key);
       if (s.read_at) b.read.add(key);
+      if (s.meta_failed_at) {
+        b.refused.add(key);
+        if (s.meta_error_code === META_MARKETING_LIMIT_CODE) b.refusedMarketingLimit.add(key);
+      }
       const o = outcomes.get(key);
       if (o?.answered) b.answered.add(key);
       switch (o?.zoom) {
@@ -219,6 +255,8 @@ export function aggregateTemplateFunnel(
     const read = b.read.size;
     const answered = b.answered.size;
     const agentZoom = b.agentZoom.size;
+    // Delivered wins: a person reached by any in-window send isn't "refused".
+    const refused = countExcluding(b.refused, b.delivered);
     out.push({
       templateName,
       sent,
@@ -235,6 +273,9 @@ export function aggregateTemplateFunnel(
       answeredRatePct: pct(answered, sent),
       agentZoomPerAnsweredPct: pct(agentZoom, answered),
       agentZoomPerSentPct: pct(agentZoom, sent),
+      refused,
+      refusedMarketingLimit: countExcluding(b.refusedMarketingLimit, b.delivered),
+      refusedRatePct: pct(refused, sent),
     });
   }
 
@@ -259,6 +300,11 @@ interface FunnelRpcRow {
   answered_rate_pct: number | string;
   agent_zoom_per_answered_pct: number | string;
   agent_zoom_per_sent_pct: number | string;
+  /** Added in 0053 — optional so a dashboard deployed before the migration
+   *  is applied still renders (as 0) instead of NaN. */
+  refused?: number;
+  refused_marketing_limit?: number;
+  refused_rate_pct?: number | string;
 }
 
 /** Map an RPC row → the camelCase `TemplateFunnelRow` the UI consumes. Rates
@@ -280,6 +326,9 @@ function mapRpcRow(r: FunnelRpcRow): TemplateFunnelRow {
     answeredRatePct: Number(r.answered_rate_pct),
     agentZoomPerAnsweredPct: Number(r.agent_zoom_per_answered_pct),
     agentZoomPerSentPct: Number(r.agent_zoom_per_sent_pct),
+    refused: r.refused ?? 0,
+    refusedMarketingLimit: r.refused_marketing_limit ?? 0,
+    refusedRatePct: Number(r.refused_rate_pct ?? 0),
   };
 }
 
