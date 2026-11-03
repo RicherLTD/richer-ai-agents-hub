@@ -9,6 +9,7 @@ import { SecondaryObjectionsList } from "@/components/analytics/SecondaryObjecti
 import { TemplateFunnelCard } from "@/components/analytics/TemplateFunnelCard";
 import { FunnelBreakdownChart } from "@/components/dashboard/FunnelBreakdownChart";
 import { KpiCard } from "@/components/dashboard/KpiCard";
+import { MetaBillingAlert } from "@/components/dashboard/MetaBillingAlert";
 import { RecentLeadsList } from "@/components/dashboard/RecentLeadsList";
 import { TagBreakdownList } from "@/components/dashboard/TagBreakdownList";
 import { EmptyState } from "@/components/EmptyState";
@@ -57,6 +58,8 @@ const Index = () => {
           </p>
         </div>
       </header>
+
+      {isAdmin && <MetaBillingAlert agentId={activeAgent.id} />}
 
       <Tabs defaultValue="overview" className="relative space-y-5">
         <TabsList className="inline-flex h-9 w-auto rounded-md border border-border bg-card/60 p-0.5 backdrop-blur" dir="rtl">
