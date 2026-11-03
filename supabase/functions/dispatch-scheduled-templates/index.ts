@@ -1,6 +1,7 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { isQuietHourNow } from "../_shared/quietHours.ts";
 import { alertOperators } from "../_shared/alertOperators.ts";
+import { logError } from "../_shared/logError.ts";
 import { toCanonicalPhone } from "../_shared/normalizePhone.ts";
 import { partitionOptedOut } from "../_shared/optOutFilter.ts";
 import { fetchOptedOutSet } from "../_shared/optedOutLookup.ts";
@@ -11,6 +12,7 @@ import {
   sortByReleasePriority,
 } from "../_shared/warmingRelease.ts";
 import { isOutsideWarmingSendWindow } from "../_shared/warmingSendWindow.ts";
+import { pickWhatsAppChannel, whatsAppChannelsFromEnv } from "../_shared/whatsappChannel.ts";
 
 const BLOCKING_TAGS = new Set(["zoom_scheduled", "opted_out", "requires_human", "underage"]);
 
@@ -53,7 +55,11 @@ Deno.serve(async (req) => {
   const supabaseUrl = Deno.env.get("SUPABASE_URL");
   const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
   if (!supabaseUrl || !serviceRoleKey) return j({ error: "missing supabase env" }, 500);
-  if (!apiUrl || !token || !phoneId) return j({ error: "missing whatsapp env" }, 500);
+  // Every sending channel comes from env only (global + _DM). The global one
+  // is set exactly when apiUrl, token and phoneId above are all non-empty.
+  const channels = whatsAppChannelsFromEnv((key) => Deno.env.get(key));
+  const globalChannel = channels.fallback;
+  if (!globalChannel) return j({ error: "missing whatsapp env" }, 500);
 
   const admin = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
 
@@ -77,6 +83,10 @@ Deno.serve(async (req) => {
     // Meta template is per-WABA. Testing the affiliate channel therefore
     // proves nothing about the digital one — where 58% of the drops happen.
     // channel:"dm" routes the canary through the digital credentials.
+    //
+    // Deliberately reads the _DM env by name instead of pickWhatsAppChannel:
+    // that helper falls back to the global channel, which would let a broken
+    // DM channel "pass" this canary on the affiliate number.
     const useDm = payload.channel === "dm";
     const chApiUrl = useDm ? (Deno.env.get("WHATSAPP_API_URL_DM") ?? "") : apiUrl;
     const chPhoneId = useDm ? (Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM") ?? "") : phoneId;
@@ -197,7 +207,7 @@ Deno.serve(async (req) => {
   ];
   const optedOutSet = await fetchOptedOutSet(admin, batchPhones);
   const { keep: sendableRows, cancel: optedOutRows } = partitionOptedOut(rows, optedOutSet, toCanonicalPhone);
-  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, deferred_warming_off_hours: 0, cancelled: 0 };
+  const results = { picked: rows.length, sent: 0, failed: 0, deferred_quiet_hours: 0, deferred_manual_mode: 0, deferred_warming_active_chat: 0, deferred_warming_paced: 0, deferred_warming_off_hours: 0, deferred_agent_lookup_failed: 0, cancelled: 0 };
   let auth401AlertSent = false;
 
   // CRM-warming rows need two facts the claim RPC doesn't return: whether the
@@ -330,38 +340,40 @@ Deno.serve(async (req) => {
   // Per-channel WhatsApp credentials. The dispatcher serves ALL agents, so it
   // must send each agent's template FROM that agent's own channel — otherwise
   // Meta rejects the template with #132001 (the template lives on the agent's
-  // WABA, not the global/affiliate one). Keyed by whatsapp_phone_number_id;
-  // any agent whose channel isn't explicitly configured falls back to the
-  // global (affiliate) creds — i.e. unchanged behavior for affiliate.
-  const channelByPhoneId = new Map<string, { apiUrl: string; token: string }>();
-  const addChannel = (pid?: string | null, u?: string | null, t?: string | null) => {
-    if (pid && u && t) channelByPhoneId.set(pid, { apiUrl: u, token: t });
-  };
-  addChannel(phoneId, apiUrl, token); // affiliate / default (unsuffixed env)
-  addChannel(
-    Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
-    Deno.env.get("WHATSAPP_API_URL_DM"),
-    Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
-  );
-  // Map each batch agent_id -> its whatsapp_phone_number_id (from the DB).
+  // WABA, not the global/affiliate one). The channel list is `channels`
+  // (env only); an agent whose phone id isn't configured there falls back to
+  // the global (affiliate) channel — i.e. unchanged behavior for affiliate.
+  //
+  // Map each batch agent_id -> its whatsapp_phone_number_id (from the DB), in
+  // ONE read for the whole tick.
   const agentPhoneById = new Map<string, string>();
+  let agentLookupFailed = false;
   const batchAgentIds = [...new Set(rows.map((r) => r.agent_id))];
   if (batchAgentIds.length > 0) {
-    const { data: agentRows } = await admin
+    const { data: agentRows, error: agentErr } = await admin
       .from("agents")
       .select("id, whatsapp_phone_number_id")
       .in("id", batchAgentIds);
+    if (agentErr) {
+      // Without the phone ids we can't tell which number a row belongs to,
+      // and guessing the global one would send a digital_marketing lead a
+      // template from the affiliate number. Skip this tick's sends instead
+      // (rows are released in the loop below) — same rule as
+      // resolveAgentWhatsAppChannel in whatsapp-send / dlq-replay.
+      agentLookupFailed = true;
+      await logError({
+        admin,
+        source: "dispatch-scheduled-templates",
+        errorType: "agent_lookup_failed",
+        message: agentErr.message,
+        context: { agent_ids: batchAgentIds },
+      });
+    }
     for (const a of agentRows ?? []) {
       const pid = (a as { whatsapp_phone_number_id?: string | null }).whatsapp_phone_number_id;
       if (pid) agentPhoneById.set(a.id as string, pid);
     }
   }
-  // Resolve the sending channel for a row's agent (falls back to global creds).
-  const channelFor = (agentId: string): { apiUrl: string; token: string; phoneId: string } => {
-    const pid = agentPhoneById.get(agentId);
-    const ch = pid ? channelByPhoneId.get(pid) : undefined;
-    return ch ? { apiUrl: ch.apiUrl, token: ch.token, phoneId: pid! } : { apiUrl, token, phoneId };
-  };
   for (const row of optedOutRows) {
     await admin.from("scheduled_messages").update({ status: "cancelled", claimed_at: null, last_error: "opted_out_before_send" }).eq("id", row.id);
     results.cancelled++;
@@ -422,7 +434,15 @@ Deno.serve(async (req) => {
       results.deferred_quiet_hours++;
       continue;
     }
-    const ch = channelFor(row.agent_id);
+    if (agentLookupFailed) {
+      // Release the claim WITHOUT counting an attempt: the failure is ours,
+      // not Meta's, so it must not push the row toward status "failed". The
+      // next tick retries it.
+      await admin.from("scheduled_messages").update({ claimed_at: null }).eq("id", row.id);
+      results.deferred_agent_lookup_failed++;
+      continue;
+    }
+    const ch =pickWhatsAppChannel(channels, agentPhoneById.get(row.agent_id)) ?? globalChannel;
     const variables: string[] = Array.isArray(row.template_variables)
       ? (row.template_variables as unknown[]).filter((v) => typeof v === "string") as string[]
       : [];
@@ -442,9 +462,9 @@ Deno.serve(async (req) => {
     const timer = setTimeout(() => ac.abort(), 15_000);
     let res: Response;
     try {
-      res = await fetch(`${ch.apiUrl}/${ch.phoneId}/messages`, {
+      res = await fetch(`${ch.apiUrl}/${ch.phoneNumberId}/messages`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${ch.token}`, "Content-Type": "application/json" },
+        headers: { Authorization: `Bearer ${ch.accessToken}`, "Content-Type": "application/json" },
         body: JSON.stringify(body),
         signal: ac.signal,
       });
@@ -496,8 +516,8 @@ Deno.serve(async (req) => {
           alertOperators({
             admin,
             apiUrl: ch.apiUrl,
-            accessToken: ch.token,
-            phoneNumberId: ch.phoneId,
+            accessToken: ch.accessToken,
+            phoneNumberId: ch.phoneNumberId,
             agentId: row.agent_id,
             conversationId: row.conversation_id,
             leadPhone: row.lead_phone,
