@@ -19,6 +19,8 @@ function send(p: Partial<SendRow> = {}): SendRow {
     created_at: ago(2),
     delivered_at: null,
     read_at: null,
+    meta_failed_at: null,
+    meta_error_code: null,
     lead_phone: "+9720000000001",
     ...p,
   };
@@ -215,6 +217,62 @@ describe("aggregateTemplateFunnel", () => {
     expect(out[0].templateName).toBe("t_a");
     expect(out[0].failed).toBe(1);
     expect(out[0].sent).toBe(1);
+  });
+
+  it("counts a sent row that Meta refused as refused, not delivered", () => {
+    const out = aggregateTemplateFunnel(
+      [
+        send({ lead_phone: "+401", meta_failed_at: ago(1), meta_error_code: 131026 }),
+        send({ lead_phone: "+402", delivered_at: ago(1) }),
+        send({ lead_phone: "+403" }),
+        send({ lead_phone: "+404" }),
+      ],
+      [],
+    );
+    expect(out[0].sent).toBe(4);
+    expect(out[0].delivered).toBe(1);
+    expect(out[0].refused).toBe(1);
+    expect(out[0].refusedMarketingLimit).toBe(0);
+    expect(out[0].refusedRatePct).toBe(25);
+  });
+
+  it("counts 131049 refusals separately as the marketing-limit subset", () => {
+    const out = aggregateTemplateFunnel(
+      [
+        send({ lead_phone: "+411", meta_failed_at: ago(1), meta_error_code: 131049 }),
+        send({ lead_phone: "+412", meta_failed_at: ago(1), meta_error_code: 131049 }),
+        send({ lead_phone: "+413", meta_failed_at: ago(1), meta_error_code: 131026 }),
+      ],
+      [],
+    );
+    expect(out[0].refused).toBe(3);
+    expect(out[0].refusedMarketingLimit).toBe(2);
+  });
+
+  it("does not count a person as refused when another send of the template reached them", () => {
+    const out = aggregateTemplateFunnel(
+      [
+        send({ lead_phone: "+421", sent_at: ago(30), meta_failed_at: ago(30), meta_error_code: 131049 }),
+        send({ lead_phone: "421", sent_at: ago(2), delivered_at: ago(2) }),
+      ],
+      [],
+    );
+    expect(out[0].sent).toBe(1);
+    expect(out[0].delivered).toBe(1);
+    expect(out[0].refused).toBe(0);
+  });
+
+  it("ignores refusals on sends outside the sent_at window", () => {
+    const out = aggregateTemplateFunnel(
+      [
+        send({ lead_phone: "+431", sent_at: ago(48), meta_failed_at: ago(48), meta_error_code: 131049 }),
+        send({ lead_phone: "+432", sent_at: ago(2) }),
+      ],
+      [],
+      { from: ago(24), to: ahead(1) },
+    );
+    expect(out[0].sent).toBe(1);
+    expect(out[0].refused).toBe(0);
   });
 
   it("rounds rates to one decimal and guards divide-by-zero", () => {

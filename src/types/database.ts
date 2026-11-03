@@ -1548,6 +1548,8 @@ export type Database = {
           last_error: string | null
           lead_name: string | null
           lead_phone: string
+          meta_error_code: number | null
+          meta_failed_at: string | null
           meta_message_id: string | null
           read_at: string | null
           scheduled_for: string
@@ -1573,6 +1575,8 @@ export type Database = {
           last_error?: string | null
           lead_name?: string | null
           lead_phone: string
+          meta_error_code?: number | null
+          meta_failed_at?: string | null
           meta_message_id?: string | null
           read_at?: string | null
           scheduled_for: string
@@ -1598,6 +1602,8 @@ export type Database = {
           last_error?: string | null
           lead_name?: string | null
           lead_phone?: string
+          meta_error_code?: number | null
+          meta_failed_at?: string | null
           meta_message_id?: string | null
           read_at?: string | null
           scheduled_for?: string
@@ -1704,6 +1710,9 @@ export type Database = {
           legacy_zoom: number
           read: number
           read_rate_pct: number
+          refused: number
+          refused_marketing_limit: number
+          refused_rate_pct: number
           self_zoom: number
           sent: number
           template_name: string

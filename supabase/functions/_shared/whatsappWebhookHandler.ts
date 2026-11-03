@@ -2055,6 +2055,19 @@ async function ingestDeliveryStatus(
 
   if (statusName === "failed") {
     const firstError = status.errors?.[0];
+    // Persist the refusal onto the template send row (migration 0053) so the
+    // funnel can show "refused by Meta" with its code, instead of an
+    // unexplained "sent, not delivered". Same wamid match and no-op for agent
+    // replies as delivered/read below; `is null` keeps the FIRST refusal when
+    // Meta repeats the callback.
+    await admin
+      .from("scheduled_messages")
+      .update({
+        meta_failed_at: metaTimestampToIso(status.timestamp),
+        meta_error_code: typeof firstError?.code === "number" ? firstError.code : null,
+      })
+      .eq("meta_message_id", wamid)
+      .is("meta_failed_at", null);
     await logError({
       admin,
       source: "whatsapp-status-callback",
