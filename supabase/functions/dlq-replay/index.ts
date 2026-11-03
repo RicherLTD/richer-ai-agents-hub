@@ -7,7 +7,8 @@
 //      Picks up to `limit` rows where retry_count < 3 and replays them.
 //
 // Currently supports replay of:
-//   - hookmyapp_send_failed  → re-send the WhatsApp text via HookMyApp.
+//   - hookmyapp_send_failed  → re-send the WhatsApp text via HookMyApp,
+//                              from the row's agent's own number.
 //   - handoff_webhook_failed → re-fire the handoff webhook to Make.com.
 //
 // On success we set `resolved_at = now()`. On failure we bump
@@ -17,11 +18,16 @@
 // Auth: requireAdmin. The function ITSELF uses service_role so it can
 // write to `failed_messages` regardless of RLS.
 
-import "https://esm.sh/@supabase/supabase-js@2.45.4";
+import { type SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4";
 import { corsHeaders } from "../_shared/cors.ts";
 import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { logError } from "../_shared/logError.ts";
 import { sendWhatsAppText } from "../_shared/whatsappSend.ts";
+import {
+  resolveAgentWhatsAppChannel,
+  type WhatsAppChannel,
+  whatsAppChannelsFromEnv,
+} from "../_shared/whatsappChannel.ts";
 import { fireHandoffWebhook, type HandoffPayload } from "../_shared/fireHandoffWebhook.ts";
 
 const SOURCE = "dlq-replay";
@@ -45,26 +51,39 @@ interface OneResult {
 }
 
 async function replayHookmyappSend(
+  admin: SupabaseClient,
   row: ReplayRow,
 ): Promise<{ ok: boolean; detail: string }> {
-  const apiUrl = Deno.env.get("WHATSAPP_API_URL");
-  const accessToken = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
-  const phoneId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
-  if (!apiUrl || !accessToken || !phoneId) {
-    return { ok: false, detail: "HookMyApp env not configured" };
-  }
   const text = typeof row.payload.reply_text === "string" ? row.payload.reply_text : null;
   const phone = typeof row.payload.lead_phone === "string" ? row.payload.lead_phone : null;
   if (!text || !phone) {
     return { ok: false, detail: "payload missing reply_text or lead_phone" };
   }
-  // Outbound target is env-only (apiUrl + phoneNumberId above). The DLQ row
+  // Re-send from the number the lead was talking to: a digital_marketing row
+  // goes out on the _DM channel, not the global (affiliate) one. Same lookup
+  // as whatsapp-send. A failed agents read fails the replay (retried later)
+  // rather than guessing a number.
+  let channel: WhatsAppChannel | null;
+  try {
+    channel = await resolveAgentWhatsAppChannel(
+      admin,
+      row.agent_id,
+      whatsAppChannelsFromEnv((key) => Deno.env.get(key)),
+    );
+  } catch (err) {
+    return { ok: false, detail: err instanceof Error ? err.message : String(err) };
+  }
+  if (!channel) {
+    return { ok: false, detail: "HookMyApp env not configured" };
+  }
+  // Outbound target is env-only: `channel` comes from the env-keyed channel
+  // map, and the agent's phone id is only a lookup key into it. The DLQ row
   // supplies just `to` and `body`, which land in the JSON body, not the URL.
   // deepcode ignore Ssrf: fetch target comes from server env only; row data only fills the JSON body
   const result = await sendWhatsAppText({
-    apiUrl,
-    accessToken,
-    phoneNumberId: phoneId,
+    apiUrl: channel.apiUrl,
+    accessToken: channel.accessToken,
+    phoneNumberId: channel.phoneNumberId,
     to: phone,
     body: text,
   });
@@ -103,7 +122,7 @@ async function replayOne(
   let outcome: { ok: boolean; detail: string };
   switch (row.error_type) {
     case "hookmyapp_send_failed":
-      outcome = await replayHookmyappSend(row);
+      outcome = await replayHookmyappSend(admin, row);
       break;
     case "handoff_webhook_failed":
       outcome = await replayHandoffWebhook(row);

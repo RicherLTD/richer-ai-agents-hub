@@ -418,6 +418,7 @@
 | `truncate.ts` | חיתוך טקסט בטוח ל-DB columns / לוגים | ✅ |
 | `validation.ts` | `isUuid` וכו' — ולידציה לפני אינטרפולציה ל-PostgREST `.or()` | — |
 | `whatsappSend.ts` | `sendWhatsAppText` — שליחה ב-HookMyApp + backoff/timeout | ✅ |
+| `whatsappChannel.ts` | בחירת ערוץ שליחה (global / `_DM`) לפי `agents.whatsapp_phone_number_id` — ה-URL וה-token רק מ-env. משמש את `whatsapp-send` ו-`dlq-replay` | ✅ |
 | `transcribeVoice.ts` | תמלול הודעות קוליות בעברית (Whisper) | — |
 | `anthropicRetry.ts` | retry על 429/5xx/529 עם כיבוד `retry-after` | ✅ |
 | `validateAgentReply.ts` | regex hallucination guards | ✅ |
@@ -768,7 +769,7 @@ bun run scripts/check-error-logs.ts          # error_logs אחרונים
 **WhatsApp / HookMyApp — ערוץ digital_marketing (`_DM`):**
 - `VERIFY_TOKEN_DM` — HMAC של הערוץ השני
 - `WHATSAPP_API_URL_DM`, `WHATSAPP_ACCESS_TOKEN_DM`, `WHATSAPP_PHONE_NUMBER_ID_DM`
-- נקראים ב־`whatsapp-webhook-dm`, `whatsapp-send`, `dispatch-scheduled-templates`
+- נקראים ב־`whatsapp-webhook-dm`, `whatsapp-send`, `dlq-replay`, `dispatch-scheduled-templates`
 
 **Shared secrets (Bearer) — הפונקציות הציבוריות:**
 - `CRON_SHARED_SECRET` — pg_cron → `dispatch-scheduled-templates`, `re-engage-cold-leads`, `brain-sweep-stale`

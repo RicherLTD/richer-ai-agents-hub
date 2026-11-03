@@ -26,6 +26,7 @@
 //                                production: https://graph.facebook.com/v22.0
 //   WHATSAPP_ACCESS_TOKEN     — sandbox activation code or Meta token
 //   WHATSAPP_PHONE_NUMBER_ID  — sandbox session phone or Meta phone id
+//   (+ the same three with a _DM suffix for the digital_marketing channel)
 //
 // Auto-injected by Supabase: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
 // SUPABASE_ANON_KEY (used by requireAdmin via requireUser internally).
@@ -35,6 +36,11 @@ import { HttpError, jsonResponse, requireAdmin } from "../_shared/auth.ts";
 import { logError } from "../_shared/logError.ts";
 import { enqueueFailedMessage } from "../_shared/dlq.ts";
 import { sendWhatsAppText } from "../_shared/whatsappSend.ts";
+import {
+  resolveAgentWhatsAppChannel,
+  type WhatsAppChannel,
+  whatsAppChannelsFromEnv,
+} from "../_shared/whatsappChannel.ts";
 
 const SOURCE = "whatsapp-send";
 
@@ -63,10 +69,9 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const apiUrl = Deno.env.get("WHATSAPP_API_URL");
-    const accessToken = Deno.env.get("WHATSAPP_ACCESS_TOKEN");
-    const phoneId = Deno.env.get("WHATSAPP_PHONE_NUMBER_ID");
-    if (!apiUrl || !accessToken || !phoneId) {
+    const channels = whatsAppChannelsFromEnv((key) => Deno.env.get(key));
+    const globalChannel = channels.fallback;
+    if (!globalChannel) {
       throw new HttpError(500, "HookMyApp env not configured");
     }
 
@@ -118,46 +123,34 @@ Deno.serve(async (req) => {
     // reply to a digital_marketing lead must go out FROM the DM number, not
     // the global (affiliate) channel — otherwise the lead gets a message from
     // the wrong WhatsApp number. Keyed by whatsapp_phone_number_id; falls back
-    // to the global creds (unchanged behavior for affiliate).
-    const channelByPhoneId = new Map<string, { apiUrl: string; token: string }>();
-    const addChannel = (pid?: string | null, u?: string | null, t?: string | null) => {
-      if (pid && u && t) channelByPhoneId.set(pid, { apiUrl: u, token: t });
-    };
-    addChannel(phoneId, apiUrl, accessToken); // global / affiliate default
-    addChannel(
-      Deno.env.get("WHATSAPP_PHONE_NUMBER_ID_DM"),
-      Deno.env.get("WHATSAPP_API_URL_DM"),
-      Deno.env.get("WHATSAPP_ACCESS_TOKEN_DM"),
-    );
-    let sendApiUrl = apiUrl;
-    let sendToken = accessToken;
-    let sendPhoneId = phoneId;
-    if (conversation.agent_id) {
-      const { data: agentRow } = await admin
-        .from("agents")
-        .select("whatsapp_phone_number_id")
-        .eq("id", conversation.agent_id)
-        .maybeSingle();
-      const agentPhoneId =
-        (agentRow as { whatsapp_phone_number_id?: string | null } | null)
-          ?.whatsapp_phone_number_id ?? null;
-      const ch = agentPhoneId ? channelByPhoneId.get(agentPhoneId) : undefined;
-      if (agentPhoneId && ch) {
-        sendApiUrl = ch.apiUrl;
-        sendToken = ch.token;
-        sendPhoneId = agentPhoneId;
-      }
+    // to the global creds (unchanged behavior for affiliate). A failed agents
+    // read stops the send instead of guessing a number.
+    let channel: WhatsAppChannel;
+    try {
+      channel =
+        (await resolveAgentWhatsAppChannel(admin, conversation.agent_id, channels)) ??
+          globalChannel;
+    } catch (err) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "agent_lookup_failed",
+        message: err instanceof Error ? err.message : String(err),
+        agentId: conversation.agent_id ?? null,
+        conversationId: conversation.id,
+      });
+      throw new HttpError(500, "Agent lookup failed — message not sent");
     }
 
-    // Every endpoint piece here is server config: apiUrl/token come from env,
-    // and the agent's phone id is used only when it is already a key of
-    // channelByPhoneId (built from env above). The request body only picks
-    // the conversation and the message text, which lands in the JSON body.
+    // Every endpoint piece here is server config: `channel` comes from the
+    // env-keyed channel map (whatsAppChannelsFromEnv), and the agent's phone
+    // id is only a lookup key into it. The request body only picks the
+    // conversation and the message text, which lands in the JSON body.
     // deepcode ignore Ssrf: endpoint restricted to env-configured channels; request data only fills the JSON body
     const sendResult = await sendWhatsAppText({
-      apiUrl: sendApiUrl,
-      accessToken: sendToken,
-      phoneNumberId: sendPhoneId,
+      apiUrl: channel.apiUrl,
+      accessToken: channel.accessToken,
+      phoneNumberId: channel.phoneNumberId,
       to: conversation.lead_phone,
       body: content,
     });
