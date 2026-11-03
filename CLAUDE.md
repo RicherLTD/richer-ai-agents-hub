@@ -418,7 +418,7 @@
 | `truncate.ts` | חיתוך טקסט בטוח ל-DB columns / לוגים | ✅ |
 | `validation.ts` | `isUuid` וכו' — ולידציה לפני אינטרפולציה ל-PostgREST `.or()` | — |
 | `whatsappSend.ts` | `sendWhatsAppText` — שליחה ב-HookMyApp + backoff/timeout | ✅ |
-| `whatsappChannel.ts` | בחירת ערוץ שליחה (global / `_DM`) לפי `agents.whatsapp_phone_number_id` — ה-URL וה-token רק מ-env. משמש את `whatsapp-send` ו-`dlq-replay` | ✅ |
+| `whatsappChannel.ts` | בחירת ערוץ שליחה (global / `_DM`) לפי `agents.whatsapp_phone_number_id` — ה-URL וה-token רק מ-env. משמש את `whatsapp-send`, `dlq-replay` ו-`dispatch-scheduled-templates` | ✅ |
 | `transcribeVoice.ts` | תמלול הודעות קוליות בעברית (Whisper) | — |
 | `anthropicRetry.ts` | retry על 429/5xx/529 עם כיבוד `retry-after` | ✅ |
 | `validateAgentReply.ts` | regex hallucination guards | ✅ |
