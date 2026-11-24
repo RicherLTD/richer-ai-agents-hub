@@ -92,6 +92,13 @@ import {
 } from "./warmingHistory.ts";
 import { alertOperators } from "./alertOperators.ts";
 import { isOptOutMessage } from "./optOut.ts";
+import { type InboundButtonReply, type MetaButtonFields, parseButtonReply } from "./quickReply.ts";
+import {
+  applyConversationOptOut,
+  type ResolvedButtonAction,
+  resolveBroadcastButtonAction,
+  sendBroadcastButtonReply,
+} from "./broadcastButtonAction.ts";
 import { isQuietHourNow } from "./quietHours.ts";
 import {
   type AnthropicUsage,
@@ -141,7 +148,7 @@ interface MetaContact {
   wa_id?: string;
 }
 interface MetaMediaRef { id?: string; mime_type?: string; }
-interface MetaMessage {
+interface MetaMessage extends MetaButtonFields {
   from?: string;
   type?: string;
   text?: { body?: string };
@@ -2002,6 +2009,10 @@ interface InboundOutcome {
    *  canned reply asking the lead to type — silent bot is the #1 way to
    *  lose Israeli leads who default to voice notes. */
   needsCannedNonTextReply: boolean;
+  /** Set when a quick-reply tap matched a configured broadcast button action.
+   *  The handler sends its fixed reply instead of running the agent (the
+   *  opt-out itself, if any, is already applied during ingest). */
+  buttonAction?: ResolvedButtonAction;
   conversationId: string;
   leadPhone: string;
 }
@@ -2281,10 +2292,17 @@ async function ingestInboundMessage(
     return null;
   }
 
+  // Quick-reply taps (template button / interactive reply) carry no
+  // text.body. Store the tapped label as the inbound text so the dashboard
+  // shows it and the agent can read it on fallback.
+  const buttonReply: InboundButtonReply | null = parseButtonReply(message);
   const rawType = normaliseType(message.type);
   let type: MessageType = rawType;
   let content: string;
-  if (rawType === "text") {
+  if (buttonReply) {
+    type = "text";
+    content = buttonReply.text;
+  } else if (rawType === "text") {
     content = message.text?.body ?? "";
   } else if (
     (rawType === "audio" || message.type === "voice") &&
@@ -2377,57 +2395,72 @@ async function ingestInboundMessage(
     });
   }
 
+  // Broadcast quick-reply button: if the template that opened this
+  // conversation configured an action for the tapped button, answer
+  // deterministically (no LLM). A "stop" button opts out right here, before
+  // the kill switch, exactly like a typed "הסר". Unconfigured taps and lookup
+  // failures fall through to the normal text path below, so the agent sees
+  // the label — a tap is never silently dropped.
+  if (buttonReply) {
+    let resolved: ResolvedButtonAction | null = null;
+    try {
+      const { data: agentCfg } = await admin
+        .from("agents")
+        .select("warming_context_days")
+        .eq("id", agentId)
+        .maybeSingle();
+      const contextDays = (agentCfg?.warming_context_days as number | null | undefined) ?? 14;
+      resolved = await resolveBroadcastButtonAction(admin, {
+        agentId,
+        conversationId,
+        reply: buttonReply,
+        contextDays,
+      });
+    } catch (err) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "button_action_resolve_failed",
+        level: "warn",
+        message: err instanceof Error ? err.message : String(err),
+        context: { phone, button_text: buttonReply.text, button_payload: buttonReply.payload },
+        agentId,
+        conversationId,
+      });
+    }
+    if (resolved) {
+      if (resolved.action.optout) {
+        await applyConversationOptOut(admin, {
+          agentId,
+          conversationId,
+          phone,
+          trigger: "button",
+          contentPreview: content,
+        });
+      }
+      return {
+        needsAgentReply: false,
+        needsCannedNonTextReply: false,
+        buttonAction: resolved,
+        conversationId,
+        leadPhone: phone,
+      };
+    }
+  }
+
   // Auto opt-out: if the inbound text is an explicit removal request
   // (Israeli regulation requires honoring this immediately), tag the
   // conversation, pause it, and skip the agent loop. No reply is sent —
   // the lead asked for silence, we give silence. The dashboard "הסר"
   // filter surfaces these so operators can audit.
   if (type === "text" && isOptOutMessage(content)) {
-    const { error: optOutErr } = await admin
-      .from("conversations")
-      .update({ current_tag: "opted_out", status: "paused" })
-      .eq("id", conversationId);
-    if (optOutErr) {
-      await logError({
-        admin,
-        source: SOURCE,
-        errorType: "auto_opt_out_update_failed",
-        message: optOutErr.message,
-        context: { phone, dbCode: optOutErr.code ?? null },
-        agentId,
-        conversationId,
-      });
-    } else {
-      await logError({
-        admin,
-        source: SOURCE,
-        errorType: "auto_opt_out",
-        level: "info",
-        message: `auto opt-out triggered by inbound text`,
-        context: { phone, content_preview: content.slice(0, 200) },
-        agentId,
-        conversationId,
-      });
-    }
-    // Also record the phone in the GLOBAL opt_outs suppression list. The
-    // conversation tag above only blocks THIS agent's conversation; opt_outs is
-    // phone-level and cross-agent, and is the list the broadcast feature checks
-    // (including CSV uploads) so a "remove me" here is honored everywhere.
-    // Best-effort: never let it break the opt-out acknowledgement.
-    try {
-      const { data: existing } = await admin
-        .from("opt_outs")
-        .select("id")
-        .eq("lead_phone", phone)
-        .limit(1);
-      if (!existing || existing.length === 0) {
-        await admin
-          .from("opt_outs")
-          .insert({ lead_phone: phone, reason: "whatsapp_reply", opted_out_at: new Date().toISOString() });
-      }
-    } catch (_e) {
-      // opt_outs is best-effort; the conversation tag already blocks this agent.
-    }
+    await applyConversationOptOut(admin, {
+      agentId,
+      conversationId,
+      phone,
+      trigger: "text",
+      contentPreview: content,
+    });
     return {
       needsAgentReply: false,
       needsCannedNonTextReply: false,
@@ -2612,6 +2645,11 @@ export async function handleWhatsappWebhook(
   // when a user fires off multiple messages in quick succession.
   const conversationsNeedingReply = new Map<string, string>(); // id → leadPhone
   const conversationsNeedingCannedReply = new Map<string, string>(); // id → leadPhone
+  // Configured broadcast button taps → fixed reply, no agent. Last tap wins.
+  const conversationsNeedingButtonReply = new Map<
+    string,
+    { leadPhone: string; resolved: ResolvedButtonAction }
+  >();
 
   const openaiApiKey = Deno.env.get("OPENAI_API_KEY");
   const ingestEnv: IngestEnv = {
@@ -2633,7 +2671,15 @@ export async function handleWhatsappWebhook(
       const contacts = change.value?.contacts ?? [];
       for (const message of change.value?.messages ?? []) {
         const outcome = await ingestInboundMessage(admin, agentId, contacts, message, ingestEnv);
-        if (outcome?.needsAgentReply) {
+        if (outcome?.buttonAction) {
+          conversationsNeedingButtonReply.set(outcome.conversationId, {
+            leadPhone: outcome.leadPhone,
+            resolved: outcome.buttonAction,
+          });
+          // A button reply answers this webhook for the conversation; a typed
+          // message earlier in the same batch must not also get an AI reply.
+          conversationsNeedingReply.delete(outcome.conversationId);
+        } else if (outcome?.needsAgentReply) {
           conversationsNeedingReply.set(outcome.conversationId, outcome.leadPhone);
         } else if (outcome?.needsCannedNonTextReply) {
           conversationsNeedingCannedReply.set(outcome.conversationId, outcome.leadPhone);
@@ -2645,6 +2691,17 @@ export async function handleWhatsappWebhook(
   // Kill switch: if the agent is paused, skip the AI loop entirely.
   // Inbound rows are already persisted above so the operator sees them.
   if (isPaused) {
+    if (conversationsNeedingButtonReply.size > 0) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "agent_paused_skip",
+        level: "info",
+        message: `agent is paused — skipping ${conversationsNeedingButtonReply.size} button reply(ies) (opt-outs already applied)`,
+        context: { buttonReplyCount: conversationsNeedingButtonReply.size },
+        agentId,
+      });
+    }
     if (conversationsNeedingReply.size > 0) {
       await logError({
         admin,
@@ -2660,6 +2717,41 @@ export async function handleWhatsappWebhook(
       status: 200,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // Deterministic broadcast button replies (no Claude). Background, like the
+  // agent loop, so HookMyApp gets its 200 immediately.
+  if (conversationsNeedingButtonReply.size > 0) {
+    if (whatsappApiUrl && whatsappAccessToken && whatsappPhoneNumberId) {
+      const creds = {
+        apiUrl: whatsappApiUrl,
+        accessToken: whatsappAccessToken,
+        phoneNumberId: whatsappPhoneNumberId,
+      };
+      for (const [conversationId, { leadPhone, resolved }] of conversationsNeedingButtonReply) {
+        fireAndForget(
+          sendBroadcastButtonReply({
+            admin,
+            agentId,
+            conversationId,
+            leadPhone,
+            resolved,
+            creds,
+            send: sendWhatsAppText,
+          }).then(() => undefined),
+        );
+      }
+    } else {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "button_action_disabled_missing_env",
+        level: "warn",
+        message: "button replies not sent — missing WHATSAPP_* env",
+        context: { buttonReplyCount: conversationsNeedingButtonReply.size },
+        agentId,
+      });
+    }
   }
 
   // Fire AI replies in the background so we can return 200 to HookMyApp now.

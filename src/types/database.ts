@@ -382,6 +382,7 @@ export type Database = {
         Row: {
           agent_id: string
           body_preview: string | null
+          button_actions: Json | null
           created_at: string
           id: string
           is_active: boolean
@@ -394,6 +395,7 @@ export type Database = {
         Insert: {
           agent_id: string
           body_preview?: string | null
+          button_actions?: Json | null
           created_at?: string
           id?: string
           is_active?: boolean
@@ -406,6 +408,7 @@ export type Database = {
         Update: {
           agent_id?: string
           body_preview?: string | null
+          button_actions?: Json | null
           created_at?: string
           id?: string
           is_active?: boolean

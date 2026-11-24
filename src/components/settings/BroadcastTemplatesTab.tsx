@@ -50,10 +50,12 @@ import {
   createBroadcastTemplate,
   deleteBroadcastTemplate,
   listAllBroadcastTemplates,
+  parseButtonActionsInput,
   setBroadcastTemplateActive,
   updateBroadcastTemplateTexts,
   type BroadcastTemplateFull,
 } from "@/lib/broadcasts";
+import type { Json } from "@/types/database";
 
 export function BroadcastTemplatesTab() {
   const { activeAgent } = useAgent();
@@ -69,6 +71,7 @@ export function BroadcastTemplatesTab() {
   const [editing, setEditing] = useState<BroadcastTemplateFull | null>(null);
   const [editBody, setEditBody] = useState("");
   const [editInstructions, setEditInstructions] = useState("");
+  const [editButtonActions, setEditButtonActions] = useState("");
   const [confirmingDelete, setConfirmingDelete] = useState<BroadcastTemplateFull | null>(null);
 
   const queryKey = ["broadcast-templates-admin", agentId] as const;
@@ -100,10 +103,21 @@ export function BroadcastTemplatesTab() {
   });
 
   const editMutation = useMutation({
-    mutationFn: ({ id, body, instructions }: { id: string; body: string; instructions: string }) =>
+    mutationFn: ({
+      id,
+      body,
+      instructions,
+      buttonActions,
+    }: {
+      id: string;
+      body: string;
+      instructions: string;
+      buttonActions: Json | null;
+    }) =>
       updateBroadcastTemplateTexts(id, {
         body_preview: body.trim() || null,
         reply_instructions: instructions.trim() || null,
+        button_actions: buttonActions,
       }),
     onSuccess: () => {
       toast.success("התבנית עודכנה");
@@ -120,6 +134,22 @@ export function BroadcastTemplatesTab() {
     setEditing(row);
     setEditBody(row.body_preview ?? "");
     setEditInstructions(row.reply_instructions ?? "");
+    setEditButtonActions(row.button_actions ? JSON.stringify(row.button_actions, null, 2) : "");
+  };
+
+  const saveEdit = () => {
+    if (!editing) return;
+    const parsed = parseButtonActionsInput(editButtonActions);
+    if (!parsed.ok) {
+      toast.error("פעולות כפתורים לא תקינות", { description: parsed.error });
+      return;
+    }
+    editMutation.mutate({
+      id: editing.id,
+      body: editBody,
+      instructions: editInstructions,
+      buttonActions: parsed.value,
+    });
   };
 
   const toggleMutation = useMutation({
@@ -358,7 +388,7 @@ export function BroadcastTemplatesTab() {
       )}
 
       <Dialog open={Boolean(editing)} onOpenChange={(open) => !open && setEditing(null)}>
-        <DialogContent dir="rtl" className="sm:max-w-lg">
+        <DialogContent dir="rtl" className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
           <DialogHeader>
             <DialogTitle>עריכת "{editing?.label}"</DialogTitle>
             <DialogDescription dir="ltr" className="text-start">
@@ -387,6 +417,21 @@ export function BroadcastTemplatesTab() {
                 הבוט מקבל את זה כשליד עונה להודעה הזו, בנוסף לכללי החימום מחדש שכל תשובה לדיוור מקבלת. למשל: מה לעשות אם הוא עונה שכן, ומה אם הוא עונה שירד מזה.
               </p>
             </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="bt-edit-buttons">פעולות לכפתורי Quick reply (JSON, אופציונלי)</Label>
+              <Textarea
+                id="bt-edit-buttons"
+                dir="ltr"
+                className="font-mono text-xs"
+                value={editButtonActions}
+                onChange={(e) => setEditButtonActions(e.target.value)}
+                placeholder={'{\n  "yes": { "match": ["כן, שלחו לי"], "reply": "..." },\n  "stop": { "match": ["לא, הסירו אותי"], "reply": "...", "optout": true }\n}'}
+                rows={8}
+              />
+              <p className="text-xs text-muted-foreground">
+                לחיצה על כפתור שמופיע ב-match שולחת את ה-reply כמו שהוא, בלי הבוט. optout: true מסיר את הליד כמו מי שכותב "הסר". כפתור שלא מוגדר כאן מגיע לבוט כטקסט רגיל. ריק = ללא פעולות.
+              </p>
+            </div>
           </div>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => setEditing(null)}>
@@ -395,10 +440,7 @@ export function BroadcastTemplatesTab() {
             <Button
               type="button"
               disabled={editMutation.isPending}
-              onClick={() =>
-                editing &&
-                editMutation.mutate({ id: editing.id, body: editBody, instructions: editInstructions })
-              }
+              onClick={saveEdit}
             >
               {editMutation.isPending ? "שומר..." : "שמור"}
             </Button>

@@ -1,4 +1,5 @@
 import { supabase } from "./supabase/client";
+import type { Json } from "@/types/database";
 
 export interface BroadcastTemplate {
   id: string;
@@ -215,6 +216,8 @@ export interface BroadcastTemplateFull {
   body_preview: string | null;
   /** Bot guidance for replies to this template (broadcastRewarmBlock). */
   reply_instructions: string | null;
+  /** Quick-reply button actions (broadcastButtonAction.ts). NULL = none. */
+  button_actions: Json | null;
   is_active: boolean;
   created_at: string;
 }
@@ -232,7 +235,7 @@ export interface NewBroadcastTemplate {
 export async function listAllBroadcastTemplates(agentId: string): Promise<BroadcastTemplateFull[]> {
   const { data, error } = await supabase
     .from("broadcast_templates")
-    .select("id, agent_id, name, language, label, variable_count, body_preview, reply_instructions, is_active, created_at")
+    .select("id, agent_id, name, language, label, variable_count, body_preview, reply_instructions, button_actions, is_active, created_at")
     .eq("agent_id", agentId)
     .order("created_at", { ascending: false });
   if (error) throw error;
@@ -244,13 +247,59 @@ export async function createBroadcastTemplate(input: NewBroadcastTemplate): Prom
   if (error) throw error;
 }
 
-/** The two free-text fields the operator can edit after creation. */
+/** The fields the operator can edit after creation. */
 export async function updateBroadcastTemplateTexts(
   id: string,
-  texts: { body_preview: string | null; reply_instructions: string | null },
+  texts: {
+    body_preview: string | null;
+    reply_instructions: string | null;
+    button_actions?: Json | null;
+  },
 ): Promise<void> {
   const { error } = await supabase.from("broadcast_templates").update(texts).eq("id", id);
   if (error) throw error;
+}
+
+/**
+ * Parse the admin textarea for broadcast_templates.button_actions. Empty →
+ * null (no button actions). Mirrors the server validator
+ * (supabase/functions/_shared/quickReply.ts parseButtonActions) closely enough
+ * to reject what the server would drop, so a typo is caught on save.
+ */
+export function parseButtonActionsInput(
+  raw: string,
+): { ok: true; value: Json | null } | { ok: false; error: string } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { ok: true, value: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (e) {
+    return { ok: false, error: `JSON לא תקין: ${e instanceof Error ? e.message : String(e)}` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, error: "צריך אובייקט JSON, למשל {\"yes\": {...}, \"stop\": {...}}" };
+  }
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { ok: false, error: `${key}: צריך להיות אובייקט` };
+    }
+    const v = value as Record<string, unknown>;
+    const match = typeof v.match === "string" ? [v.match] : v.match;
+    if (!Array.isArray(match) || !match.some((m) => typeof m === "string" && m.trim() !== "")) {
+      return { ok: false, error: `${key}: חסר "match" (רשימת טקסטים של כפתורים)` };
+    }
+    if (typeof v.reply !== "string" || !v.reply.trim()) {
+      return { ok: false, error: `${key}: חסר "reply" (הטקסט שנשלח לליד)` };
+    }
+    if (v.reply.trim().length > 2000) {
+      return { ok: false, error: `${key}: "reply" ארוך מ־2000 תווים` };
+    }
+    if (v.optout !== undefined && typeof v.optout !== "boolean") {
+      return { ok: false, error: `${key}: "optout" חייב להיות true או false` };
+    }
+  }
+  return { ok: true, value: parsed as Json };
 }
 
 export async function setBroadcastTemplateActive(id: string, isActive: boolean): Promise<void> {
