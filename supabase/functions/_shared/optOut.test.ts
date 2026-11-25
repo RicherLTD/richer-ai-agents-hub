@@ -60,4 +60,25 @@ describe("isOptOutMessage", () => {
     expect(isOptOutMessage("  הסר  ")).toBe(true);
     expect(isOptOutMessage("\nSTOP\n")).toBe(true);
   });
+
+  // The broadcast stop button is labelled "לא, הסירו אותי". When the template
+  // has no button_actions (kill switch, tap after the window, label drift) the
+  // tap reaches this detector as plain text and must still opt the lead out.
+  it("matches a removal request after a leading 'לא'", () => {
+    expect(isOptOutMessage("לא, הסירו אותי")).toBe(true);
+    expect(isOptOutMessage("לא הסירו אותי")).toBe(true);
+    expect(isOptOutMessage("לא, תסירו אותי")).toBe(true);
+    expect(isOptOutMessage("לא, תורידו אותי מהרשימה")).toBe(true);
+  });
+
+  it("does NOT trigger on 'no, don't remove me'", () => {
+    expect(isOptOutMessage("לא, אל תסירו אותי")).toBe(false);
+    // Future tense without the comma reads as "you won't remove me".
+    expect(isOptOutMessage("לא תסירו אותי")).toBe(false);
+  });
+
+  it("ignores invisible direction marks around the text", () => {
+    expect(isOptOutMessage("‏לא, הסירו אותי")).toBe(true);
+    expect(isOptOutMessage("‏הסר")).toBe(true);
+  });
 });

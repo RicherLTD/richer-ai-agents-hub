@@ -437,7 +437,9 @@
 | `quietHours.ts` | חלון שתיקה פר-סוכן (Asia/Jerusalem, wrap-midnight) | — |
 | `ilTime.ts` | UTC ISO → שעון ישראל `HH:MM` (guard לשעות מומצאות) | — |
 | `normalizePhone.ts` | `toCanonicalPhone` — ספרות + 972, בלי `+` | ✅ |
-| `optOut.ts` | זיהוי בקשת הסרה מטקסט inbound | ✅ |
+| `optOut.ts` | זיהוי בקשת הסרה מטקסט inbound (כולל "לא, הסירו אותי") | ✅ |
+| `quickReply.ts` | pure — פענוח לחיצת כפתור Quick reply (`button` / `interactive`) + ולידציה ו-matching של `button_actions` | ✅ |
+| `broadcastButtonAction.ts` | תשובה קבועה (בלי AI) ללחיצת כפתור בדיוור + `applyConversationOptOut` — מימוש ההסרה היחיד, משותף ל"הסר" בהקלדה ולכפתור | ✅ |
 | `optOutFilter.ts` | pure — פיצול שורות dispatcher ל-safe / opted-out | ✅ |
 | `optedOutLookup.ts` | שאילתת `opt_outs` סובלנית לפורמטי טלפון | ✅ |
 | `broadcastRecipients.ts` | pure — בניית קהל דיוור + suppression breakdown | ✅ |
@@ -639,6 +641,7 @@
 | 0043 | `broadcast_templates` registry (dropdown של templates מאושרים) + seed מ־`agents.first_touch_template_name` |
 | 0044 | `scheduled_messages.broadcast_id` (nullable FK; הזרימה הקיימת נשארת NULL) |
 | 0045 | פונקציית `template_funnel()` — אגרגציית משפך server-side (sent/delivered/read/answered/zoom/failed + אחוזים), dedup פר (template, phone). `SECURITY INVOKER`, GRANT ל-`authenticated`. מחליף שליפת 2000 שורות לדפדפן |
+| 0054 | `broadcast_templates.button_actions` (jsonb, nullable) — פעולות לכפתורי Quick reply בדיוור. NULL = הלחיצה מגיעה לבוט כטקסט |
 
 ### ⚠️ כפילויות מספור — מי authoritative
 
@@ -654,6 +657,8 @@
 **אין migration tracking table.** `scripts/db/apply.ts` מחיל קובץ בודד דרך ה-Management API ולא רושם כלום — הסדר והאידמפוטנטיות הם באחריות מי שמריץ.
 
 **דיוור רחב**: אדמין בונה דיוור דרך דף "דיוור" → `broadcast-enqueue` מזריק שורות ל־`scheduled_messages` וה־dispatcher הקיים שולח. **Suppression דו-שלבי**: ב־enqueue (opt_outs + tags חוסמים) וב־dispatcher לפני שליחה (opt_outs re-check). אפיון + תוכנית: `docs/superpowers/`.
+
+**כפתורי Quick reply בדיוור**: לחיצה על כפתור נשמרת כ-inbound עם טקסט הכפתור. אם לטמפלייט הדיוור האחרון של השיחה (בתוך `warming_context_days`) מוגדר `button_actions`, ה-webhook עונה תשובה קבועה בלי AI, וכפתור עם `optout: true` מסיר את הליד. כפתור לא מוגדר מגיע לבוט כטקסט. מתג חירום בלי deploy: `update broadcast_templates set button_actions = null where ...`.
 
 ---
 

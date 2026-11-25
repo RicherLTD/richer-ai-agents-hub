@@ -263,11 +263,13 @@ export async function sendBroadcastButtonReply(ctx: ButtonReplyCtx): Promise<But
         agentId: ctx.agentId,
         conversationId: ctx.conversationId,
       });
-      // reply_text + lead_phone make it replayable from the DLQ screen.
+      // Filed as hookmyapp_send_failed — the type dlq-replay knows how to
+      // replay (it re-sends reply_text to lead_phone from the agent's own
+      // channel). error_logs above keeps the button-specific type.
       await enqueueFailedMessage({
         admin,
         source: SOURCE,
-        errorType: "button_action_send_failed",
+        errorType: "hookmyapp_send_failed",
         errorDetail: sent.errorBody,
         payload: { ...logCtx, reply_text: body },
         agentId: ctx.agentId,

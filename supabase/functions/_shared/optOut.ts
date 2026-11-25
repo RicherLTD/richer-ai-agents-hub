@@ -38,6 +38,13 @@ const ANCHORED_PHRASES: ReadonlyArray<RegExp> = [
   /^תוריד[\s,.!?]+אותי/u,
   /^תורידו?[\s,.!?]+אותי/u,
   /^מחקו?[\s,.!?]+אותי/u,
+  // A leading "לא" + removal request: the broadcast stop button
+  // "לא, הסירו אותי" and its typed variants. Imperatives may follow with or
+  // without a comma.
+  /^לא[\s,.!?]+(?:הסר|הסירו|הורד|הורידו|מחק|מחקו)[\s,.!?]+אותי/u,
+  // Future-tense forms only after explicit punctuation: "לא, תסירו אותי" is a
+  // request, "לא תסירו אותי" reads as "you won't remove me".
+  /^לא\s*[,.!?][\s,.!?]*(?:תסיר|תסירו|תוריד|תורידו|תמחק|תמחקו)[\s,.!?]+אותי/u,
   /^תפסיק(?:ו|י)?[\s,.!?]+(?:לשלוח|להציק|להתקשר|לפנות)/u,
   /^(?:אל|לא)\s+(?:תשלח|תתקשר|תפנו|תפנה|תשלחו|תפריעו|תפריע)/u,
   /^stop\s+(?:messages|sending|messaging|me|all)/iu,
@@ -51,7 +58,9 @@ const ANCHORED_PHRASES: ReadonlyArray<RegExp> = [
  */
 export function isOptOutMessage(text: string): boolean {
   if (!text) return false;
-  const trimmed = text.trim();
+  // Invisible direction / zero-width marks (RTL keyboards, button labels)
+  // would otherwise defeat the ^ anchors.
+  const trimmed = text.replace(/[​-‏‪-‮⁦-⁩﻿]/g, "").trim();
   if (!trimmed) return false;
   // Lowercase only the Latin-script comparison; Hebrew tokens are
   // case-insensitive on their own.

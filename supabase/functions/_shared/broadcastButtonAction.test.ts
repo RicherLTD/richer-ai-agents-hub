@@ -217,7 +217,12 @@ describe("sendBroadcastButtonReply — yes path", () => {
     });
     expect(out).toBe("send_failed");
     const dlq = ops.find((o) => o.table === "failed_messages");
-    expect(dlq?.payload).toMatchObject({ payload: { reply_text: YES_REPLY, lead_phone: "972500000000" } });
+    // error_type must be one dlq-replay can replay (the switch in
+    // dlq-replay/index.ts); reply_text + lead_phone are what it re-sends.
+    expect(dlq?.payload).toMatchObject({
+      error_type: "hookmyapp_send_failed",
+      payload: { reply_text: YES_REPLY, lead_phone: "972500000000" },
+    });
   });
 });
 
