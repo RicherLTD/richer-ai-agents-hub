@@ -74,6 +74,9 @@ export type ButtonActions = Record<string, ButtonActionConfig>;
  *  4096; stay well under it. */
 export const MAX_BUTTON_REPLY_CHARS = 2_000;
 
+/** The only fields a button action may carry. */
+const ACTION_FIELDS: ReadonlySet<string> = new Set(["match", "reply", "optout"]);
+
 /**
  * Validate the raw jsonb column. Invalid entries are dropped (not thrown) so
  * one bad button never disables the others; `errors` says what was dropped so
@@ -92,6 +95,14 @@ export function parseButtonActions(raw: unknown): { actions: ButtonActions; erro
       continue;
     }
     const v = value as Record<string, unknown>;
+    // A misspelt field (e.g. "opt_out") would otherwise be ignored and turn a
+    // removal button into a plain reply. Drop the entry: the tap then reaches
+    // the text path, where isOptOutMessage still catches a removal label.
+    const unknownFields = Object.keys(v).filter((f) => !ACTION_FIELDS.has(f));
+    if (unknownFields.length > 0) {
+      errors.push(`${key}: unknown field(s) ${unknownFields.join(", ")} (allowed: match, reply, optout)`);
+      continue;
+    }
     const matchRaw = typeof v.match === "string" ? [v.match] : v.match;
     const match = Array.isArray(matchRaw)
       ? matchRaw.filter((m): m is string => typeof m === "string" && normalizeButtonText(m) !== "")
@@ -127,7 +138,7 @@ export function parseButtonActions(raw: unknown): { actions: ButtonActions; erro
 export function normalizeButtonText(s: string): string {
   return s
     .normalize("NFC")
-    .replace(/[​-‏‪-‮⁦-⁩﻿]/g, "")
+    .replace(/[\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g, "")
     .replace(/\s+/g, " ")
     .trim()
     .toLowerCase()

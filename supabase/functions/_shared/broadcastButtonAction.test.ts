@@ -6,6 +6,7 @@ import {
   type ResolvedButtonAction,
   resolveBroadcastButtonAction,
   sendBroadcastButtonReply,
+  withOptOutSafetyNet,
 } from "./broadcastButtonAction.ts";
 import type { SendResult } from "./whatsappSend.ts";
 
@@ -33,6 +34,8 @@ function fakeAdmin(rows: {
   conversation?: Record<string, unknown> | null;
   lastOutbound?: Record<string, unknown> | null;
   optOuts?: Array<Record<string, unknown>>;
+  /** false → the atomic reply claim finds the row already claimed. */
+  claimed?: boolean;
 }) {
   const ops: Op[] = [];
   const single = (table: string) => {
@@ -52,14 +55,20 @@ function fakeAdmin(rows: {
         select: () => q,
         eq: (col: string, val: unknown) => { op.filters.push([col, val]); return q; },
         not: () => q,
+        or: () => q,
         order: () => q,
         limit: () => q,
         update: (payload: unknown) => { op.op = "update"; op.payload = payload; return q; },
         insert: (payload: unknown) => { op.op = "insert"; op.payload = payload; return q; },
         maybeSingle: () => Promise.resolve({ data: single(table), error: null }),
         single: () => Promise.resolve({ data: { id: "row-1" }, error: null }),
-        then: (resolve: (v: unknown) => unknown) =>
-          resolve({ data: table === "opt_outs" && op.op === "select" ? rows.optOuts ?? [] : null, error: null }),
+        then: (resolve: (v: unknown) => unknown) => {
+          if (table === "opt_outs" && op.op === "select") return resolve({ data: rows.optOuts ?? [], error: null });
+          if (table === "conversations" && op.op === "update") {
+            return resolve({ data: rows.claimed === false ? [] : [{ id: "c-1" }], error: null });
+          }
+          return resolve({ data: null, error: null });
+        },
       };
       return q;
     },
@@ -207,6 +216,42 @@ describe("sendBroadcastButtonReply — yes path", () => {
     expect(send).not.toHaveBeenCalled();
   });
 
+  it("does not send when the conversation can't be read", async () => {
+    const { admin } = fakeAdmin({ conversation: null });
+    const send = okSend();
+    const out = await sendBroadcastButtonReply({
+      admin, agentId: "a-1", conversationId: "c-1", leadPhone: "972500000000", resolved: resolved("yes"), creds: CREDS, send,
+    });
+    expect(out).toBe("skipped_gated");
+    expect(send).not.toHaveBeenCalled();
+  });
+
+  it("claims the reply for this broadcast + button before sending", async () => {
+    const { admin, ops } = fakeAdmin({ conversation: { status: "active", current_tag: null, manual_mode_since: null } });
+    const out = await sendBroadcastButtonReply({
+      admin, agentId: "a-1", conversationId: "c-1", leadPhone: "972500000000", resolved: resolved("yes"), creds: CREDS, send: okSend(),
+    });
+    expect(out).toBe("sent");
+    const claim = ops.find(
+      (o) => o.table === "conversations" && o.op === "update" &&
+        (o.payload as Record<string, unknown>).button_reply_claimed_key === "b-1_yes",
+    );
+    expect(claim).toBeDefined();
+  });
+
+  it("does not send when a concurrent delivery of the same tap already claimed the reply", async () => {
+    const { admin } = fakeAdmin({
+      conversation: { status: "active", current_tag: null, manual_mode_since: null },
+      claimed: false,
+    });
+    const send = okSend();
+    const out = await sendBroadcastButtonReply({
+      admin, agentId: "a-1", conversationId: "c-1", leadPhone: "972500000000", resolved: resolved("yes"), creds: CREDS, send,
+    });
+    expect(out).toBe("skipped_duplicate");
+    expect(send).not.toHaveBeenCalled();
+  });
+
   it("DLQs a failed send with a replayable payload", async () => {
     const { admin, ops } = fakeAdmin({ conversation: { status: "active", current_tag: null, manual_mode_since: null } });
     const send = vi.fn(async (): Promise<SendResult> => ({
@@ -223,6 +268,12 @@ describe("sendBroadcastButtonReply — yes path", () => {
       error_type: "hookmyapp_send_failed",
       payload: { reply_text: YES_REPLY, lead_phone: "972500000000" },
     });
+    // The claim is released so the lead's next tap can retry.
+    const release = ops.find(
+      (o) => o.table === "conversations" && o.op === "update" &&
+        (o.payload as Record<string, unknown>).button_reply_claimed_key === null,
+    );
+    expect(release).toBeDefined();
   });
 });
 
@@ -255,5 +306,19 @@ describe("stop path", () => {
     });
     expect(out).toBe("sent");
     expect(send.mock.calls[0][0]).toMatchObject({ body: STOP_REPLY });
+  });
+});
+
+describe("withOptOutSafetyNet", () => {
+  it("makes a removal label an opt-out even when the config forgot optout", () => {
+    const misconfigured: ResolvedButtonAction = {
+      ...resolved("stop"),
+      action: { match: ["לא, הסירו אותי"], reply: STOP_REPLY, optout: false },
+    };
+    expect(withOptOutSafetyNet(misconfigured, "לא, הסירו אותי").action.optout).toBe(true);
+  });
+
+  it("leaves a normal yes button alone", () => {
+    expect(withOptOutSafetyNet(resolved("yes"), "כן, שלחו לי").action.optout).toBe(false);
   });
 });

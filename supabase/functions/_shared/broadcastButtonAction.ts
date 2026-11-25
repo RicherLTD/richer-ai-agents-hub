@@ -19,6 +19,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2.45.4
 import { shouldRenderBroadcastRewarm } from "./broadcastRewarmBlock.ts";
 import { enqueueFailedMessage } from "./dlq.ts";
 import { logError } from "./logError.ts";
+import { isOptOutMessage } from "./optOut.ts";
 import {
   type ButtonActionConfig,
   type InboundButtonReply,
@@ -98,6 +99,20 @@ export async function resolveBroadcastButtonAction(
 }
 
 /**
+ * A matched button whose label is itself a removal request ("לא, הסירו אותי")
+ * is an opt-out even when the operator's config left out `optout: true`.
+ * Otherwise the lead would get the "you were removed" reply without being
+ * removed.
+ */
+export function withOptOutSafetyNet(
+  resolved: ResolvedButtonAction,
+  tappedLabel: string,
+): ResolvedButtonAction {
+  if (resolved.action.optout || !isOptOutMessage(tappedLabel)) return resolved;
+  return { ...resolved, action: { ...resolved.action, optout: true } };
+}
+
+/**
  * Opt the lead out: tag + pause the conversation (blocks this agent) and add
  * the phone to the global opt_outs list (blocks every broadcast). Returns
  * false when the conversation update failed. Never throws.
@@ -164,6 +179,50 @@ export async function applyConversationOptOut(
 // Same set as the agent loop's BLOCKING_TAGS: never auto-send into these.
 const BLOCKING_TAGS: ReadonlySet<string> = new Set(["opted_out", "requires_human", "underage"]);
 
+/** How long a second delivery of the same tap counts as a duplicate. */
+const BUTTON_REPLY_CLAIM_WINDOW_MS = 60_000;
+
+/** Claim key for (broadcast, button). Only [A-Za-z0-9_-]: it is interpolated
+ *  into a PostgREST or() filter. */
+function buttonReplyClaimKey(resolved: ResolvedButtonAction): string {
+  return `${resolved.broadcastId}_${resolved.actionName}`.replace(/[^A-Za-z0-9_-]/g, "_");
+}
+
+/**
+ * Atomically claim the reply on the conversation row (migration 0054).
+ * true = claimed; false = the same (broadcast, button) was claimed by another
+ * delivery inside the window; null = the claim query failed.
+ */
+async function claimButtonReply(
+  admin: SupabaseClient,
+  conversationId: string,
+  key: string,
+): Promise<boolean | null> {
+  const now = Date.now();
+  const cutoff = new Date(now - BUTTON_REPLY_CLAIM_WINDOW_MS).toISOString();
+  const { data, error } = await admin
+    .from("conversations")
+    .update({ button_reply_claimed_at: new Date(now).toISOString(), button_reply_claimed_key: key })
+    .eq("id", conversationId)
+    .or(`button_reply_claimed_key.is.null,button_reply_claimed_key.neq.${key},button_reply_claimed_at.lt.${cutoff}`)
+    .select("id");
+  if (error) return null;
+  return Array.isArray(data) && data.length > 0;
+}
+
+/** Release a claim after a failed send so the lead's next tap can retry. */
+async function releaseButtonReplyClaim(
+  admin: SupabaseClient,
+  conversationId: string,
+  key: string,
+): Promise<void> {
+  await admin
+    .from("conversations")
+    .update({ button_reply_claimed_at: null, button_reply_claimed_key: null })
+    .eq("id", conversationId)
+    .eq("button_reply_claimed_key", key);
+}
+
 export interface ButtonReplyCtx {
   admin: SupabaseClient;
   agentId: string;
@@ -200,15 +259,30 @@ export async function sendBroadcastButtonReply(ctx: ButtonReplyCtx): Promise<But
   };
   try {
     if (!resolved.action.optout) {
-      const { data: conv } = await admin
+      const { data: conv, error: convErr } = await admin
         .from("conversations")
         .select("status, current_tag, manual_mode_since")
         .eq("id", ctx.conversationId)
         .maybeSingle();
-      const status = (conv?.status as string | null | undefined) ?? null;
-      const tag = (conv?.current_tag as string | null | undefined) ?? null;
-      const manual = (conv?.manual_mode_since as string | null | undefined) ?? null;
-      if ((status !== null && status !== "active") || (tag && BLOCKING_TAGS.has(tag)) || manual) {
+      if (convErr || !conv) {
+        // Fail closed, like the agent loop's status-gated lock: if we can't
+        // see the conversation we can't know it is safe to message.
+        await logError({
+          admin,
+          source: SOURCE,
+          errorType: "button_action_skipped_gated",
+          level: "warn",
+          message: `button reply not sent — conversation unreadable: ${convErr?.message ?? "no row"}`,
+          context: logCtx,
+          agentId: ctx.agentId,
+          conversationId: ctx.conversationId,
+        });
+        return "skipped_gated";
+      }
+      const status = (conv.status as string | null | undefined) ?? null;
+      const tag = (conv.current_tag as string | null | undefined) ?? null;
+      const manual = (conv.manual_mode_since as string | null | undefined) ?? null;
+      if (status !== "active" || (tag && BLOCKING_TAGS.has(tag)) || manual) {
         await logError({
           admin,
           source: SOURCE,
@@ -223,7 +297,40 @@ export async function sendBroadcastButtonReply(ctx: ButtonReplyCtx): Promise<But
       }
     }
 
-    // Double tap → one reply. Same guard the fallback apology uses.
+    // Concurrent double tap → one reply. The last-outbound check below can't
+    // see a send that is still in flight, so first claim (broadcast, button)
+    // on the conversation row atomically; the losing delivery skips.
+    const claimKey = buttonReplyClaimKey(resolved);
+    const claimed = await claimButtonReply(admin, ctx.conversationId, claimKey);
+    if (claimed === false) {
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "button_action_duplicate_skipped",
+        level: "info",
+        message: "same button reply claimed by a concurrent delivery — not resent",
+        context: { ...logCtx, claim_key: claimKey },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+      return "skipped_duplicate";
+    }
+    if (claimed === null) {
+      // The claim query failed (e.g. migration 0054 not applied yet). A rare
+      // duplicate beats leaving the lead unanswered: log and carry on.
+      await logError({
+        admin,
+        source: SOURCE,
+        errorType: "button_action_claim_failed",
+        level: "warn",
+        message: "button reply claim failed — sending without the double-tap guard",
+        context: { ...logCtx, claim_key: claimKey },
+        agentId: ctx.agentId,
+        conversationId: ctx.conversationId,
+      });
+    }
+
+    // Sequential double tap → one reply. Same guard the fallback apology uses.
     const { data: last } = await admin
       .from("messages")
       .select("content")
@@ -275,6 +382,7 @@ export async function sendBroadcastButtonReply(ctx: ButtonReplyCtx): Promise<But
         agentId: ctx.agentId,
         conversationId: ctx.conversationId,
       });
+      await releaseButtonReplyClaim(admin, ctx.conversationId, claimKey);
       return "send_failed";
     }
 

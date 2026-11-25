@@ -77,8 +77,23 @@ describe("isOptOutMessage", () => {
     expect(isOptOutMessage("לא תסירו אותי")).toBe(false);
   });
 
+  it("does NOT trigger on a question or complaint after a bare 'לא'", () => {
+    // הסירו / מחקו are also past tense ("they removed") — without the comma
+    // these are questions, not requests.
+    expect(isOptOutMessage("לא מחקו אותי מהקורס?")).toBe(false);
+    expect(isOptOutMessage("לא הסירו אותי, נכון?")).toBe(false);
+  });
+
+  it("matches more Hebrew removal requests", () => {
+    expect(isOptOutMessage("תסירו אותי")).toBe(true);
+    expect(isOptOutMessage("תסירו")).toBe(true);
+    expect(isOptOutMessage("הסירו")).toBe(true);
+    expect(isOptOutMessage("הסרה")).toBe(true);
+    expect(isOptOutMessage("להסרה")).toBe(true);
+  });
+
   it("ignores invisible direction marks around the text", () => {
-    expect(isOptOutMessage("‏לא, הסירו אותי")).toBe(true);
-    expect(isOptOutMessage("‏הסר")).toBe(true);
+    expect(isOptOutMessage("\u200Fלא, הסירו אותי")).toBe(true);
+    expect(isOptOutMessage("\u200Fהסר")).toBe(true);
   });
 });

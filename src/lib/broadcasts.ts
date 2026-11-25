@@ -285,6 +285,10 @@ export function parseButtonActionsInput(
       return { ok: false, error: `${key}: צריך להיות אובייקט` };
     }
     const v = value as Record<string, unknown>;
+    const unknownFields = Object.keys(v).filter((f) => !["match", "reply", "optout"].includes(f));
+    if (unknownFields.length > 0) {
+      return { ok: false, error: `${key}: שדה לא מוכר ${unknownFields.join(", ")} (מותר: match, reply, optout)` };
+    }
     const match = typeof v.match === "string" ? [v.match] : v.match;
     if (!Array.isArray(match) || !match.some((m) => typeof m === "string" && m.trim() !== "")) {
       return { ok: false, error: `${key}: חסר "match" (רשימת טקסטים של כפתורים)` };

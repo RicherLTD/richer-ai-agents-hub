@@ -641,7 +641,7 @@
 | 0043 | `broadcast_templates` registry (dropdown של templates מאושרים) + seed מ־`agents.first_touch_template_name` |
 | 0044 | `scheduled_messages.broadcast_id` (nullable FK; הזרימה הקיימת נשארת NULL) |
 | 0045 | פונקציית `template_funnel()` — אגרגציית משפך server-side (sent/delivered/read/answered/zoom/failed + אחוזים), dedup פר (template, phone). `SECURITY INVOKER`, GRANT ל-`authenticated`. מחליף שליפת 2000 שורות לדפדפן |
-| 0054 | `broadcast_templates.button_actions` (jsonb, nullable) — פעולות לכפתורי Quick reply בדיוור. NULL = הלחיצה מגיעה לבוט כטקסט |
+| 0054 | `broadcast_templates.button_actions` (jsonb, nullable) — פעולות לכפתורי Quick reply בדיוור. NULL = הלחיצה מגיעה לבוט כטקסט. + `conversations.button_reply_claimed_at/_key` — תפיסה אטומית נגד תשובה כפולה בלחיצה כפולה |
 
 ### ⚠️ כפילויות מספור — מי authoritative
 

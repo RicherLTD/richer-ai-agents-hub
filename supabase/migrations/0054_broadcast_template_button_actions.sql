@@ -13,7 +13,8 @@
 -- `match` = button labels and/or payloads (compared normalised). Keys are
 -- free labels for logs. NULL = no button actions: taps go to the agent as text.
 --
--- Additive, nullable, idempotent. Rollback: ALTER TABLE ... DROP COLUMN.
+-- Additive, nullable, idempotent. Rollback: ALTER TABLE ... DROP COLUMN for
+-- the three columns below, only after the code that reads them is rolled back.
 
 alter table public.broadcast_templates
   add column if not exists button_actions jsonb;
@@ -29,6 +30,14 @@ begin
       check (button_actions is null or jsonb_typeof(button_actions) = 'object');
   end if;
 end $$;
+
+-- Double-tap guard for the deterministic reply (broadcastButtonAction.ts):
+-- before sending, a tap claims (broadcast, button) on the conversation row with
+-- a conditional UPDATE, so two concurrent deliveries of the same tap send one
+-- reply. Nullable and additive; nothing else reads these columns.
+alter table public.conversations
+  add column if not exists button_reply_claimed_at timestamptz,
+  add column if not exists button_reply_claimed_key text;
 
 comment on column public.broadcast_templates.button_actions is
   'Quick-reply button actions: {"<name>": {"match": [label|payload...], "reply": text, "optout": bool}}. NULL = taps go to the agent as text.';

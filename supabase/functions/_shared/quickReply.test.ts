@@ -69,11 +69,20 @@ describe("parseButtonActions", () => {
     expect(parseButtonActions([1, 2]).errors).toHaveLength(1);
     expect(parseButtonActions("x").errors).toHaveLength(1);
   });
+
+  it("drops an entry with an unknown field, so a typo like opt_out can't silently disable the opt-out", () => {
+    const { actions, errors } = parseButtonActions({
+      stop: { match: ["לא, הסירו אותי"], reply: "x", opt_out: true },
+    });
+    expect(actions).toEqual({});
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("opt_out");
+  });
 });
 
 describe("normalizeButtonText / matchButtonAction", () => {
   it("ignores bidi marks, extra spaces, case and trailing punctuation", () => {
-    expect(normalizeButtonText("‏כן,  שלחו לי!")).toBe("כן, שלחו לי");
+    expect(normalizeButtonText("\u200Fכן,  שלחו לי!")).toBe("כן, שלחו לי");
     expect(normalizeButtonText(" Send ME ")).toBe("send me");
   });
 

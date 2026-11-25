@@ -98,6 +98,7 @@ import {
   type ResolvedButtonAction,
   resolveBroadcastButtonAction,
   sendBroadcastButtonReply,
+  withOptOutSafetyNet,
 } from "./broadcastButtonAction.ts";
 import { isQuietHourNow } from "./quietHours.ts";
 import {
@@ -2429,14 +2430,26 @@ async function ingestInboundMessage(
       });
     }
     if (resolved) {
+      // A removal label opts out even if the config forgot optout: true.
+      resolved = withOptOutSafetyNet(resolved, content);
       if (resolved.action.optout) {
-        await applyConversationOptOut(admin, {
+        const optedOut = await applyConversationOptOut(admin, {
           agentId,
           conversationId,
           phone,
           trigger: "button",
           contentPreview: content,
         });
+        if (!optedOut) {
+          // The removal did not land (logged at error level above). Don't
+          // send "you were removed" — it would be false.
+          return {
+            needsAgentReply: false,
+            needsCannedNonTextReply: false,
+            conversationId,
+            leadPhone: phone,
+          };
+        }
       }
       return {
         needsAgentReply: false,
@@ -2458,7 +2471,8 @@ async function ingestInboundMessage(
       agentId,
       conversationId,
       phone,
-      trigger: "text",
+      // A tap with no configured action lands here too — say so in the audit.
+      trigger: buttonReply ? "button_fallback" : "text",
       contentPreview: content,
     });
     return {
@@ -2645,7 +2659,8 @@ export async function handleWhatsappWebhook(
   // when a user fires off multiple messages in quick succession.
   const conversationsNeedingReply = new Map<string, string>(); // id → leadPhone
   const conversationsNeedingCannedReply = new Map<string, string>(); // id → leadPhone
-  // Configured broadcast button taps → fixed reply, no agent. Last tap wins.
+  // Configured broadcast button taps → fixed reply, no agent. Last tap wins,
+  // except an opt-out confirmation is never replaced (see the loop below).
   const conversationsNeedingButtonReply = new Map<
     string,
     { leadPhone: string; resolved: ResolvedButtonAction }
@@ -2672,10 +2687,15 @@ export async function handleWhatsappWebhook(
       for (const message of change.value?.messages ?? []) {
         const outcome = await ingestInboundMessage(admin, agentId, contacts, message, ingestEnv);
         if (outcome?.buttonAction) {
-          conversationsNeedingButtonReply.set(outcome.conversationId, {
-            leadPhone: outcome.leadPhone,
-            resolved: outcome.buttonAction,
-          });
+          // Several taps for one conversation in one delivery: the last tap
+          // wins, except that an opt-out confirmation is never replaced.
+          const queued = conversationsNeedingButtonReply.get(outcome.conversationId);
+          if (!queued?.resolved.action.optout || outcome.buttonAction.action.optout) {
+            conversationsNeedingButtonReply.set(outcome.conversationId, {
+              leadPhone: outcome.leadPhone,
+              resolved: outcome.buttonAction,
+            });
+          }
           // A button reply answers this webhook for the conversation; a typed
           // message earlier in the same batch must not also get an AI reply.
           conversationsNeedingReply.delete(outcome.conversationId);

@@ -569,6 +569,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id: string | null
+          button_reply_claimed_at: string | null
+          button_reply_claimed_key: string | null
           consent_given_at: string | null
           consent_text_version: string | null
           created_at: string | null
@@ -630,6 +632,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id?: string | null
+          button_reply_claimed_at?: string | null
+          button_reply_claimed_key?: string | null
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null
@@ -693,6 +697,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id?: string | null
+          button_reply_claimed_at?: string | null
+          button_reply_claimed_key?: string | null
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null
