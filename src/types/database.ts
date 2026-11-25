@@ -382,6 +382,7 @@ export type Database = {
         Row: {
           agent_id: string
           body_preview: string | null
+          button_actions: Json | null
           created_at: string
           id: string
           is_active: boolean
@@ -394,6 +395,7 @@ export type Database = {
         Insert: {
           agent_id: string
           body_preview?: string | null
+          button_actions?: Json | null
           created_at?: string
           id?: string
           is_active?: boolean
@@ -406,6 +408,7 @@ export type Database = {
         Update: {
           agent_id?: string
           body_preview?: string | null
+          button_actions?: Json | null
           created_at?: string
           id?: string
           is_active?: boolean
@@ -566,6 +569,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id: string | null
+          button_reply_claimed_at: string | null
+          button_reply_claimed_key: string | null
           consent_given_at: string | null
           consent_text_version: string | null
           created_at: string | null
@@ -627,6 +632,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id?: string | null
+          button_reply_claimed_at?: string | null
+          button_reply_claimed_key?: string | null
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null
@@ -690,6 +697,8 @@ export type Database = {
             | Database["public"]["Enums"]["ai_provider_enum"]
             | null
           assigned_advisor_id?: string | null
+          button_reply_claimed_at?: string | null
+          button_reply_claimed_key?: string | null
           consent_given_at?: string | null
           consent_text_version?: string | null
           created_at?: string | null

@@ -3,7 +3,34 @@ import { describe, expect, it, vi } from "vitest";
 const rpcMock = vi.fn();
 vi.mock("@/lib/supabase/client", () => ({ supabase: { rpc: (...args: unknown[]) => rpcMock(...args) } }));
 
-import { describeSuppression, fetchStatusCounts, registrationWindow } from "./broadcasts";
+import { describeSuppression, fetchStatusCounts, parseButtonActionsInput, registrationWindow } from "./broadcasts";
+
+describe("parseButtonActionsInput", () => {
+  it("treats an empty textarea as no actions", () => {
+    expect(parseButtonActionsInput("  ")).toEqual({ ok: true, value: null });
+  });
+
+  it("accepts the yes / stop config", () => {
+    const r = parseButtonActionsInput(
+      '{"yes": {"match": ["כן, שלחו לי"], "reply": "הנה הלינק"}, "stop": {"match": ["לא, הסירו אותי"], "reply": "הוסרת", "optout": true}}',
+    );
+    expect(r.ok).toBe(true);
+  });
+
+  it("rejects invalid JSON", () => {
+    expect(parseButtonActionsInput("{yes:").ok).toBe(false);
+  });
+
+  it("rejects an entry without a reply", () => {
+    expect(parseButtonActionsInput('{"yes": {"match": ["כן"]}}').ok).toBe(false);
+  });
+
+  it("rejects an unknown field such as opt_out", () => {
+    const r = parseButtonActionsInput('{"stop": {"match": ["לא, הסירו אותי"], "reply": "x", "opt_out": true}}');
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("opt_out");
+  });
+});
 
 const localMidnight = (day: string) => new Date(`${day}T00:00:00`).toISOString();
 
